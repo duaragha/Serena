@@ -460,11 +460,13 @@ def _work_title(request: str) -> str:
 
 
 def _private_prompt(item: VoiceInboxItem) -> str:
+    from core.machine_context import persona_instruction
+
     return (
         item.prompt
-        + "\n\nThis is Serena's private coding session. Before acting, read "
-        "/home/raghav/Documents/Projects/serena/Persona.md and Tooling.md and "
-        "continue as the same Serena. The accepted brief, resolved root, frozen "
+        + "\n\nThis is Serena's private coding session. "
+        + persona_instruction()
+        + " Continue as the same Serena. The accepted brief, resolved root, frozen "
         "baseline tree, model policy, acceptance criteria, and authority boundaries "
         "are immutable. Own the work end to end. "
         "Do not tell Raghav to open another app or terminal. Inspect the live state, "

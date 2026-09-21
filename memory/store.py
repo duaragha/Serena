@@ -194,7 +194,15 @@ def classify_task(text: str, project_hint: str | None = None) -> str:
     action = re.search(r"\b(fix|add|implement|build|update|remove|repair|test|create|"
                        r"investigate|diagnose|refactor|replace|resolve|enable|disable|"
                        r"research|change|make|migrate|integrate|connect|wire|rename|"
-                       r"ship|support)\b", text, re.I)
+                       r"ship|support|redesign|improve|clean|polish|focus|show|hide|"
+                       r"move|drag|reorder|delete|restore)\b", text, re.I)
+    # And more often he states the requirement rather than the verb: "it
+    # should open the keyboard", "I should be able to drag it", "get rid of
+    # these buttons". That is a spec, not chat -- the verb list alone read
+    # his clearest briefs as too vague and bounced them back to him.
+    action = action or re.search(
+        r"\b(should(?:n'?t)?(?: be able to)?|needs? to|has to|must|get rid of|"
+        r"i want|i'?d like|there should(?:n'?t)? be)\b", text, re.I)
     substantive = {word for word in words if len(word) > 2 and word not in _TASK_PADDING}
     return "ready" if action and len(words) >= 8 and len(substantive) >= 4 else "needs_triage"
 

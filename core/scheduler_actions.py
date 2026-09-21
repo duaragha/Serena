@@ -729,6 +729,19 @@ NUDGE_ASKED_AGE_SECONDS = 45 * 60
 NUDGE_INTERVAL_SECONDS = 6 * 3600
 
 
+NUDGE_SPOKEN_DECISIONS = frozenset({"sent", "deferred", "pending_approval", "suppressed"})
+
+
+def _nudge_decision(text: str, key: str) -> str:
+    """Hand one nudge to the authority and report what it decided to do."""
+
+    from core.notification_senders import notify
+
+    result = notify("task.update", text, channel="imessage", dedupe_key=key,
+                    source_surface="dispatch", fallback_channel=None)
+    return str(result.decision)
+
+
 def _nudge_state_path():
     from pathlib import Path
 
@@ -797,8 +810,16 @@ def nudge_phone_line(payload: dict[str, Any]) -> ActionOutcome:
         return ActionOutcome(True, "nothing is waiting on him")
 
     key = f"nudge:{candidate['id']}:{candidate['state']}"
-    sent = _notify_phone(_nudge_text(candidate), key)
-    if sent:
+    decision = _nudge_decision(_nudge_text(candidate), key)
+    sent = decision == "sent"
+    # The shift starts when the authority takes the nudge, not when it lands.
+    # Deferred through quiet hours it still goes out in the morning; held for
+    # approval or suppressed as a duplicate, it was already said. Only a nudge
+    # that failed to reach him is unsaid, and only that is retried next pass.
+    # Starting the clock on an immediate send alone meant quiet hours never
+    # started it: she re-raised the same task every fifteen minutes all night
+    # and he woke to the pile.
+    if decision in NUDGE_SPOKEN_DECISIONS:
         state.update(nudged_at=now, task_id=candidate["id"], key=key)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -924,7 +945,15 @@ def run_doctor(payload: dict[str, Any]) -> ActionOutcome:
     }
     if not broken:
         return ActionOutcome(True, "nothing broken", output=output)
+    if not report.failures:
+        # A warning is drift worth recording, not worth a text. "HEAD is
+        # level with origin/master but nothing has fetched for 41 hours" is
+        # true of every deploy checkout and means nothing to him; it stays in
+        # `chats doctor` and the action's output, and never reaches his phone.
+        return ActionOutcome(
+            True, f"{len(report.warnings)} warning(s), nothing broken", output=output)
 
+    broken = report.failures
     lead = broken[0]
     extra = f" (+{len(broken) - 1} more)" if len(broken) > 1 else ""
     # Name the machine: this runs on both, and "the repo is behind" means
@@ -942,7 +971,7 @@ def run_doctor(payload: dict[str, Any]) -> ActionOutcome:
             "channel": str(payload.get("channel") or "telegram"),
             # A failure stops work; a warning is a drift he should know about
             # before it becomes one. Neither is worth waking him for.
-            "urgency": "normal" if report.failures else "low",
+            "urgency": "normal",
             # One notice per distinct shape of breakage, so a problem that
             # persists for a day does not become an hourly nag. A new or fixed
             # check changes the shape, and he hears about it then.

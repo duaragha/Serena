@@ -403,3 +403,37 @@ def test_the_freshness_check_never_reaches_the_network(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", _guard)
     doctor.check_repo_freshness()
+
+
+def _scheduled_doctor(monkeypatch, findings):
+    from core import doctor, scheduler_actions
+
+    monkeypatch.setattr(doctor, "run", lambda: doctor.Report(findings=findings))
+    return scheduler_actions.run_doctor({})
+
+
+def test_a_warning_is_recorded_but_never_texted(monkeypatch):
+    """"HEAD is level with origin/master but nothing has fetched for 41
+    hours" is true of every deploy checkout and meant nothing to him, yet it
+    reached his phone every quarter hour."""
+    from core import doctor
+
+    outcome = _scheduled_doctor(monkeypatch, [doctor.Finding(
+        "repo.stale_fetch", ok=False, detail="nothing here has fetched for 41 hours",
+        severity="warn")])
+    assert outcome.ok
+    assert outcome.notify is None
+    assert outcome.output["warnings"] == ["repo.stale_fetch"]
+
+
+def test_a_real_failure_still_reaches_him(monkeypatch):
+    from core import doctor
+
+    outcome = _scheduled_doctor(monkeypatch, [
+        doctor.Finding("brain.alive", ok=False, detail="no brain daemon", severity="fail"),
+        doctor.Finding("repo.stale_fetch", ok=False, detail="stale", severity="warn"),
+    ])
+    assert outcome.notify is not None
+    assert "brain.alive" in outcome.notify["summary"]
+    # The warning rides along in the record, not in the text or its dedupe key.
+    assert "stale_fetch" not in outcome.notify["dedupe_key"]

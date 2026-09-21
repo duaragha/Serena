@@ -3970,9 +3970,14 @@ def _worker_prompt(
             "- Work only inside the exact isolated Working directory below. "
             "Never cd to or edit the base checkout named in the task or persona paths.\n"
         )
+    from core.machine_context import persona_instruction
+
+    # Resolved here, on the machine that runs the leg: a laptop path in a PC
+    # worker's prompt made a strict reviewer refuse a finished run.
+    persona_line = persona_instruction()
     prompt = f"""You are one worker inside Serena Fleet.
 
-Read /home/raghav/Documents/Projects/serena/Persona.md and Tooling.md before acting. Stay in that voice internally, but focus only on this assigned leg.
+{persona_line} Stay in that voice internally, but focus only on this assigned leg.
 
 Hard constraints:
 - Do not spawn subagents, teams, workflows, Fleet runs, or delegate this task.

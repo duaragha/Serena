@@ -315,3 +315,36 @@ def test_fleet_texts_him_through_the_shared_binary_resolver():
     source = inspect.getsource(supervisor._send_raghav_text)
     assert "_chats_binary" in source
     assert "shutil.which" not in source
+
+
+def test_a_reminder_held_overnight_does_not_stack_hourly(tmp_path):
+    """One deferred reminder, not one per hour of quiet.
+
+    A deferred notice only counted as a duplicate for the dedupe window, so
+    after an hour of quiet the same reminder was deferred again, and again,
+    and the morning flush delivered the whole pile at once.
+    """
+    sent = []
+    hour = datetime.now().hour
+    authority = NotificationAuthority(
+        tmp_path / "overnight.sqlite3",
+        control_store=ControlPlaneStore(tmp_path / "overnight-control.sqlite3"),
+        policy=NotificationPolicy(quiet_start_hour=hour, quiet_end_hour=(hour + 5) % 24),
+        senders={"imessage": lambda request: sent.append(request.summary) or True},
+    )
+    start = time.time()
+    reminder = NotificationRequest(
+        kind="task.update", summary="#65 is still waiting on you",
+        channel="imessage", dedupe_key="nudge:65:needs_triage")
+
+    first = authority.request(reminder, now=start)
+    # Two and three hours later: well past the one-hour window, still quiet.
+    later = [authority.request(reminder, now=start + h * 3600) for h in (2, 3)]
+
+    assert first.decision == "deferred"
+    assert [r.decision for r in later] == ["suppressed", "suppressed"]
+    with sqlite3.connect(tmp_path / "overnight.sqlite3") as db:
+        waiting = db.execute(
+            "SELECT COUNT(*) FROM notifications WHERE decision = 'deferred'").fetchone()[0]
+    assert waiting == 1
+    assert sent == []
