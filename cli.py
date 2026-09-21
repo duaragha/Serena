@@ -212,6 +212,29 @@ def recall(query, limit, no_update):
         click.echo("")
 
 
+@main.group("brain")
+def brain_group():
+    """Her resident brain: why it went down, and when."""
+
+
+@brain_group.command("history")
+@click.option("--limit", "-n", default=20, show_default=True, help="How many events.")
+def brain_history(limit):
+    """Every start and stop of the brain on this machine, with the reason.
+
+    Each start says how long she was down and why the run before it ended --
+    a crash, a Windows shutdown, a reboot, or a kill that left no trace.
+    """
+    from core import brain_downtime
+
+    lines = brain_downtime.explain(limit=limit)
+    if not lines:
+        click.echo("no brain history on this machine yet.")
+        return
+    for line in lines:
+        click.echo(line)
+
+
 @main.command("doctor")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable report.")
 def doctor_cmd(as_json):
