@@ -680,10 +680,11 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
 
     asked = []
     for task in store.tasks_in_state("needs_triage"):
-        # Only briefs from his phone get a question back; internal queue
-        # writes have nobody on the other end of the thread.
-        if task.get("asked_at") or not str(task.get("source_id") or "").startswith(
-                ("imessage:", "webhook:")):
+        # Anything someone filed -- his phone, a webhook, or a chat pane
+        # queueing work for him -- gets its one question on his phone. A task
+        # from a chat pane used to sit in triage with nobody told, which looked
+        # exactly like Fleet ignoring him. Only sourceless internal writes stay quiet.
+        if task.get("asked_at") or str(task.get("source_id") or "queue:").startswith("queue:"):
             continue
         if len(asked) >= MAX_RECONCILE_PER_TICK:
             break

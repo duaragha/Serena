@@ -339,6 +339,7 @@ def test_reconcile_delivers_notifies_and_asks_once(queue, monkeypatch):
     store.mark_task_running(task["id"], "d", claimed["lease_token"], "run-1")
     thin = store.enqueue_task("locket is broken", source_id="imessage:y")
     note = store.enqueue_task("please fix it now", source_id="")
+    from_chat = store.enqueue_task("make it nicer", source_id="claude:session")
 
     runs = {"run-1": {"state": "running", "cwd": "/agents/demo.task-1"}}
     monkeypatch.setattr(supervisor, "get_run", lambda run_id: runs[run_id])
@@ -354,7 +355,7 @@ def test_reconcile_delivers_notifies_and_asks_once(queue, monkeypatch):
 
     action = scheduler_actions.REVIEWED_ACTIONS["serena.fleet.reconcile"]
     first = action({})
-    assert first.output["asked"] == [thin["id"]]
+    assert first.output["asked"] == [thin["id"], from_chat["id"]]
     assert store.get_memory(task["id"])["state"] == "running"
     deliver.assert_not_called()
 
@@ -365,10 +366,11 @@ def test_reconcile_delivers_notifies_and_asks_once(queue, monkeypatch):
     assert store.get_memory(task["id"])["result"] == "pr: https://pr/1"
     cleanup.assert_called_once_with(checkout)
     keys = [key for key, _text, _reply in texts]
-    assert keys == [f"task:{thin['id']}:question", f"task:{task['id']}:done"]
+    assert keys == [f"task:{thin['id']}:question", f"task:{from_chat['id']}:question",
+                    f"task:{task['id']}:done"]
     assert "https://pr/1" in texts[-1][1]
     # Both answer briefs he texted, so quiet hours must not hold them.
-    assert [reply for _key, _text, reply in texts] == [True, True]
+    assert [reply for _key, _text, reply in texts] == [True, True, True]
     assert store.get_memory(note["id"])["asked_at"] == ""
     assert action({}).output["closed"] == []
 
