@@ -213,6 +213,7 @@ def build_serena_codex_brain_tools() -> CodexBrainToolRegistry:
     from core.brain_document_tools import DOCUMENT_TOOLS
     from core.brain_fleet_tools import FLEET_TOOLS
     from core.brain_gideon_tools import GIDEON_TOOLS
+    from core.brain_journal_tools import JOURNAL_TOOLS
     from core.brain_laptop_tools import LAPTOP_TOOLS
     from core.brain_memory_tools import MEMORY_TOOLS
     from core.brain_tools import BRAIN_TOOLS
@@ -236,6 +237,13 @@ def build_serena_codex_brain_tools() -> CodexBrainToolRegistry:
             "serena_gideon": (
                 "Use Serena's continuity, commitments, state, world, device, visual, and support APIs.",
                 GIDEON_TOOLS,
+            ),
+            # Without this, his journal answers were read and never saved
+            # whenever the brain was on Codex -- which it is exactly when the
+            # Claude login has expired, as it had on the PC the day this shipped.
+            "serena_journal": (
+                "Read his journal draft for a day and record his answers to your questions.",
+                JOURNAL_TOOLS,
             ),
         }
     )

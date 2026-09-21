@@ -107,7 +107,7 @@ def envelope(text: str, *, queue: str = "", journal: str = "") -> str:
             "You asked him these journal questions and he has not answered yet:\n"
             f"{journal}\n"
             "If his text answers any of them, it is neither work nor small talk: "
-            "call mcp__serena-journal__journal_answer once per question it answers, "
+            "call your journal_answer tool once per question it answers, "
             "with his words as `answer`, the matching `question_id` and `day`, a "
             "short `place_name` for a where-question, and first names in `people`. "
             "Then reply in a few words. Only say it is saved if the tool said so.\n\n"
