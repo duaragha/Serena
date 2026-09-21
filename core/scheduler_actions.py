@@ -982,6 +982,57 @@ def run_doctor(payload: dict[str, Any]) -> ActionOutcome:
     )
 
 
+def journal_nightly(payload: dict[str, Any]) -> ActionOutcome:
+    """Draft his journal once a day, and send it before quiet hours start.
+
+    The scheduler runs on intervals and drifts, so this runs every few minutes
+    and decides for itself: after JOURNAL_SEND_AT it drafts and sends today,
+    once. If the PC was off at that time, yesterday's entry is still drafted
+    the next morning -- after quiet hours, text only, no call -- so a day is
+    never left blank because the machine was asleep.
+    """
+
+    if payload:
+        return ActionOutcome(False, "serena.journal.nightly accepts no schedule payload")
+    import time
+    from datetime import datetime, timedelta
+
+    from core.journal import nightly, store
+    from core.notification_senders import default_authority
+
+    now = datetime.now(nightly.TZ)
+    policy = default_authority().policy
+    quiet = policy.in_quiet_hours(time.time())
+    today = now.date()
+    send_at = now.replace(hour=JOURNAL_SEND_AT[0], minute=JOURNAL_SEND_AT[1],
+                          second=0, microsecond=0)
+
+    record = store.load_day(today.isoformat())
+    if now >= send_at and not quiet and not (record and record.get("sent_at")):
+        try:
+            outcome = nightly.run_nightly(today)
+        except Exception as error:
+            return ActionOutcome(False, f"journal for {today} failed: {_why(error)}")
+        return ActionOutcome(True, f"journal for {today}: {outcome}", output=outcome)
+
+    yesterday = today - timedelta(days=1)
+    missed = store.load_day(yesterday.isoformat())
+    if not quiet and now < send_at and not (missed and missed.get("sent_at")):
+        try:
+            nightly.build(yesterday)
+            outcome = nightly.send(yesterday, call=False)
+        except Exception as error:
+            return ActionOutcome(False, f"catch-up journal for {yesterday} failed: {_why(error)}")
+        return ActionOutcome(True, f"caught up journal for {yesterday}: {outcome}", output=outcome)
+    return ActionOutcome(True, "nothing due")
+
+
+# 9:30pm, not 10: quiet hours begin at 22:00 and a call placed inside them is
+# held until morning, which would turn "a question about your day" into one
+# about yesterday.
+JOURNAL_SEND_AT = (21, 30)
+
+
 REVIEWED_ACTIONS = {
     'serena.knowledge.maintenance': maintain_knowledge,
     "serena.obligations.sweep": sweep_obligations,
@@ -994,6 +1045,7 @@ REVIEWED_ACTIONS = {
     "serena.phone.nudge": nudge_phone_line,
     "serena.phone.health": check_phone_health,
     "serena.doctor": run_doctor,
+    "serena.journal.nightly": journal_nightly,
 }
 
 

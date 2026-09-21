@@ -43,6 +43,7 @@ def test_the_registry_is_a_fixed_set_of_named_actions():
         "serena.phone.nudge",
         "serena.phone.health",
         "serena.doctor",
+        "serena.journal.nightly",
     }
     assert all(callable(handler) for handler in REVIEWED_ACTIONS.values())
 
