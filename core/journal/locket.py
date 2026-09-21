@@ -76,30 +76,32 @@ def entries_on(day: str) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda e: int(e.get("id") or 0))
 
 
-def merged_content(existing: str, section: str) -> str:
-    """His writing, untouched, followed by her section.
-
-    Her section starts at the marker and runs to the end of the entry, so it
-    can be rewritten as answers arrive without ever touching a word he wrote
-    above it.
-    """
-
-    from core.journal.draft import MARKER
-
-    existing = existing or ""
-    cut = existing.find(MARKER)
-    mine = (existing if cut < 0 else existing[:cut]).rstrip()
-    return f"{mine}{section}" if mine else section
+# The first version marked her section with a visible "Drafted by Serena" line.
+# Entries written then still carry it; everything from it on was hers.
+LEGACY_MARKER = "<p><em>Drafted by Serena"
 
 
-def write_entry(*, day: str, title: str, html: str, entry_id: int | None) -> int:
-    """Write her section into the day's entry. One entry per day, always.
+def _same(a: str, b: str) -> bool:
+    return " ".join((a or "").split()) == " ".join((b or "").split())
 
-    Locket already makes an entry for most days (the Auto-logged one), and the
-    first version of this created a second entry beside it -- two cards for
-    one Sunday. Now she writes into the day's existing entry, keeps whatever
-    he wrote there, keeps his tags, and only replaces a placeholder title.
-    A day with no entry at all gets one.
+
+def _content(entry_id: int) -> str:
+    data = _request("GET", f"/api/v1/journal/{int(entry_id)}/")
+    return str((data.get("data") or {}).get("content") or "")
+
+
+def write_entry(*, day: str, title: str, html: str, entry_id: int | None,
+                base: str | None = None, written: str | None = None) -> dict[str, Any]:
+    """Write her draft into the day's entry. One entry per day, always.
+
+    There is no visible line saying which part is hers -- he did not want her
+    taking credit in his own journal -- so the boundary lives here instead:
+    `base` is whatever the entry held before she first wrote, and `written` is
+    exactly what Locket stored after her last write. If the entry still reads
+    `written`, it is replaced with `base` + the new draft. If it does not, he
+    has edited it, and she leaves it alone rather than overwrite his words.
+
+    Returns {"id", "base", "written", "skipped"} for the caller to keep.
     """
 
     existing = entries_on(day)
@@ -113,13 +115,22 @@ def write_entry(*, day: str, title: str, html: str, entry_id: int | None) -> int
         entry = data.get("data") or {}
         if not entry.get("id"):
             raise LocketError(f"Locket did not return an entry id: {data}")
-        return int(entry["id"])
+        new_id = int(entry["id"])
+        return {"id": new_id, "base": "", "written": _content(new_id), "skipped": False}
 
+    target_id = int(target["id"])
+    current = str(target.get("content") or "")
+    if written is None:
+        cut = current.find(LEGACY_MARKER)
+        base = (current if cut < 0 else current[:cut]).rstrip()
+    elif not _same(current, written):
+        return {"id": target_id, "base": base or "", "written": written, "skipped": True}
+
+    update: dict[str, Any] = {"content": f"{base or ''}{html}"}
     tags = [str(t.get("name")) for t in target.get("tags") or [] if t.get("name")]
-    update: dict[str, Any] = {"content": merged_content(str(target.get("content") or ""), html)}
     if SERENA_TAG not in tags:
         update["tagNames"] = [*tags, SERENA_TAG]
     if str(target.get("title") or "").strip().lower() in PLACEHOLDER_TITLES:
         update["title"] = title
-    _request("PATCH", f"/api/v1/journal/{int(target['id'])}/", update)
-    return int(target["id"])
+    _request("PATCH", f"/api/v1/journal/{target_id}/", update)
+    return {"id": target_id, "base": base or "", "written": _content(target_id), "skipped": False}
