@@ -37,28 +37,12 @@ def _failed(text: str) -> dict[str, Any]:
       "what he has already said.",
       {"day": str}, annotations=_READ_ONLY)
 async def journal_day(args):
-    from core.journal import store
+    from core.journal import remote
 
-    day = str((args or {}).get("day") or "").strip()
-    if day:
-        record = store.load_day(day)
-        if record is None:
-            return _failed(f"there is no journal draft for {day}")
-    else:
-        open_days = store.open_days(limit=1)
-        if not open_days:
-            return _ok("no journal day is waiting on him")
-        record = open_days[0]
-    facts = record["facts"]
-    return _ok(json.dumps({
-        "day": record["day"],
-        "summary": record["summary"],
-        "people": [p["name"] for p in facts.get("people") or []],
-        "open_questions": [{"id": q["id"], "kind": q["kind"], "text": q["text"]}
-                           for q in store.unanswered(record)],
-        "his_answers": [a["answer"] for a in record["answers"]],
-        "unavailable_sources": sorted((facts.get("unavailable") or {}).keys()),
-    }, indent=2))
+    result = await asyncio.to_thread(remote.call, "day", {"day": str((args or {}).get("day") or "").strip()})
+    if "error" in result:
+        return _failed(result["error"])
+    return _ok(json.dumps(result, indent=2))
 
 
 @tool("journal_answer",
@@ -71,27 +55,21 @@ async def journal_day(args):
       {"day": str, "answer": str, "question_id": str, "place_name": str, "people": list},
       annotations=_WRITES)
 async def journal_answer(args):
-    from core.journal import nightly
+    from core.journal import remote
 
     args = args or {}
-    day = str(args.get("day") or "").strip()
-    if not day:
-        from core.journal import store
-
-        waiting = store.open_days(limit=1)
-        # An answer goes to the day that asked; anything else is about today.
-        day = waiting[0]["day"] if waiting and args.get("question_id") else nightly.today().isoformat()
     people = args.get("people") or []
     if not isinstance(people, list):
         people = [str(people)]
-    try:
-        result = await asyncio.to_thread(
-            nightly.record_answer, day, str(args.get("answer") or ""),
-            question_id=str(args.get("question_id") or ""),
-            place_name=str(args.get("place_name") or ""),
-            people=[str(p) for p in people])
-    except Exception as exc:
-        return _failed(f"his answer was NOT saved: {type(exc).__name__}: {exc}")
+    result = await asyncio.to_thread(remote.call, "answer", {
+        "day": str(args.get("day") or "").strip(),
+        "answer": str(args.get("answer") or ""),
+        "question_id": str(args.get("question_id") or ""),
+        "place_name": str(args.get("place_name") or ""),
+        "people": [str(p) for p in people],
+    })
+    if "error" in result:
+        return _failed(result["error"])
     return _ok(json.dumps(result))
 
 
