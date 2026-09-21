@@ -576,7 +576,7 @@ _LABEL_FILLER = re.compile(
     r"^\s*(?:in|for|on)\s+[\w-]+\s*(?:\([^)]*\))?\s*[,:-]?\s*", re.IGNORECASE)
 
 
-def _describe(brief: str) -> str:
+def _describe(brief: str) -> tuple[str, bool]:
     """Three to five words for what a task is doing, asked of her brain once.
 
     Falls back to the brief's own first words when the brain is unreachable,
@@ -600,10 +600,10 @@ def _describe(brief: str) -> str:
             said = str((answer or {}).get("say") or "") if isinstance(answer, dict) else ""
             words = re.sub(r"[^\w\s&/+-]", "", said.splitlines()[0] if said else "").lower().split()
             if 2 <= len(words) <= 7:
-                return " ".join(words[:6])
+                return " ".join(words[:6]), True
     except Exception:
         pass
-    return " ".join(_LABEL_FILLER.sub("", text).lower().split()[:5]) or "task"
+    return " ".join(_LABEL_FILLER.sub("", text).lower().split()[:5]) or "task", False
 
 
 def _task_label(task: dict[str, Any]) -> str:
@@ -635,11 +635,14 @@ def _task_label(task: dict[str, Any]) -> str:
             project = project[:1].upper() + project[1:]
         except Exception:
             project = ""
-        what = _describe(brief)
+        what, from_brain = _describe(brief)
         label = f"In {project} ({what})" if project else f"({what})"
-        with db:
-            db.execute("INSERT OR REPLACE INTO task_labels(task_id, label) VALUES (?, ?)",
-                       (task_id, label))
+        # Only her own label is kept. A stand-in from a brain that was down
+        # (or still starting) would otherwise stick to every later text.
+        if from_brain:
+            with db:
+                db.execute("INSERT OR REPLACE INTO task_labels(task_id, label) VALUES (?, ?)",
+                           (task_id, label))
     return label
 
 
