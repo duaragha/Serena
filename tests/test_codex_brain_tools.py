@@ -83,6 +83,8 @@ def test_production_registry_exposes_every_serena_tool_group() -> None:
         "serena_gideon.gideon_status",
         "serena_gideon.gideon_commitments",
         "serena_gideon.gideon_device_scene",
+        "serena_journal.journal_day",
+        "serena_journal.journal_answer",
     } <= names
     assert all(name.count(".") == 1 for name in names)
 
