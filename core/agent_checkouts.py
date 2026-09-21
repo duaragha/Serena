@@ -229,6 +229,7 @@ def deliver(checkout: TaskCheckout, *, task_id: int, brief: str, run_id: str) ->
                  f"origin/{checkout.default_branch}..HEAD").stdout.strip()
     if ahead == "0":
         return Delivery("no_changes", detail="the run finished without changing the repository")
+    bump_app_version(checkout)
     _git(path, "push", "--quiet", "--force-with-lease", "-u", "origin",
          f"HEAD:refs/heads/{checkout.branch}")
     owner, repo = github_slug(checkout.remote)
@@ -275,6 +276,75 @@ def _codemagic_token() -> str:
     return ""
 
 
+def _ship_rule(checkout: TaskCheckout) -> dict:
+    owner, repo = github_slug(checkout.remote)
+    rules = {str(k).lower(): v for k, v in (dispatch_config().get("ship") or {}).items()}
+    rule = rules.get(f"{owner}/{repo}".lower())
+    return rule if isinstance(rule, dict) else {}
+
+
+def _touches_app(checkout: TaskCheckout, rule: dict) -> bool:
+    paths = [str(p) for p in rule.get("paths") or [] if str(p).strip()]
+    if not paths:
+        return True
+    changed = _git(checkout.path, "diff", "--name-only",
+                   f"origin/{checkout.default_branch}...HEAD", check=False).stdout.split()
+    return any(name.startswith(prefix) for name in changed for prefix in paths)
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", str(version)))
+
+
+def bump_app_version(checkout: TaskCheckout) -> str:
+    """Raise the app's version above the default branch's, so SideStore sees an update.
+
+    SideStore only offers an install when the version string goes up, so a
+    merged app change that forgot to bump never reaches his phone. Nobody
+    should have to remember it: when the repository's ship rule names an
+    ``expo_app_json`` and the change touches the app, the task branch gets a
+    version one patch above whatever the default branch has *now*, and a
+    build number one above it. A branch that already bumped past it is left alone.
+    Returns the new version, or "" when nothing was bumped.
+    """
+
+    rule = _ship_rule(checkout)
+    relative = str(rule.get("expo_app_json") or "").strip()
+    if not relative or not _touches_app(checkout, rule):
+        return ""
+    path = checkout.path
+    _git(path, "fetch", "--quiet", "origin", checkout.default_branch, check=False)
+    upstream_text = _git(path, "show", f"origin/{checkout.default_branch}:{relative}",
+                         check=False).stdout
+    target = path / relative
+    try:
+        upstream = json.loads(upstream_text)["expo"]
+        ours = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+    expo = ours.get("expo") if isinstance(ours, dict) else None
+    if not isinstance(expo, dict):
+        return ""
+    base_version = str(upstream.get("version") or "0.0.0")
+    base_build = int(str((upstream.get("ios") or {}).get("buildNumber") or 0) or 0)
+    our_build = int(str((expo.get("ios") or {}).get("buildNumber") or 0) or 0)
+    if (_version_key(expo.get("version") or "") > _version_key(base_version)
+            and our_build > base_build):
+        return ""
+    parts = list(_version_key(base_version)) or [0, 0, 0]
+    parts[-1] += 1
+    version, build = ".".join(map(str, parts)), base_build + 1
+    expo["version"] = version
+    expo.setdefault("ios", {})["buildNumber"] = str(build)
+    if isinstance(expo.get("android"), dict) and "versionCode" in expo["android"]:
+        expo["android"]["versionCode"] = build
+    target.write_text(json.dumps(ours, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _git(path, "add", "--", relative)
+    _run(["git", "-C", str(path), *_identity(path), "commit", "--quiet",
+          "-m", f"chore(release): bump app to {version} (build {build}) for SideStore"])
+    return version
+
+
 def ship(checkout: TaskCheckout) -> str:
     """Start the repository's release build after a merge, when one is configured.
 
@@ -289,17 +359,9 @@ def ship(checkout: TaskCheckout) -> str:
 
     import urllib.request
 
-    owner, repo = github_slug(checkout.remote)
-    rules = {str(k).lower(): v for k, v in (dispatch_config().get("ship") or {}).items()}
-    rule = rules.get(f"{owner}/{repo}".lower())
-    if not isinstance(rule, dict) or not rule.get("codemagic_app_id"):
+    rule = _ship_rule(checkout)
+    if not rule.get("codemagic_app_id") or not _touches_app(checkout, rule):
         return ""
-    paths = [str(p) for p in rule.get("paths") or [] if str(p).strip()]
-    if paths:
-        changed = _git(checkout.path, "diff", "--name-only",
-                       f"origin/{checkout.default_branch}...HEAD", check=False).stdout.split()
-        if not any(name.startswith(prefix) for name in changed for prefix in paths):
-            return ""
     token = _codemagic_token()
     if not token:
         raise CheckoutError("a Codemagic build is configured but no API token is present")

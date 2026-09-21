@@ -936,3 +936,46 @@ def test_ship_builds_only_when_the_change_touches_app_paths(github, monkeypatch)
     _git("-c", "user.name=t", "-c", "user.email=t@t", "add", ".", cwd=checkout.path)
     _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "native", cwd=checkout.path)
     assert agent_checkouts.ship(checkout) == "codemagic build b2"
+
+
+def test_an_app_change_gets_a_version_above_main_so_sidestore_updates(github, monkeypatch):
+    import json
+
+    from core import agent_checkouts
+
+    app = {"expo": {"name": "Demo", "version": "0.1.88", "ios": {"buildNumber": "78"},
+                    "android": {"versionCode": 78}}}
+    seed = github.root / "seed"
+    (seed / "apps" / "mobile").mkdir(parents=True)
+    (seed / "apps" / "mobile" / "app.json").write_text(json.dumps(app, indent=2) + "\n", encoding="utf-8")
+    _git("-c", "user.name=t", "-c", "user.email=t@t", "add", ".", cwd=seed)
+    _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "app", cwd=seed)
+    _git("push", "origin", "main", cwd=seed)
+    (github.root / "dispatch.json").write_text(json.dumps({"ship": {"duaragha/demo": {
+        "paths": ["apps/mobile/"], "expo_app_json": "apps/mobile/app.json"}}}), encoding="utf-8")
+
+    def commit(checkout, name, text):
+        target = checkout.path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        _git("-c", "user.name=t", "-c", "user.email=t@t", "add", ".", cwd=checkout.path)
+        _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", name, cwd=checkout.path)
+
+    web = agent_checkouts.prepare(github.synced, 11, projects_root=github.projects)
+    commit(web, "web/page.txt", "site\n")
+    assert agent_checkouts.bump_app_version(web) == ""
+
+    mobile = agent_checkouts.prepare(github.synced, 12, projects_root=github.projects)
+    commit(mobile, "apps/mobile/Chat.tsx", "// chat\n")
+    # Main moved on while the task ran; the bump must clear the newest main, not the old one.
+    app["expo"]["version"], app["expo"]["ios"]["buildNumber"] = "0.1.90", "80"
+    (seed / "apps" / "mobile" / "app.json").write_text(json.dumps(app, indent=2) + "\n", encoding="utf-8")
+    _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-am", "other release", cwd=seed)
+    _git("push", "origin", "main", cwd=seed)
+
+    assert agent_checkouts.bump_app_version(mobile) == "0.1.91"
+    bumped = json.loads((mobile.path / "apps" / "mobile" / "app.json").read_text(encoding="utf-8"))
+    assert bumped["expo"]["ios"]["buildNumber"] == "81"
+    assert bumped["expo"]["android"]["versionCode"] == 81
+    # Already ahead of main: a second delivery attempt leaves it alone.
+    assert agent_checkouts.bump_app_version(mobile) == ""
