@@ -14,7 +14,7 @@ Machine-readable annotations are in `local-policy.json`. They enrich automatical
 ## Identity and continuity
 
 - Unified's canonical bundle ID is `dev.unifiedinbox.mobile`. SideStore may append a signing-team suffix to the installed ID; compare its `ALTBundleIdentifier` when available.
-- Unified's SideStore source is `https://raw.githubusercontent.com/duaragha/unified-inbox-releases/main/sidestore-source.json`.
+- Unified's SideStore source is `https://raw.githubusercontent.com/duaragha/unified-releases/main/sidestore-source.json`.
 - Preserve bundle IDs during upgrades. Do not rename an identifier merely to remove old branding.
 - An in-place update must retain the application container. Secure credentials can still become inaccessible when a free-profile re-sign changes a Keychain access group, so validate login/pairing after an update.
 
