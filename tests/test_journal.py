@@ -171,10 +171,6 @@ class TestHisAnswers:
             nightly.record_answer("2026-09-20", "x", question_id="where-999")
         assert written == []
 
-    def test_an_answer_for_a_day_with_no_draft_is_refused(self, written):
-        with pytest.raises(nightly.JournalError):
-            nightly.record_answer("2026-01-01", "anything")
-
     def test_open_days_are_the_ones_still_waiting_on_him(self, written):
         self._seed()
         assert [d["day"] for d in store.open_days()] == ["2026-09-20"]
@@ -221,16 +217,30 @@ class TestWhenItRuns:
 
         return calls, at, policy
 
-    def test_it_sends_today_after_half_past_nine(self, clock):
+    def test_it_sends_today_at_quarter_to_midnight_even_in_quiet_hours(self, clock):
+        """He picked 11:45pm; quiet hours start at 10 and must not hold it."""
+
+        calls, at, policy = clock
+        policy.quiet = True
+        at(23, 47)
+        assert [d.isoformat() for d in calls["nightly"]] == ["2026-09-21"]
+
+    def test_not_before_quarter_to_midnight(self, clock):
         calls, at, _ = clock
         store.save_day("2026-09-20", sent_at=1.0)
-        at(21, 35)
-        assert [d.isoformat() for d in calls["nightly"]] == ["2026-09-21"]
+        at(23, 40)
+        assert calls["nightly"] == []
+
+    def test_a_tick_just_after_midnight_still_sends_the_day_that_ended(self, clock):
+        calls, at, policy = clock
+        policy.quiet = True
+        at(0, 10)
+        assert [d.isoformat() for d in calls["nightly"]] == ["2026-09-20"]
 
     def test_it_does_not_send_twice(self, clock):
         calls, at, _ = clock
         store.save_day("2026-09-21", sent_at=1.0)
-        at(21, 50)
+        at(23, 55)
         assert calls["nightly"] == []
 
     def test_a_missed_day_is_texted_in_the_morning_without_a_call(self, clock):
@@ -238,10 +248,10 @@ class TestWhenItRuns:
         at(9, 0)
         assert [(d.isoformat(), call) for d, call in calls["send"]] == [("2026-09-20", False)]
 
-    def test_nothing_goes_out_in_quiet_hours(self, clock):
+    def test_the_morning_catch_up_waits_for_quiet_hours_to_end(self, clock):
         calls, at, policy = clock
         policy.quiet = True
-        at(23, 0)
+        at(7, 0)
         assert calls == {"nightly": [], "build": [], "send": []}
 
 
@@ -445,3 +455,22 @@ def test_the_codex_fallback_sends_the_prompt_on_stdin(monkeypatch):
     assert model._codex(huge, "sys") == "ok"
     assert all(len(a) < 1000 for a in seen["args"])
     assert huge in seen["input"]
+
+
+def test_he_can_add_to_a_day_before_she_has_drafted_it(monkeypatch):
+    """'put in today's journal that...' at 2pm, hours before the nightly draft."""
+
+    writes = []
+    monkeypatch.setattr(nightly.locket, "write_entry",
+                        lambda **kw: writes.append(kw) or {"id": 5, "base": "", "written": kw["html"],
+                                                           "skipped": False})
+    monkeypatch.setattr(draft, "_ask", lambda _p: "")
+    result = nightly.record_answer("2026-09-21", "got the dogs today")
+    assert result["saved"] and result["entry_id"] == 5
+    assert "got the dogs today" in writes[-1]["html"]
+    assert store.load_day("2026-09-21")["answers"][0]["answer"] == "got the dogs today"
+
+
+def test_an_answer_to_a_question_still_needs_the_draft_that_asked_it():
+    with pytest.raises(nightly.JournalError):
+        nightly.record_answer("2026-09-21", "x", question_id="where-1")
