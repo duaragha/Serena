@@ -474,3 +474,59 @@ def test_he_can_add_to_a_day_before_she_has_drafted_it(monkeypatch):
 def test_an_answer_to_a_question_still_needs_the_draft_that_asked_it():
     with pytest.raises(nightly.JournalError):
         nightly.record_answer("2026-09-21", "x", question_id="where-1")
+
+
+class TestFromAnyMachine:
+    """The laptop's orb reaches the one journal, on the PC."""
+
+    def test_the_pc_runs_it_locally_and_everything_else_proxies(self, monkeypatch, tmp_path):
+        from core.journal import remote
+
+        monkeypatch.setenv("SERENA_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(remote.sys, "platform", "win32")
+        assert remote.home() == "local"
+        monkeypatch.setattr(remote.sys, "platform", "linux")
+        assert remote.home() == "pc"
+        (tmp_path / "journal.json").write_text('{"home": "local"}')
+        assert remote.home() == "local"
+
+    def test_off_the_pc_the_operation_runs_there_over_ssh(self, monkeypatch, tmp_path):
+        import subprocess
+
+        from core.journal import remote
+
+        monkeypatch.setenv("SERENA_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(remote.sys, "platform", "linux")
+        seen = {}
+
+        class Done:
+            returncode = 0
+            stderr = ""
+            stdout = 'noise\nJOURNAL-RESULT {"saved": true, "day": "2026-09-21"}\n'
+
+        def run(args, **kwargs):
+            seen["args"], seen["input"] = args, kwargs["input"]
+            return Done()
+
+        monkeypatch.setattr(subprocess, "run", run)
+        result = remote.call("answer", {"day": "2026-09-21", "answer": 'got "the" dogs'})
+        assert result == {"saved": True, "day": "2026-09-21"}
+        assert seen["args"][:4] == ["ssh", "-o", "BatchMode=yes", "-o"] and seen["args"][-1] == "-"
+        assert "got" in seen["input"], "the request rides in the script, not on argv"
+        compile(seen["input"], "<runner>", "exec")
+
+    def test_an_unreachable_pc_is_an_error_not_a_silent_save(self, monkeypatch, tmp_path):
+        import subprocess
+
+        from core.journal import remote
+
+        monkeypatch.setenv("SERENA_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(remote.sys, "platform", "linux")
+
+        class Done:
+            returncode = 255
+            stderr = "ssh: connect to host pc port 22: Connection timed out"
+            stdout = ""
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done())
+        assert "error" in remote.call("answer", {"answer": "x"})
