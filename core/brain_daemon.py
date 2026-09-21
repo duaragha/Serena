@@ -2181,6 +2181,8 @@ def _build_agent_options(
     vm_tool_names: list[str] | None = None,
     walmart_tools=None,
     walmart_tool_names: list[str] | None = None,
+    journal_tools=None,
+    journal_tool_names: list[str] | None = None,
     session_id: str | None = None,
 ):
     """Build the narrow, unattended options used by every daemon session."""
@@ -2204,6 +2206,7 @@ def _build_agent_options(
         *(gideon_tool_names or []),
         *(vm_tool_names or []),
         *(walmart_tool_names or []),
+        *(journal_tool_names or []),
     ]
     if laptop_tools is not None:
         mcp_servers["serena-laptop"] = laptop_tools
@@ -2223,6 +2226,8 @@ def _build_agent_options(
         mcp_servers["serena-vm"] = vm_tools
     if walmart_tools is not None:
         mcp_servers["serena-walmart"] = walmart_tools
+    if journal_tools is not None:
+        mcp_servers["serena-journal"] = journal_tools
     remote_servers, remote_allow = _remote_mcp_servers()
     mcp_servers.update(remote_servers)
     print(f"[brain] {len(mcp_servers)} mcp servers, "
@@ -2339,6 +2344,8 @@ class ResidentClientManager:
         vm_tool_names: list[str] | None = None,
         walmart_tools_factory=None,
         walmart_tool_names: list[str] | None = None,
+        journal_tools_factory=None,
+        journal_tool_names: list[str] | None = None,
         journal: RecentThreadJournal | None = None,
         lifetime: LifetimeLedger | None = None,
         voice_transcripts: VoiceTranscriptStore | None = None,
@@ -2372,6 +2379,8 @@ class ResidentClientManager:
         self.vm_tool_names = list(vm_tool_names or [])
         self.walmart_tools_factory = walmart_tools_factory
         self.walmart_tool_names = list(walmart_tool_names or [])
+        self.journal_tools_factory = journal_tools_factory
+        self.journal_tool_names = list(journal_tool_names or [])
         self.journal = journal or RecentThreadJournal()
         self.lifetime = lifetime or LifetimeLedger()
         self.voice_transcripts = voice_transcripts or VoiceTranscriptStore()
@@ -3001,6 +3010,12 @@ class ResidentClientManager:
                 else None
             ),
             walmart_tool_names=self.walmart_tool_names,
+            journal_tools=(
+                self.journal_tools_factory()
+                if self.journal_tools_factory is not None
+                else None
+            ),
+            journal_tool_names=self.journal_tool_names,
             session_id=requested_session_id,
         )
         secure_directory(Path(options.cwd))
@@ -3577,6 +3592,7 @@ async def _run_daemon() -> None:
     from core.brain_document_tools import DOCUMENT_TOOL_NAMES, document_tools_server
     from core.brain_fleet_tools import FLEET_TOOL_NAMES, fleet_tools_server
     from core.brain_gideon_tools import GIDEON_TOOL_NAMES, gideon_tools_server
+    from core.brain_journal_tools import JOURNAL_TOOL_NAMES, journal_tools_server
     from core.brain_laptop_tools import LAPTOP_TOOL_NAMES, laptop_tools_server
     from core.brain_memory_tools import MEMORY_TOOL_NAMES, memory_tools_server
     from core.brain_tools import BRAIN_TOOL_NAMES, brain_tools_server
@@ -3615,6 +3631,8 @@ async def _run_daemon() -> None:
         vm_tool_names=VM_TOOL_NAMES,
         walmart_tools_factory=walmart_tools_server,
         walmart_tool_names=WALMART_TOOL_NAMES,
+        journal_tools_factory=journal_tools_server,
+        journal_tool_names=JOURNAL_TOOL_NAMES,
         codex_brain_factory=lambda: CodexBrainClient(
             cwd=BRAIN_CWD,
             developer_instructions=_persona_context(),
