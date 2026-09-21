@@ -9,15 +9,16 @@ is the one thing this journal must never contain.
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import html
 import json
 import re
 from typing import Any
 
-MODEL = "sonnet"
 MAX_QUESTIONS = 3
+# Her section of an entry starts here and runs to the end. Everything above it
+# is his and is never touched; see core.journal.locket.write_entry.
+MARKER = "<p><em>Drafted by Serena"
 # Worth asking about. A 20-minute stop is in the timeline; only a longer one
 # is worth interrupting him to name.
 ASK_ABOUT_VISIT_MINUTES = 45
@@ -62,7 +63,13 @@ def questions(facts: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _timeline(facts: dict[str, Any]) -> list[tuple[str, str]]:
-    """(sort key, line) pairs, times as h:mmam so they sort within a day."""
+    """Where he was, in order -- only once places have names.
+
+    A timeline of "1:59pm · drive, 36.7 km" said nothing he could not already
+    see in the Auto-logged panel, and he called it useless until it can say
+    where. So a row appears only when it names a place: a visit that has a
+    name, or a drive whose ends are known places.
+    """
 
     def key(clock: str) -> str:
         m = re.match(r"(\d+):(\d+)(am|pm)", clock or "")
@@ -73,13 +80,11 @@ def _timeline(facts: dict[str, Any]) -> list[tuple[str, str]]:
 
     rows: list[tuple[str, str]] = []
     for v in facts.get("visits") or []:
-        where = v.get("place") or "somewhere unnamed"
-        rows.append((key(v["arrived"]), f"{v['arrived']}–{v['departed'] or 'late'} · {where}"))
+        if v.get("place"):
+            rows.append((key(v["arrived"]), f"{v['arrived']}–{v['departed'] or 'late'} · {v['place']}"))
     for d in facts.get("drives") or []:
-        route = " → ".join(x for x in (d.get("from"), d.get("to")) if x) or "drive"
-        rows.append((key(d["start"]), f"{d['start']} · {route}, {d.get('km')} km, {d.get('minutes')} min"))
-    for w in facts.get("workouts") or []:
-        rows.append((key(w["start"]), f"{w['start']} · {w['name']}, {w.get('sets')} sets"))
+        if d.get("from") and d.get("to") and d["from"] != d["to"]:
+            rows.append((key(d["start"]), f"{d['start']} · drove {d['from']} → {d['to']}"))
     return sorted(rows)
 
 
@@ -88,20 +93,20 @@ def _and(names: list[str]) -> str:
 
 
 def template_summary(facts: dict[str, Any]) -> str:
+    """The fallback summary: people, named places and work -- never what is auto-logged."""
+
     parts = []
     people = facts.get("people") or []
     if people:
         parts.append(f"You spent time with {_and([p['name'] for p in people])}.")
-    if facts.get("workouts"):
-        parts.append(f"Worked out ({facts['workouts'][0]['name']}).")
-    if facts.get("drives"):
-        km = sum(float(d.get("km") or 0) for d in facts["drives"])
-        parts.append(f"Drove {len(facts['drives'])} time{'s' if len(facts['drives']) > 1 else ''}, {km:.0f} km in all.")
+    places = [v["place"] for v in facts.get("visits") or [] if v.get("place")]
+    if places:
+        parts.append(f"You were at {_and(list(dict.fromkeys(places)))}.")
     if facts.get("commits"):
         total = sum(c["count"] for c in facts["commits"])
         repos = _and([c["repo"] for c in facts["commits"][:3]])
         parts.append(f"{total} commit{'s' if total != 1 else ''} in {repos}.")
-    return " ".join(parts) or "Nothing was recorded for this day."
+    return " ".join(parts)
 
 
 def faithful(summary: str, facts: dict[str, Any]) -> bool:
@@ -116,22 +121,18 @@ def faithful(summary: str, facts: dict[str, Any]) -> bool:
     return True
 
 
-async def _ask(prompt: str) -> str:
-    from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, query
+def _ask(prompt: str) -> str:
+    from core.journal.model import ask
 
-    options = ClaudeAgentOptions(model=MODEL, tools=[], allowed_tools=[], setting_sources=[],
-                                 max_turns=1, system_prompt="You write short, plain journal summaries.")
-    chunks: list[str] = []
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            chunks.extend(b.text for b in message.content if isinstance(b, TextBlock))
-    return "".join(chunks).strip()
+    return ask(prompt, system="You write short, plain journal summaries.")
 
 
 def _prompt_facts(facts: dict[str, Any]) -> dict[str, Any]:
     """The facts a summary may draw on: no chat quotes, no dropouts, no coordinates."""
 
-    keep = ("day", "people", "visits", "drives", "workouts", "activity", "commits")
+    # Drives, workouts and shows already sit in the entry's Auto-logged panel;
+    # he asked for none of it to be written again.
+    keep = ("day", "people", "visits", "commits")
     trimmed = copy.deepcopy({k: facts.get(k) for k in keep if facts.get(k)})
     for p in trimmed.get("people") or []:
         p.pop("evidence", None)
@@ -160,7 +161,7 @@ def summary(facts: dict[str, Any], answers: list[dict[str, Any]] | None = None) 
         f"FACTS: {json.dumps(trimmed, ensure_ascii=False)}\n\nHIS ANSWERS: {json.dumps(said, ensure_ascii=False)}"
     )
     try:
-        text = asyncio.run(_ask(prompt))
+        text = _ask(prompt)
     except Exception:
         return template_summary(facts)
     # Checked against the same trimmed facts the model saw. The chat evidence
@@ -184,11 +185,11 @@ def title(day: str) -> str:
 
 def render_html(day: str, facts: dict[str, Any], text: str,
                 answers: list[dict[str, Any]], questions_: list[dict[str, Any]]) -> str:
-    parts = [
-        "<p><em>Drafted by Serena from your chats, drives and location. "
-        "Anything under “In your words” is exactly what you said.</em></p>",
-        f"<p>{_e(text)}</p>",
-    ]
+    parts = [MARKER + " from your chats and location. Anything under \u201cIn your words\u201d "
+             "is exactly what you said. Write above this line; everything below it is "
+             "hers and is rewritten as answers come in.</em></p>"]
+    if text:
+        parts.append(f"<p>{_e(text)}</p>")
     people = facts.get("people") or []
     if people:
         items = "".join(
@@ -202,10 +203,6 @@ def render_html(day: str, facts: dict[str, Any], text: str,
         items = "".join(f"<li>{_e(c['repo'])}: {c['count']} commit{'s' if c['count'] != 1 else ''}</li>"
                         for c in facts["commits"])
         parts.append(f"<h3>Work</h3><ul>{items}</ul>")
-    if facts.get("activity"):
-        items = "".join(f"<li>{_e(a['summary'])}</li>" for a in facts["activity"] if a.get("summary"))
-        if items:
-            parts.append(f"<h3>Also</h3><ul>{items}</ul>")
     if answers:
         items = "".join(f"<li>{_e(a['answer'])}</li>" for a in answers if a.get("answer"))
         parts.append(f"<h3>In your words</h3><ul>{items}</ul>")
