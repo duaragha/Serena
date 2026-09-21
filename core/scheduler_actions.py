@@ -572,6 +572,77 @@ def _spoken_summary(task_id: int, final: str, headline: str) -> str:
     return f"hey, task {task_id} got stuck: {headline}. i texted you what happened."
 
 
+_LABEL_FILLER = re.compile(
+    r"^\s*(?:in|for|on)\s+[\w-]+\s*(?:\([^)]*\))?\s*[,:-]?\s*", re.IGNORECASE)
+
+
+def _describe(brief: str) -> str:
+    """Three to five words for what a task is doing, asked of her brain once.
+
+    Falls back to the brief's own first words when the brain is unreachable,
+    so a text is never held back waiting on a label.
+    """
+
+    text = " ".join(brief.split())
+    try:
+        from core import phone_intent
+
+        endpoint = phone_intent._endpoint()
+        if endpoint is not None:
+            url, token = endpoint
+            answer = phone_intent._post(url, {
+                "text": ("Label this coding task in 3 to 5 lowercase words for a text "
+                         "message, like \"liquid glass ui in chats\" or \"fix search "
+                         "focus on mobile\". Reply with the words only, no project name, "
+                         f"no punctuation.\n\nTask: {text[:1500]}"),
+                "protocol": "plain",
+            }, token)
+            said = str((answer or {}).get("say") or "") if isinstance(answer, dict) else ""
+            words = re.sub(r"[^\w\s&/+-]", "", said.splitlines()[0] if said else "").lower().split()
+            if 2 <= len(words) <= 7:
+                return " ".join(words[:6])
+    except Exception:
+        pass
+    return " ".join(_LABEL_FILLER.sub("", text).lower().split()[:5]) or "task"
+
+
+def _task_label(task: dict[str, Any]) -> str:
+    """'In Unified (liquid glass ui in chats)': the project, then what it's doing.
+
+    Worked out once per task and kept, so every text about it says the same thing.
+    """
+
+    import sqlite3
+    from contextlib import closing
+    from pathlib import Path
+
+    from memory import store
+
+    task_id = int(task["id"])
+    path = store.MEMORY_DIR / ".fleet-dispatch.sqlite3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path, timeout=5)) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS task_labels (task_id INTEGER PRIMARY KEY, label TEXT)")
+        row = db.execute("SELECT label FROM task_labels WHERE task_id = ?", (task_id,)).fetchone()
+        if row:
+            return str(row[0])
+        brief = str(task.get("content") or "")
+        try:
+            from core.coding_job_contract import resolve_repository_root
+
+            project = Path(resolve_repository_root(
+                brief, project_hint=task.get("project_hint") or "")).name
+            project = project[:1].upper() + project[1:]
+        except Exception:
+            project = ""
+        what = _describe(brief)
+        label = f"In {project} ({what})" if project else f"({what})"
+        with db:
+            db.execute("INSERT OR REPLACE INTO task_labels(task_id, label) VALUES (?, ?)",
+                       (task_id, label))
+    return label
+
+
 # What each Fleet phase means to him. The last phase has no text of its own:
 # the "PR ready" / "merged" message that follows it already says it finished.
 PHASE_LABELS = {"discover": "research", "execute": "code", "verify": "review"}
@@ -581,14 +652,15 @@ def _announce_finished_phases(task: dict, run_id: str, run: dict) -> list[str]:
     """Text him once as each phase of a dispatched run completes."""
 
     phases = [p for p in (run or {}).get("phases") or [] if isinstance(p, dict)]
-    headline = " ".join(str(task.get("content") or "").split())[:60]
     sent = []
+    label = ""
     for number, phase in enumerate(phases, start=1):
         name = str(phase.get("name") or "")
         if phase.get("state") != "completed" or name not in PHASE_LABELS:
             continue
+        label = label or _task_label(task)
         if _notify_once(
-            f"#{task['id']} {PHASE_LABELS[name]} done ({number}/{len(phases)}): {headline}",
+            f"#{task['id']} {PHASE_LABELS[name]} done ({number}/{len(phases)}): {label}",
             f"task:{task['id']}:phase:{run_id}:{name}",
             answers_request=_he_asked(task),
         ):
@@ -642,7 +714,7 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             continue
         task_id = int(task["id"])
         brief = str(task["content"])
-        headline = " ".join(brief.split())[:80]
+        headline = _task_label(task)
         record: dict[str, Any] = {"task_id": task_id, "run_state": state}
         checkout = None
         try:
@@ -663,8 +735,7 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
                 reason = " ".join(str(error).split())[:300]
                 stuck = hashlib.sha256(reason.encode("utf-8")).hexdigest()[:12]
                 record["notified"] = _notify_once(
-                    f"#{task_id} is built and its tests passed, but i can't deliver it "
-                    f"({headline}): {reason}",
+                    f"#{task_id} built, can't deliver: {headline}. {reason}",
                     f"task:{task_id}:delivery:{stuck}",
                     answers_request=_he_asked(task),
                 )
@@ -673,7 +744,7 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             record.update(delivery=delivery.status, url=delivery.url)
             if delivery.status == "no_changes":
                 result, message = "done: no changes needed", (
-                    f"#{task_id} finished with no code changes ({headline}).")
+                    f"#{task_id} done, no code changes needed: {headline}")
             elif delivery.status == "merged":
                 try:
                     shipped = agent_checkouts.ship(checkout)
@@ -682,16 +753,16 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
                 record["shipped"] = shipped
                 tail = f"; {shipped}" if shipped else ""
                 result, message = f"merged: {delivery.url}{tail}", (
-                    f"#{task_id} done and merged{tail}: {delivery.url}")
+                    f"#{task_id} merged (4/4): {headline}{tail}. {delivery.url}")
             else:
                 note = f" ({delivery.detail})" if delivery.detail else ""
                 result, message = f"pr: {delivery.url}", (
-                    f"#{task_id} done, PR ready for you{note}: {delivery.url}")
+                    f"#{task_id} PR ready (4/4): {headline}{note}. {delivery.url}")
             final = "done"
         else:
             reason = str(run.get("error") or state)[:200]
             result = f"{state}: {reason}"
-            message = f"#{task_id} {state} ({headline}). {reason}"
+            message = f"#{task_id} {state}: {headline}. {reason}"
             final = "blocked"
         if store.finish_task_run(task_id, run_id, final, result):
             record["notified"] = _notify_phone(

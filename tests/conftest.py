@@ -34,6 +34,17 @@ def _fleet_config_is_the_builtin_one(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _no_live_brain(tmp_path, monkeypatch):
+    """No test reaches the brain daemon running on this machine.
+
+    Task texts ask her brain for a short label; with the real brain.json in
+    reach, a unit test would post to a live daemon and wait on a model.
+    Tests that exercise the brain point SERENA_BRAIN_FILE somewhere themselves.
+    """
+    monkeypatch.setenv("SERENA_BRAIN_FILE", str(tmp_path / "no-brain.json"))
+
+
+@pytest.fixture(autouse=True)
 def fleet_private_proof_state(request, tmp_path, monkeypatch):
     """Fleet fixtures never acquire operator locks or write operator artifacts."""
     if not request.node.path.name.startswith('test_fleet'):

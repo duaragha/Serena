@@ -631,7 +631,7 @@ def test_a_delivery_it_cannot_finish_is_not_retried_in_silence(queue, monkeypatc
     reconcile = scheduler_actions.REVIEWED_ACTIONS["serena.fleet.reconcile"]
     first = reconcile({})
 
-    assert texts and "can't deliver it" in texts[0][1]
+    assert texts and "can't deliver" in texts[0][1]
     assert "token is invalid" in texts[0][1]
     assert texts[0][2] is True, "he asked for this task, so it must not wait for morning"
     # It stays running so the next tick delivers once he clears the cause.
@@ -979,3 +979,23 @@ def test_an_app_change_gets_a_version_above_main_so_sidestore_updates(github, mo
     assert bumped["expo"]["android"]["versionCode"] == 81
     # Already ahead of main: a second delivery attempt leaves it alone.
     assert agent_checkouts.bump_app_version(mobile) == ""
+
+
+def test_task_texts_name_the_project_and_what_it_does(queue, monkeypatch):
+    from core import phone_intent, scheduler_actions
+
+    task = store.enqueue_task(
+        "In Unified (personal_projects/unified, apps/mobile), redesign the chat view like iMessage",
+        source_id="imessage:l")
+    monkeypatch.setattr(scheduler_actions, "_describe", lambda brief: "liquid glass ui in chats")
+    from core import coding_job_contract
+    monkeypatch.setattr(coding_job_contract, "resolve_repository_root",
+                        lambda brief, **kw: Path("/p/unified"))
+    assert scheduler_actions._task_label(task) == "In Unified (liquid glass ui in chats)"
+    # Worked out once: a later text reuses it even if the describer would now say otherwise.
+    monkeypatch.setattr(scheduler_actions, "_describe", lambda brief: "something else")
+    assert scheduler_actions._task_label(task) == "In Unified (liquid glass ui in chats)"
+    # With the brain down, the brief's own words stand in, minus the "In X (...)," lead-in.
+    monkeypatch.undo()
+    monkeypatch.setattr(phone_intent, "_endpoint", lambda: None)
+    assert scheduler_actions._describe(task["content"]) == "redesign the chat view like"
