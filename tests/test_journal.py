@@ -64,7 +64,7 @@ class TestTheSummaryCannotInvent:
         assert not draft.faithful("You went to Farooj with Saad.", trimmed)
 
     def test_an_unfaithful_model_reply_falls_back_to_the_template(self, monkeypatch):
-        async def invents(_prompt):
+        def invents(_prompt):
             return "You had dinner with Saad and Hasba at Farooj."
 
         monkeypatch.setattr(draft, "_ask", invents)
@@ -73,7 +73,7 @@ class TestTheSummaryCannotInvent:
         assert "Saad" in text
 
     def test_summarising_does_not_strip_the_evidence_from_the_callers_facts(self, monkeypatch):
-        async def plain(_prompt):
+        def plain(_prompt):
             return "You saw Saad."
 
         monkeypatch.setattr(draft, "_ask", plain)
@@ -136,7 +136,7 @@ class TestHisAnswers:
             entries.append({"day": day, "html": html, "entry_id": entry_id})
             return entry_id or 77
 
-        async def plain(_prompt):
+        def plain(_prompt):
             return "You saw Saad."
 
         monkeypatch.setattr(nightly.locket, "write_entry", write_entry)
@@ -302,10 +302,81 @@ def test_every_locket_path_carries_its_trailing_slash(monkeypatch):
 
     def fake(method, path, body=None):
         seen.append(path)
-        return {"success": True, "data": {"id": 5}}
+        return {"success": True, "data": [] if method == "GET" and "dateFrom" in path else {"id": 5}}
 
     monkeypatch.setattr(locket, "_request", fake)
     locket.day_facts("2026-09-20")
     locket.write_entry(day="2026-09-20", title="t", html="h", entry_id=None)
-    locket.write_entry(day="2026-09-20", title="t", html="h", entry_id=5)
     assert all(path.split("?")[0].endswith("/") for path in seen), seen
+
+
+class TestOneEntryPerDay:
+    """Locket already makes the day's entry; she writes into it, never beside it."""
+
+    @pytest.fixture
+    def locket_api(self, monkeypatch):
+        from core.journal import locket
+
+        state = {"entries": [], "calls": []}
+
+        def fake(method, path, body=None):
+            state["calls"].append((method, path, body))
+            if method == "GET":
+                return {"success": True, "data": state["entries"]}
+            if method == "POST":
+                return {"success": True, "data": {"id": 99}}
+            return {"success": True}
+
+        monkeypatch.setattr(locket, "_request", fake)
+        return locket, state
+
+    def test_the_auto_logged_entry_is_used_instead_of_adding_a_second(self, locket_api):
+        locket, state = locket_api
+        state["entries"] = [{"id": 2187, "entryDate": "2026-09-20", "title": "Auto-logged",
+                             "content": "", "tags": []}]
+        section = draft.MARKER + " x</em></p><p>You saw Saad.</p>"
+        assert locket.write_entry(day="2026-09-20", title="Sunday, September 20",
+                                  html=section, entry_id=None) == 2187
+        methods = [m for m, *_ in state["calls"]]
+        assert "POST" not in methods
+        _, path, body = state["calls"][-1]
+        assert path == "/api/v1/journal/2187/"
+        assert body["content"] == section
+        assert body["title"] == "Sunday, September 20", "a placeholder title is replaced"
+        assert body["tagNames"] == ["serena"]
+
+    def test_his_own_words_and_title_and_tags_survive(self, locket_api):
+        locket, state = locket_api
+        old = draft.MARKER + " x</em></p><p>old draft</p>"
+        state["entries"] = [{"id": 7, "entryDate": "2026-09-20", "title": "good day",
+                             "content": "<p>i wrote this</p>" + old, "tags": [{"name": "friends"}]}]
+        new = draft.MARKER + " x</em></p><p>new draft</p>"
+        locket.write_entry(day="2026-09-20", title="Sunday", html=new, entry_id=7)
+        body = state["calls"][-1][2]
+        assert body["content"] == "<p>i wrote this</p>" + new
+        assert "title" not in body
+        assert body["tagNames"] == ["friends", "serena"]
+
+    def test_a_day_with_no_entry_gets_one(self, locket_api):
+        locket, state = locket_api
+        assert locket.write_entry(day="2026-09-20", title="t", html="h", entry_id=None) == 99
+        assert state["calls"][-1][0] == "POST"
+
+
+def test_nothing_already_auto_logged_is_written_again():
+    """Drives, workouts and shows are in Locket's Auto-logged panel already."""
+
+    facts = {"day": "2026-09-20", "people": [{"name": "Saad"}],
+             "drives": [{"start": "1:59pm", "km": 36.7, "minutes": 78, "from": "", "to": ""}],
+             "workouts": [{"name": "Pull — Hypertrophy", "start": "10:45pm", "sets": 15}],
+             "activity": [{"kind": "tv", "summary": "Malcolm in the Middle"}]}
+    html = draft.render_html("2026-09-20", facts, draft.template_summary(facts), [], [])
+    for repeated in ("Pull", "Malcolm", "36.7", "drive"):
+        assert repeated not in html
+    assert set(draft._prompt_facts(facts)) <= {"day", "people", "visits", "commits"}
+
+
+def test_the_timeline_only_shows_places_with_names():
+    facts = {"visits": [{"place": "", "arrived": "2:10pm", "departed": "5:40pm"},
+                        {"place": "MOTW Cafe", "arrived": "6:00pm", "departed": "8:00pm"}]}
+    assert [line for _, line in draft._timeline(facts)] == ["6:00pm–8:00pm · MOTW Cafe"]

@@ -66,17 +66,60 @@ def day_facts(day: str, tz: str = "America/Toronto") -> dict[str, Any]:
     return data
 
 
-def write_entry(*, day: str, title: str, html: str, entry_id: int | None) -> int:
-    """Create her entry for the day, or update the one she already wrote."""
+PLACEHOLDER_TITLES = {"", "auto-logged"}
 
-    if entry_id:
-        _request("PATCH", f"/api/v1/journal/{int(entry_id)}/", {"title": title, "content": html})
-        return int(entry_id)
-    data = _request("POST", "/api/v1/journal/", {
-        "title": title, "content": html, "entryDate": day, "entryTime": "22:00",
-        "tagNames": [SERENA_TAG],
-    })
-    entry = data.get("data") or {}
-    if not entry.get("id"):
-        raise LocketError(f"Locket did not return an entry id: {data}")
-    return int(entry["id"])
+
+def entries_on(day: str) -> list[dict[str, Any]]:
+    query = urllib.parse.urlencode({"dateFrom": day, "dateTo": day, "limit": 50})
+    data = _request("GET", f"/api/v1/journal/?{query}")
+    rows = [e for e in data.get("data") or [] if str(e.get("entryDate") or "")[:10] == day]
+    return sorted(rows, key=lambda e: int(e.get("id") or 0))
+
+
+def merged_content(existing: str, section: str) -> str:
+    """His writing, untouched, followed by her section.
+
+    Her section starts at the marker and runs to the end of the entry, so it
+    can be rewritten as answers arrive without ever touching a word he wrote
+    above it.
+    """
+
+    from core.journal.draft import MARKER
+
+    existing = existing or ""
+    cut = existing.find(MARKER)
+    mine = (existing if cut < 0 else existing[:cut]).rstrip()
+    return f"{mine}{section}" if mine else section
+
+
+def write_entry(*, day: str, title: str, html: str, entry_id: int | None) -> int:
+    """Write her section into the day's entry. One entry per day, always.
+
+    Locket already makes an entry for most days (the Auto-logged one), and the
+    first version of this created a second entry beside it -- two cards for
+    one Sunday. Now she writes into the day's existing entry, keeps whatever
+    he wrote there, keeps his tags, and only replaces a placeholder title.
+    A day with no entry at all gets one.
+    """
+
+    existing = entries_on(day)
+    target = next((e for e in existing if int(e.get("id") or 0) == int(entry_id or 0)), None)
+    target = target or (existing[0] if existing else None)
+    if target is None:
+        data = _request("POST", "/api/v1/journal/", {
+            "title": title, "content": html, "entryDate": day, "entryTime": "22:00",
+            "tagNames": [SERENA_TAG],
+        })
+        entry = data.get("data") or {}
+        if not entry.get("id"):
+            raise LocketError(f"Locket did not return an entry id: {data}")
+        return int(entry["id"])
+
+    tags = [str(t.get("name")) for t in target.get("tags") or [] if t.get("name")]
+    update: dict[str, Any] = {"content": merged_content(str(target.get("content") or ""), html)}
+    if SERENA_TAG not in tags:
+        update["tagNames"] = [*tags, SERENA_TAG]
+    if str(target.get("title") or "").strip().lower() in PLACEHOLDER_TITLES:
+        update["title"] = title
+    _request("PATCH", f"/api/v1/journal/{int(target['id'])}/", update)
+    return int(target["id"])

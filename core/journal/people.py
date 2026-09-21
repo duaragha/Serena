@@ -25,7 +25,6 @@ catch mechanically.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from dataclasses import asdict, dataclass, field
@@ -161,18 +160,10 @@ TRANSCRIPT:
 """
 
 
-async def _ask(prompt: str) -> str:
-    from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, query
+def _ask(prompt: str) -> str:
+    from core.journal.model import ask
 
-    options = ClaudeAgentOptions(
-        model=MODEL, tools=[], allowed_tools=[], setting_sources=[], max_turns=1,
-        system_prompt="You extract facts from chat logs and reply with strict JSON only.",
-    )
-    chunks: list[str] = []
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            chunks.extend(b.text for b in message.content if isinstance(b, TextBlock))
-    return "".join(chunks)
+    return ask(prompt, system="You extract facts from chat logs and reply with strict JSON only.")
 
 
 def _json_block(text: str) -> dict:
@@ -214,7 +205,7 @@ def who_i_met(day: date, *, messages: list[ChatMessage] | None = None) -> People
     body = transcript(rows)
     if not body.strip():
         return PeopleResult(day.isoformat(), [], [], [], [], len(rows))
-    data = _json_block(asyncio.run(_ask(_prompt(day, body))))
+    data = _json_block(_ask(_prompt(day, body)))
     people = []
     for raw in data.get("people") or []:
         name = str(raw.get("name") or "").strip().split(" ")[0].capitalize()
