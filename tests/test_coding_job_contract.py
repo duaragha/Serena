@@ -78,6 +78,26 @@ def test_ambiguous_projects_are_rejected_instead_of_guessed(tmp_path) -> None:
         )
 
 
+def test_project_path_beats_a_bare_name_mentioned_in_prose(tmp_path) -> None:
+    unified = _repo(tmp_path / "personal_projects" / "unified")
+    liquid = _repo(tmp_path / "liquid")
+    brief = "In Unified (personal_projects/unified), match the iOS 26 Liquid Glass look"
+
+    assert resolve_repository_root(
+        brief, roots=[unified, liquid], projects_root=tmp_path, serena_root=unified,
+    ) == unified
+
+
+def test_project_hint_outranks_other_repo_names_in_the_brief(tmp_path) -> None:
+    unified = _repo(tmp_path / "unified")
+    liquid = _repo(tmp_path / "liquid")
+
+    assert resolve_repository_root(
+        "make the header liquid glass", project_hint="unified",
+        roots=[unified, liquid], projects_root=tmp_path, serena_root=unified,
+    ) == unified
+
+
 def test_api_route_token_does_not_override_a_valid_project_alias(tmp_path) -> None:
     repo = _repo(tmp_path / "serena")
 

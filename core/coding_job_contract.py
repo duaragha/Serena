@@ -346,6 +346,16 @@ def resolve_repository_root(
     or ambiguous request must go back to the resident brain for one question.
     """
 
+    if str(project_hint or "").strip():
+        # A project named on purpose outranks a word in the brief that happens
+        # to be another repo's name ("Liquid Glass" is not the liquid repo).
+        try:
+            return resolve_repository_root(
+                str(project_hint), roots=roots, projects_root=projects_root,
+                serena_root=serena_root,
+            )
+        except RepositoryResolutionError:
+            pass
     search_text = "\n".join(
         part for part in [str(request or ""), str(project_hint or ""), *map(str, project_context)] if part
     )
@@ -386,7 +396,9 @@ def resolve_repository_root(
     normalised = f" {_normalise(search_text)} "
     scored: list[tuple[int, Path]] = []
     for root, aliases in canonical.items():
-        score = max((len(alias) for alias in aliases if f" {alias} " in normalised), default=0)
+        # Naming a project by its path ("personal_projects/unified") is more
+        # deliberate than its bare name turning up in prose, so it wins a tie.
+        score = max((2 if " " in alias else 1 for alias in aliases if f" {alias} " in normalised), default=0)
         if score:
             scored.append((score, root))
     if not scored and any(
@@ -434,7 +446,8 @@ def resolve_repository_root(
         raise RepositoryResolutionError(
             "i need the project name or Git repository path before coding can start"
         )
-    winners = sorted({root for _score, root in scored}, key=str)
+    best = max(score for score, _root in scored)
+    winners = sorted({root for score, root in scored if score == best}, key=str)
     if len(winners) != 1:
         names = ", ".join(path.name for path in winners)
         raise RepositoryResolutionError(f"which Git project: {names}?")
