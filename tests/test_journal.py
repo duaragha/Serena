@@ -567,3 +567,16 @@ def test_home_and_work_are_never_asked_about():
              "lat": 43.718, "lng": -79.469}
     facts = {"visits": [{**visit, "place": "work"}, {**visit, "arrived_ts": 2.0, "place": "home"}]}
     assert draft.questions(facts) == []
+
+
+def test_the_end_of_the_night_sorts_last():
+    facts = {"visits": [{"place": "home", "arrived": "12:27am", "departed": "7:20am", "ends_after": True},
+                        {"place": "work", "arrived": "9:17am", "departed": "5:09pm"}]}
+    assert [line for _, line in draft._timeline(facts)] == ["9:17am–5:09pm · work", "from 12:27am · home"]
+
+
+def test_a_drive_that_ends_where_he_parks_still_names_the_place(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERENA_JOURNAL_DB", str(tmp_path / "journal.sqlite3"))
+    store.name_place("work", 43.718, -79.4691)
+    assert store.place_for(43.722591, -79.463628) == ""                    # ~630 m: a visit here is elsewhere
+    assert store.place_for(43.722591, -79.463628, radius_m=1000) == "work"  # a drive ending here is work

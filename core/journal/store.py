@@ -71,21 +71,21 @@ def distance_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return 2 * radius * math.asin(math.sqrt(a))
 
 
-def place_for(lat: float, lng: float) -> str:
+def place_for(lat: float, lng: float, *, radius_m: float | None = None) -> str:
     """What to call a spot: the name he gave it, else home or work, else ''."""
 
-    named = _named_place(lat, lng)
+    named = _named_place(lat, lng, radius_m=radius_m)
     if named:
         return named
     try:
         from core.journal.places import anchor_for
 
-        return anchor_for(lat, lng)
+        return anchor_for(lat, lng, radius_m=radius_m)
     except Exception:
         return ""
 
 
-def _named_place(lat: float, lng: float) -> str:
+def _named_place(lat: float, lng: float, *, radius_m: float | None = None) -> str:
     """The name he gave the nearest known place, or '' when there is none."""
 
     with closing(_connect()) as connection:
@@ -93,7 +93,7 @@ def _named_place(lat: float, lng: float) -> str:
     best, best_d = "", float("inf")
     for row in rows:
         d = distance_m(lat, lng, row["lat"], row["lng"])
-        if d <= row["radius_m"] and d < best_d:
+        if d <= max(row["radius_m"], radius_m or 0) and d < best_d:
             best, best_d = row["name"], d
     return best
 

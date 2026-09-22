@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 TZ = ZoneInfo("America/Toronto")
 # A visit shorter than this is a stop at a light, not somewhere he went.
 MIN_VISIT_MINUTES = 20
+DRIVE_END_RADIUS_M = 1000.0
 AUTHOR_PATTERNS = ("duaragha", "raghav")
 GIT_TIMEOUT_SECONDS = 15
 
@@ -93,9 +94,13 @@ def _locket(facts: DayFacts, day: date) -> None:
     data = locket.day_facts(day.isoformat())
 
     def named(point: dict[str, Any] | None) -> str:
+        # A drive's ends are its first and last GPS fix, which land wherever
+        # he parks -- the drive home from work started ~700m from where the
+        # visit was recorded -- so the ends match known places more loosely.
         if not point:
             return ""
-        return store.place_for(float(point["lat"]), float(point["lng"]))
+        return store.place_for(float(point["lat"]), float(point["lng"]),
+                               radius_m=DRIVE_END_RADIUS_M)
 
     for d in data.get("drives") or []:
         facts.drives.append({

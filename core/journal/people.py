@@ -133,6 +133,9 @@ Rules -- follow them exactly:
   never anything about other people.
 - Meetups on other days (the day before, the day after) do not count.
 - Calls, video chats and texting are not meeting in person.
+- Booked appointments are not people he spent time with: a therapist,
+  doctor, physio, dentist, barber, tutor or anyone confirming "I have you in
+  for 12pm" goes in "excluded" with the reason "appointment".
 - Family he lives with does not count as "hanging out" unless they clearly
   went out together somewhere.
 - confidence: "high" when both a plan and an arrival/after confirmation
