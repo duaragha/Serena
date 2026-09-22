@@ -1518,6 +1518,25 @@ def _filesystem_path_entry(root: Path, path: str) -> tuple[str, bytes] | None:
     if not target.is_file():
         raise IsolationError(f"live checkout path is not a regular file: {path}")
     mode = "100755" if metadata.st_mode & 0o111 else "100644"
+    if os.name == "nt":
+        # Windows stat derives executable bits from filename extensions, not
+        # Git's executable flag. Read the live index so an unchanged tracked
+        # executable is accepted and an explicitly staged mode change still
+        # counts as drift. New regular files default to Git's Windows mode.
+        indexed = _git(root, "ls-files", "--stage", "-z", "--", path,
+                       check=False, text=False)
+        if indexed.returncode:
+            raise IsolationError(f"could not inspect live Git mode for {path}")
+        records = bytes(indexed.stdout or b"").split(b"\0")
+        records = [record for record in records if record]
+        mode = "100644"
+        if records:
+            header, separator, _name = records[0].partition(b"\t")
+            fields = header.split()
+            if (len(records) != 1 or not separator or len(fields) != 3
+                    or fields[2] != b"0" or fields[0] not in {b"100644", b"100755"}):
+                raise IsolationError(f"live Git mode is ambiguous for {path}")
+            mode = fields[0].decode("ascii")
     return mode, target.read_bytes()
 
 
