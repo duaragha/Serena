@@ -86,8 +86,10 @@ def anchors(*, now: float | None = None, path: Path | None = None) -> dict[str, 
 
 
 def anchor_for(lat: float, lng: float, *, now: float | None = None,
-               path: Path | None = None) -> str:
+               path: Path | None = None, radius_m: float | None = None) -> str:
+    best, best_d = "", float("inf")
     for name, (a_lat, a_lng) in anchors(now=now, path=path).items():
-        if _distance_m(lat, lng, a_lat, a_lng) <= CLUSTER_RADIUS_M:
-            return name
-    return ""
+        d = _distance_m(lat, lng, a_lat, a_lng)
+        if d <= (radius_m or CLUSTER_RADIUS_M) and d < best_d:
+            best, best_d = name, d
+    return best

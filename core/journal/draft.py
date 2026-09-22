@@ -84,6 +84,9 @@ def _timeline(facts: dict[str, Any]) -> list[tuple[str, str]]:
         if not m:
             return "99:99"
         hour = int(m.group(1)) % 12 + (12 if m.group(3) == "pm" else 0)
+        # His day runs to 5am, so 12:27am comes after 10pm, not before 7am.
+        if hour < 5:
+            hour += 24
         return f"{hour:02d}:{m.group(2)}"
 
     rows: list[tuple[str, str]] = []
