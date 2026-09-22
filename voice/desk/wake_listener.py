@@ -27,22 +27,18 @@ from voice.desk.client import (
     DEFAULT_MANIFEST_PATH,
     WakeScorer,
     _device_selector,
-    derive_greeting_url,
     load_manifest_wake_config,
-    load_token,
-)
-from voice.desk.io import (
-    DEFAULT_PIPEWIRE_WAKE_TARGET,
-    GreetingFetcher,
-    OverlayPublisher,
-    PipeWireMicrophone,
-    SoundDevicePlayback,
-    record_wake_greeting_handoff,
 )
 from voice.desk.input_mute import read_voice_input_muted
+from voice.desk.io import (
+    DEFAULT_PIPEWIRE_WAKE_TARGET,
+    PipeWireMicrophone,
+)
 
 WAKE_FRAME_BYTES = 2_560
-FULL_VOICE_UNIT = "serena-desk.service"
+# "hey serena" brings up the orb: her voice and her animation in one window
+# (voice/orb). The old desk app this used to restart is gone.
+FULL_VOICE_UNIT = "serena-orb.service"
 DEFAULT_PHRASE_MODEL = (
     Path(__file__).resolve().parents[1] / "models" / "faster-whisper-tiny.en"
 )
@@ -200,72 +196,28 @@ def _start_full_voice_app() -> None:
             "systemctl",
             "--user",
             "--no-block",
-            # restart, not start: the unit now stays up after a conversation
-            # so the overlay's type bar survives, and a plain start would be a
-            # no-op that never gives the microphone back.
-            "restart",
+            # start, not restart: saying her name while she is already open
+            # must not cut her off mid-answer.
+            "start",
             FULL_VOICE_UNIT,
         ],
-        # Not check=True. The app conflicts with this unit, so systemd kills
+        # Not check=True. The orb conflicts with this unit, so systemd stops
         # this process as part of starting it: systemctl dies on SIGTERM, and
-        # raising there turned a successful handoff into a failed unit that
-        # eventually trips the start-limit and stops answering to his name.
+        # raising there would turn a successful handoff into a failed unit.
         check=False,
     )
 
 
 def launch_full_voice_app() -> None:
-    """Play the hot greeting first, then hand conversation off to the full app."""
+    """Bring up the orb, already listening; it closes itself when he is done.
 
-    websocket_url = os.environ.get(
-        "SERENA_DESK_URL", "ws://127.0.0.1:8767/ws/desk"
-    )
-    greeting_url = os.environ.get("SERENA_DESK_GREETING_URL") or derive_greeting_url(
-        websocket_url
-    )
-    overlay = OverlayPublisher()
-    playback = SoundDevicePlayback(overlay)
-    launched = False
-    try:
-        greeting, source = GreetingFetcher(greeting_url, load_token()).fetch()
-        overlay.open()
-        overlay.set_state("speaking")
-        playback.start(greeting.sample_rate)
-        frame_bytes = max(2, greeting.sample_rate * 2 * 40 // 1000)
-        for offset in range(0, len(greeting.pcm), frame_bytes):
-            first_write = playback.write(
-                greeting.pcm[offset : offset + frame_bytes]
-            )
-            if first_write is None or launched:
-                continue
-            record_wake_greeting_handoff(
-                greeting,
-                first_write,
-                source,
-            )
-            journal_wake_event(
-                {
-                    "event": "wake.hot_greeting_first_write",
-                    "greeting_id": greeting.greeting_id,
-                    "source": source,
-                    "underflow": first_write.underflow,
-                }
-            )
-            _start_full_voice_app()
-            launched = True
-        playback.finish()
-    except Exception as exc:
-        journal_wake_event(
-            {
-                "event": "wake.hot_greeting_failed",
-                "error": type(exc).__name__,
-            }
-        )
-    finally:
-        playback.close()
-        overlay.close()
-    if not launched:
-        _start_full_voice_app()
+    No hot greeting any more: that was fetched from the old desk server, which
+    no longer runs, so every wake paid a failed HTTP round trip before the
+    window appeared. The orb opening and listening is the answer to her name.
+    """
+
+    journal_wake_event({"event": "wake.orb_requested", "unit": FULL_VOICE_UNIT})
+    _start_full_voice_app()
 
 
 class WakeMicrophone(Protocol):

@@ -90,7 +90,29 @@ def wav_bytes(pcm: bytes, rate: int) -> bytes:
     return buf.getvalue()
 
 
-async def _answer(send, text: str, turn: int) -> None:
+# A follow-up heard after she has answered may not be meant for her at all --
+# the first wake-mode orb sat in the room answering his phone call out loud.
+# She is told so, and an empty reply from her closes the orb.
+SILENT = "SILENT"
+FOLLOW_UP_NOTE = (
+    "[Heard in the few seconds after you answered him. If it could be meant for "
+    "you -- a question, a request, a reply to what you just said -- answer "
+    "normally. Only if it is clearly him talking to someone else, reply with "
+    f"exactly {SILENT} and nothing else.]\n"
+)
+
+
+def _is_silent(reply: str) -> bool:
+    """Her 'that was not for me'. Asked for as one word; tolerated as a phrase,
+    because the first try came back as '*(no response -- not directed at me)*',
+    which would otherwise have been read out loud."""
+
+    head = reply.strip().strip("*_()[] ").lower()
+    return (head.startswith(SILENT.lower()) or head.startswith("no response")
+            or "not directed at me" in head[:80])
+
+
+async def _answer(send, text: str, turn: int, *, follow_up: bool = False) -> None:
     """Brain, then her voice, one sentence at a time.
 
     Sentences are synthesized and shipped as they close rather than after the
@@ -125,22 +147,42 @@ async def _answer(send, text: str, turn: int) -> None:
             "wav": base64.b64encode(wav_bytes(bytes(pcm), rate)).decode("ascii"),
         })
 
+    async def emit(piece: str) -> None:
+        reply.append(piece)
+        send({"type": "reply", "text": "".join(reply)})
+        for sentence in splitter.feed(piece):
+            await speak(sentence)
+
+    # A follow-up is held back until enough of it is in to tell whether it is
+    # her "not for me", so that answer is never spoken or even shown.
+    held = ""
+    decided = not follow_up
+    silent = False
     try:
         async for event in brain.stream_turn(
-                text, call_id="orb-demo", turn_id=str(turn)):
-            if event.type == "delta":
-                reply.append(event.delta)
-                send({"type": "reply", "text": "".join(reply)})
-                for sentence in splitter.feed(event.delta):
-                    await speak(sentence)
-            elif event.type == "done":
-                if event.say:
-                    reply.append(event.say)
-                    send({"type": "reply", "text": "".join(reply)})
-                    for sentence in splitter.feed(event.say):
-                        await speak(sentence)
-        for sentence in splitter.flush():
-            await speak(sentence)
+                (FOLLOW_UP_NOTE + text) if follow_up else text,
+                call_id="orb-demo", turn_id=str(turn)):
+            piece = event.delta if event.type == "delta" else (
+                (event.say or "") if event.type == "done" else "")
+            if not piece or silent:
+                continue
+            if decided:
+                await emit(piece)
+                continue
+            held += piece
+            if _is_silent(held):
+                silent = True
+            elif len(held.strip()) >= 24 or held.rstrip().endswith((".", "?", "!")):
+                decided = True
+                await emit(held)
+        if not decided and not silent and held.strip():
+            if _is_silent(held):
+                silent = True
+            else:
+                await emit(held)
+        if not silent:
+            for sentence in splitter.flush():
+                await speak(sentence)
     except Exception as exc:  # the demo says so rather than going quiet
         send({"type": "error", "message": f"brain: {exc}"})
     finally:
@@ -161,10 +203,22 @@ class UtteranceSessions:
     replaced rather than reused.
     """
 
-    def __init__(self, factory) -> None:
+    # A refused connection used to be retried on the very next audio frame,
+    # every 64ms, for as long as he kept making sound -- which is itself the
+    # quickest way to get refused again, and put the same error on screen
+    # sixteen times a second. Failures now back off.
+    RETRY_BACKOFF_SECONDS = (1.0, 2.0, 5.0, 10.0)
+
+    def __init__(self, factory, *, clock=None) -> None:
+        import time as _time
+
         self._factory = factory
         self._session = None
         self._lock = threading.Lock()
+        self._clock = clock or _time.monotonic
+        self._failures = 0
+        self._retry_at = 0.0
+        self.last_error = ""
 
     @property
     def current(self):
@@ -179,8 +233,24 @@ class UtteranceSessions:
                 return session
             if session is not None:
                 session.close()
+                self._session = None
+            if self._clock() < self._retry_at:
+                return None
             self._session = self._factory()
+            if self._session is None:
+                wait = self.RETRY_BACKOFF_SECONDS[
+                    min(self._failures, len(self.RETRY_BACKOFF_SECONDS) - 1)]
+                self._failures += 1
+                self._retry_at = self._clock() + wait
+            else:
+                self._failures = 0
             return self._session
+
+    @property
+    def failing(self) -> bool:
+        """True from a refused connection until one succeeds again."""
+
+        return self._failures > 0
 
     def commit(self, timeout: float) -> str:
         """Close the utterance and hand back its text. Opens nothing."""
@@ -267,6 +337,9 @@ def ws_mic(ws) -> None:
     def open_session() -> _ScribeSession | None:
         session = _ScribeSession(url, headers, MIC_SAMPLE_RATE)
         if not session.start():
+            why = getattr(session, "error", "") or "unknown"
+            sessions.last_error = why
+            print(f"[bridge] scribe connect failed: {why}", flush=True)
             return None
         return session
 
@@ -303,12 +376,18 @@ def ws_mic(ws) -> None:
             if isinstance(message, (bytes, bytearray)):
                 if sessions.current is None:
                     publish_state("listening")
+                was_failing = sessions.failing
                 session = sessions.for_audio()
                 if session is None:
-                    with send_lock:
-                        ws.send(json.dumps({"type": "error",
-                                            "message": "Scribe would not connect"}))
+                    # Once per failure, not once per frame.
+                    if sessions.failing and not was_failing:
+                        with send_lock:
+                            ws.send(json.dumps({"type": "error",
+                                                "message": "Scribe would not connect"}))
                     continue
+                if was_failing:
+                    with send_lock:
+                        ws.send(json.dumps({"type": "ready"}))
                 session.feed(bytes(message))
                 continue
             try:
@@ -336,11 +415,14 @@ def ws_mic(ws) -> None:
                 # Its own thread: the receive loop must stay free so he can
                 # interrupt, and so the next utterance is not blocked behind
                 # her answer.
-                def run(payload: str = text, turn: int = turns["n"]) -> None:
+                follow_up = bool(payload.get("follow_up"))
+
+                def run(payload: str = text, turn: int = turns["n"],
+                        follow_up: bool = follow_up) -> None:
                     def send(event: dict) -> None:
                         with send_lock, contextlib.suppress(Exception):
                             ws.send(json.dumps(event))
-                    asyncio.run(_answer(send, payload, turn))
+                    asyncio.run(_answer(send, payload, turn, follow_up=follow_up))
                 threading.Thread(target=run, name="orb-answer", daemon=True).start()
 
             # Deliberately not opening the next one here: it would go stale

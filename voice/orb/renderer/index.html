@@ -62,6 +62,13 @@
   #hint { position: fixed; top: 24px; left: 0; right: 0; text-align: center;
           font-size: 11px; letter-spacing: .06em; color: #8c6b7a; z-index: 3;
           min-height: 14px; }
+  /* What she is doing right now: idle, listening, thinking, speaking. */
+  #status { position: fixed; top: 48px; left: 0; right: 0; text-align: center; z-index: 3;
+            font-size: 11px; letter-spacing: .22em; text-transform: uppercase;
+            color: rgba(217, 207, 240, .55); transition: color .35s; }
+  #status[data-state="listening"] { color: rgba(160, 205, 255, .85); }
+  #status[data-state="thinking"]  { color: rgba(214, 180, 255, .85); }
+  #status[data-state="speaking"]  { color: rgba(255, 196, 225, .9); }
   #err { position: fixed; inset: 0; display: none; place-items: center; z-index: 9;
          color: #ff9d9d; padding: 40px; text-align: center; font-size: 13px; }
 </style>
@@ -70,6 +77,7 @@
 <div id="glow"></div>
 <canvas id="c"></canvas>
 <div id="hint"></div>
+<div id="status" data-state="idle">idle</div>
 <div id="ui">
   <div id="script"><span id="committed"></span><span id="partial"></span></div>
   <div id="reply"></div>
@@ -390,6 +398,12 @@ void main(){
   let micAnalyser = null, playAnalyser = null, playGain = null;
   // Her half of the turn: queued audio, and whether the floor is hers.
   let herSpeaking = false, pending = 0, ended = true, cursor = 0;
+  // What the conversation just did: 'words', 'answered', 'empty'. Set by the
+  // wake block below; a no-op otherwise.
+  let onActivity = () => {};
+  // True once she has answered in a summoned orb: what he says next might be
+  // to someone else, and the bridge tells her so.
+  let isFollowUp = () => false;
   // Only his speech is sent to Scribe; silence is not worth paying for.
   let sending = false, preroll = [];
   const PREROLL_FRAMES = 6;
@@ -461,16 +475,19 @@ void main(){
         // Working is the quiet state. The line is for trouble only.
         if (m.type === 'ready') say('');
         else if (m.type === 'transcript') {
+          if (m.committed || m.partial) onActivity('words');
           committedEl.textContent = m.committed ? m.committed + ' ' : '';
           partialEl.textContent = m.partial || '';
         } else if (m.type === 'final') {
           committedEl.textContent = m.text || '';
           partialEl.textContent = '';
         } else if (m.type === 'unheard') {
+          onActivity('answered');
           // She did not get it. Say so briefly instead of sitting there.
           say('didn\u2019t catch that');
           setTimeout(() => say(''), 2600);
         } else if (m.type === 'thinking') {
+          onActivity('words');
           herSpeaking = true; ended = false; pending = 0; cursor = 0;
           replyEl.textContent = '';
           analyser = playAnalyser || analyser;
@@ -480,6 +497,8 @@ void main(){
         } else if (m.type === 'audio') {
           playClip(m.wav);
         } else if (m.type === 'speech_end') {
+          // Nothing to say is her way of telling him that was not for her.
+          if (!replyEl.textContent.trim()) onActivity('empty');
           ended = true;
           if (pending === 0) handBack();
         } else if (m.type === 'error') say('scribe: ' + m.message);
@@ -549,6 +568,7 @@ void main(){
   // Floor goes back to him: mic drives the orb again, and Scribe starts
   // hearing him again.
   function handBack() {
+    onActivity('answered');
     herSpeaking = false;
     cursor = 0;
     voiced = false;
@@ -600,7 +620,7 @@ void main(){
     preroll = [];
     utteranceStart = 0;
     meterEl.classList.remove('hot');
-    micWs.send(JSON.stringify({ type: 'commit' }));
+    micWs.send(JSON.stringify({ type: 'commit', follow_up: isFollowUp() }));
   }
 
   function watchForPause(now, level) {
@@ -680,10 +700,14 @@ void main(){
   resize();
 
   const glow  = document.getElementById('glow');
+  const statusEl = document.getElementById('status');
   function setState(s) {
     if (!STATES[s]) return;
+    if (s !== name) console.log(`state: ${s}`);
     name = s; target = STATES[s];
     glow.style.opacity = s === 'idle' ? '0.5' : '1';
+    statusEl.textContent = s;
+    statusEl.dataset.state = s;
   }
 
   // Enter ends a turn early, for a room too loud for the pause detector to
@@ -729,6 +753,42 @@ void main(){
   }
   setState('idle');
   requestAnimationFrame(frame);
+
+  // ---- woken by "hey serena": one request, a short window for a follow-up.
+  // The first version stayed open while it could hear any words at all, so it
+  // sat in the room transcribing his phone call and answering it out loud. Now
+  // it behaves like every other assistant: he has a few seconds to start his
+  // request, and once she has answered, a few seconds to start a follow-up.
+  // After that only her name brings her back. An empty reply -- her deciding
+  // what she heard was not for her -- closes it at once.
+  const WAKE = new URLSearchParams(location.search).has('wake');
+  const WAKE_FIRST_WORDS_MS = 15000;
+  const WAKE_FOLLOW_UP_MS = 8000;
+  if (WAKE) {
+    let deadline = performance.now() + WAKE_FIRST_WORDS_MS;
+    let closing = false;
+    let answeredOnce = false;
+    isFollowUp = () => answeredOnce;
+    const close = (why) => {
+      if (closing) return;
+      closing = true;
+      console.log(`wake: closing (${why})`);
+      if (window.orb) window.orb.done(); else window.close();
+    };
+    onActivity = (kind) => {
+      if (kind === 'words') deadline = Infinity;
+      else if (kind === 'answered') {
+        answeredOnce = true;
+        deadline = performance.now() + WAKE_FOLLOW_UP_MS;
+      }
+      else if (kind === 'empty') close('nothing for her');
+    };
+    setInterval(() => {
+      if (herSpeaking || pending > 0) return;
+      if (performance.now() > deadline) close('no follow-up');
+    }, 500);
+    console.log('wake: summoned; waiting for his request');
+  }
 })();
 </script>
 </body>

@@ -10,7 +10,7 @@
 // Nothing here is wanted by anything else, so the worst this window can do by
 // crashing is stop drawing.
 
-const { app, BrowserWindow, Tray, Menu, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, shell, ipcMain } = require('electron');
 const { spawn } = require('node:child_process');
 const http = require('node:http');
 const net = require('node:net');
@@ -24,6 +24,11 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 const HERE = __dirname;
 const REPO = path.resolve(HERE, '..', '..');
+
+// Opened by "hey serena" (voice/desk/wake_listener.py via serena-orb.service):
+// come to the front already listening, and close once the conversation is
+// over, so the wake listener gets the microphone back.
+const WAKE = process.argv.includes('--wake');
 
 let win = null;
 let tray = null;
@@ -115,6 +120,7 @@ function createWindow(port) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(HERE, 'preload.js'),
       // The page is served from 127.0.0.1, so it is already a secure context;
       // the microphone needs nothing beyond the permission grant below.
     },
@@ -128,7 +134,21 @@ function createWindow(port) {
     callback(ours && (permission === 'media' || permission === 'audioCapture'));
   });
 
-  win.once('ready-to-show', () => win.show());
+  // The page's own log lands in the journal, so a summoned orb that will not
+  // close, or a mic that will not open, can be diagnosed after the fact.
+  win.webContents.on('console-message', (_e, level, message) => {
+    console.log(`[orb page] ${message}`);
+  });
+
+  win.once('ready-to-show', () => {
+    win.show();
+    if (WAKE) {
+      // Summoned by voice, so it has to land in front of whatever he was in.
+      win.setAlwaysOnTop(true);
+      win.focus();
+      setTimeout(() => { if (win) win.setAlwaysOnTop(false); }, 1500);
+    }
+  });
   win.on('closed', () => { win = null; });
 
   // Links open in the real browser rather than replacing the orb.
@@ -137,7 +157,7 @@ function createWindow(port) {
     return { action: 'deny' };
   });
 
-  win.loadURL(`http://127.0.0.1:${port}/`);
+  win.loadURL(`http://127.0.0.1:${port}/${WAKE ? '?wake=1' : ''}`);
 }
 
 function createTray() {
@@ -160,6 +180,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', () => {
     if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
   });
+
+  ipcMain.on('orb-done', () => { if (WAKE) app.quit(); });
 
   app.whenReady().then(async () => {
     try {

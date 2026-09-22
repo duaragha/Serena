@@ -455,8 +455,11 @@ class _ScribeSession:
             self._socket = websocket.create_connection(
                 self.url, header=self.headers,
                 timeout=SCRIBE_CONNECT_TIMEOUT_SECONDS)
-        except Exception:
+        except Exception as exc:
             self.failed = True
+            # Kept so a caller can say why -- "would not connect" with no
+            # reason could be a dead key, a rate limit, or no network.
+            self.error = f"{type(exc).__name__}: {exc}"[:300]
             return False
         for target, name in ((self._send_loop, "scribe-send"),
                              (self._read_loop, "scribe-read")):
