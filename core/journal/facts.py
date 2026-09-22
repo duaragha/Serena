@@ -68,14 +68,20 @@ def _people(facts: DayFacts, day: date) -> None:
 def _visits(facts: DayFacts, day: date) -> None:
     from core.journal import location, store
 
+    start, end = location.day_window(day)
     for visit in location.visits_on(day):
         minutes = visit.minutes()
         if minutes < MIN_VISIT_MINUTES:
             continue
+        departed = _clock(visit.departed)
         facts.visits.append({
             "lat": round(visit.lat, 5), "lng": round(visit.lng, 5),
-            "arrived": _clock(visit.arrived), "departed": _clock(visit.departed),
+            "arrived": _clock(visit.arrived),
+            # "~" marks a departure iOS never sent, read off where he went next.
+            "departed": f"~{departed}" if departed and visit.departed_inferred else departed,
             "arrived_ts": visit.arrived, "departed_ts": visit.departed,
+            "started_before": visit.arrived < start,
+            "ends_after": visit.departed is None or visit.departed > end,
             "minutes": minutes,
             "place": store.place_for(visit.lat, visit.lng),
         })
@@ -135,24 +141,47 @@ def _projects_root() -> Path | None:
     return None
 
 
+# Commits written by agents carry their name in a trailer ("Co-Authored-By:
+# Claude ...") or are Fleet's own dispatch commits. They go out under his git
+# identity, so without this every one of them read as "you made 16 commits"
+# on a day he made none.
+AGENT_MARKERS = ("claude", "anthropic", "codex", "openai", "gpt-", "muse")
+
+
+def _is_agents(subject: str, trailers: str) -> bool:
+    lowered = trailers.lower()
+    return any(marker in lowered for marker in AGENT_MARKERS) or subject.lower().startswith("serena:")
+
+
 def _commits(facts: DayFacts, day: date) -> None:
+    from core.journal.location import day_window
+
     root = _projects_root()
     if root is None:
         raise RuntimeError("no Projects tree with a serena checkout on this machine")
-    start = datetime.combine(day, datetime.min.time(), TZ)
-    since, until = start.isoformat(), start.replace(hour=23, minute=59, second=59).isoformat()
+    start, end = day_window(day)
+    since = datetime.fromtimestamp(start, TZ).isoformat()
+    until = datetime.fromtimestamp(end, TZ).isoformat()
     per_repo: dict[str, list[str]] = {}
     for repo in _repos(root):
         try:
             out = subprocess.run(
                 ["git", "-C", str(repo), "log", "--all", "--no-merges",
-                 f"--since={since}", f"--until={until}", "--format=%ae%x09%s"],
+                 f"--since={since}", f"--until={until}",
+                 "--format=%ae%x09%s%x09%(trailers:key=Co-Authored-By,valueonly,separator=%x2C)%x1e"],
                 capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS, check=False,
             ).stdout
         except (OSError, subprocess.SubprocessError):
             continue
-        subjects = [line.split("\t", 1)[1] for line in out.splitlines()
-                    if "\t" in line and any(p in line.split("\t", 1)[0].lower() for p in AUTHOR_PATTERNS)]
+        subjects = []
+        for record in out.split("\x1e"):
+            fields = record.strip("\n").split("\t")
+            if len(fields) < 2:
+                continue
+            author, subject = fields[0], fields[1]
+            trailers = fields[2] if len(fields) > 2 else ""
+            if any(p in author.lower() for p in AUTHOR_PATTERNS) and not _is_agents(subject, trailers):
+                subjects.append(subject)
         if subjects:
             per_repo[repo.name] = subjects
     facts.commits = [{"repo": name, "count": len(subjects), "subjects": subjects[:5]}

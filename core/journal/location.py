@@ -45,6 +45,9 @@ class Visit:
     departed: float | None
     place: str
     accuracy_m: float | None
+    # True when iOS never reported the departure and it was read off the next
+    # place he turned up instead.
+    departed_inferred: bool = False
 
     def minutes(self, until: float | None = None) -> int:
         end = self.departed or until or time.time()
@@ -151,20 +154,68 @@ def store(points: list[dict[str, Any]], *, now: float | None = None, path: Path 
     return len(points)
 
 
-def visits_on(day: date, *, path: Path | None = None) -> list[Visit]:
-    """Visits that overlap the local calendar day, oldest first."""
+# His day runs until 5am, not midnight: getting home at 12:27am is the end of
+# Monday, not the start of Tuesday.
+DAY_STARTS_HOUR = 5
+# A departure is only inferred from what came next when that is close enough
+# to mean "he left, then turned up there" -- not "the phone was off for a day".
+MAX_INFERRED_GAP_SECONDS = 12 * 3600
+LEFT_RADIUS_M = 300.0
 
-    start = datetime.combine(day, datetime.min.time(), TZ).timestamp()
-    end = (datetime.combine(day, datetime.min.time(), TZ) + timedelta(days=1)).timestamp()
+
+def day_window(day: date) -> tuple[float, float]:
+    start = datetime.combine(day, datetime.min.time(), TZ) + timedelta(hours=DAY_STARTS_HOUR)
+    return start.timestamp(), (start + timedelta(days=1)).timestamp()
+
+
+def _distance_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    radius = 6_371_000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = math.radians(lat2 - lat1), math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * radius * math.asin(math.sqrt(a))
+
+
+def all_visits(*, since: float = 0.0, path: Path | None = None) -> list[Visit]:
+    """Every visit, oldest first, with a missing departure read off what came next.
+
+    iOS drops a departure whenever it cannot deliver it -- the phone died, say,
+    which is exactly what happened on the first night this ran. The next thing
+    he did still happened: the first fix far enough away, or his arrival
+    somewhere else, is when he had left by. Nothing is inferred across a gap
+    long enough to mean the phone was simply off.
+    """
+
     with closing(_connect(path)) as connection:
-        rows = connection.execute(
-            "SELECT * FROM points WHERE kind = 'visit'"
-            " AND COALESCE(arrived, at) < ? AND COALESCE(departed, ?) > ?"
-            " ORDER BY COALESCE(arrived, at)",
-            (end, end, start)).fetchall()
-    return [Visit(lat=r["lat"], lng=r["lng"], arrived=r["arrived"] or r["at"],
-                  departed=r["departed"], place=r["place"], accuracy_m=r["accuracy_m"])
-            for r in rows]
+        visits = connection.execute(
+            "SELECT * FROM points WHERE kind = 'visit' AND COALESCE(departed, arrived, at) >= ?"
+            " ORDER BY COALESCE(arrived, at)", (since,)).fetchall()
+        fixes = connection.execute(
+            "SELECT lat, lng, at FROM points WHERE kind = 'significant' AND at >= ? ORDER BY at",
+            (since,)).fetchall()
+    out: list[Visit] = []
+    for i, row in enumerate(visits):
+        arrived = row["arrived"] or row["at"]
+        departed, inferred = row["departed"], False
+        if departed is None:
+            later = [v["arrived"] or v["at"] for v in visits[i + 1:]]
+            away = [f["at"] for f in fixes if f["at"] > arrived and
+                    _distance_m(row["lat"], row["lng"], f["lat"], f["lng"]) > LEFT_RADIUS_M]
+            candidates = [t for t in (later[:1] + away[:1]) if t - arrived <= MAX_INFERRED_GAP_SECONDS]
+            if candidates:
+                departed, inferred = min(candidates), True
+        out.append(Visit(lat=row["lat"], lng=row["lng"], arrived=arrived, departed=departed,
+                         place=row["place"], accuracy_m=row["accuracy_m"],
+                         departed_inferred=inferred))
+    return out
+
+
+def visits_on(day: date, *, path: Path | None = None) -> list[Visit]:
+    """Visits that overlap his day (5am to 5am), oldest first."""
+
+    start, end = day_window(day)
+    return [v for v in all_visits(since=start - 2 * 86400, path=path)
+            if v.arrived < end and (v.departed or end) > start]
 
 
 def route_location(payload: dict[str, Any], _request: Any):
