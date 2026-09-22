@@ -671,6 +671,59 @@ def _announce_finished_phases(task: dict, run_id: str, run: dict) -> list[str]:
     return sent
 
 
+# Failures that say nothing about the work itself: a lock, a dropped
+# connection, an overloaded provider. Rerunning the failed phase is the fix,
+# so Serena does it herself instead of parking the task until he texts
+# "retry". Anything else (tests, review, a worker giving up) still waits for him.
+_TRANSIENT_FAILURES = re.compile(
+    r"database (?:table )?is locked|timed? ?out|timeout|connection (?:reset|refused|aborted)"
+    r"|temporarily unavailable|econnreset|broken pipe|overloaded|rate.?limit"
+    r"|\b50[234]\b|service unavailable|bad gateway",
+    re.IGNORECASE,
+)
+MAX_AUTO_RETRIES = 2
+
+
+def _auto_retry_transient(task: dict[str, Any], run_id: str, reason: str, headline: str) -> bool:
+    """Rerun a run that failed on a transient error, at most twice. True if rerun."""
+
+    import sqlite3
+    from contextlib import closing
+
+    from fleet.supervisor import retry_run
+    from memory import store
+
+    if not _TRANSIENT_FAILURES.search(reason or ""):
+        return False
+    task_id = int(task["id"])
+    path = store.MEMORY_DIR / ".fleet-dispatch.sqlite3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path, timeout=5)) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS notices (key TEXT PRIMARY KEY)")
+        used = db.execute(
+            "SELECT COUNT(*) FROM notices WHERE key LIKE ?",
+            (f"task:{task_id}:autoretry:{run_id}:%",),
+        ).fetchone()[0]
+    if used >= MAX_AUTO_RETRIES:
+        return False
+    try:
+        retry_run(run_id)
+    except Exception:
+        return False
+    attempt = used + 1
+    _notify_once(
+        f"#{task_id} hit a temporary error ({reason[:120]}), rerunning it myself "
+        f"({attempt}/{MAX_AUTO_RETRIES}): {headline}",
+        f"task:{task_id}:autoretry:{run_id}:{attempt}",
+        answers_request=_he_asked(task),
+    )
+    with closing(sqlite3.connect(path, timeout=5)) as db, db:
+        # Counted even if the text was held back, so the budget cannot reset.
+        db.execute("INSERT OR IGNORE INTO notices(key) VALUES (?)",
+                   (f"task:{task_id}:autoretry:{run_id}:{attempt}",))
+    return True
+
+
 def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
     """Close finished dispatched runs: deliver, record, and tell him.
 
@@ -764,6 +817,11 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             final = "done"
         else:
             reason = str(run.get("error") or state)[:200]
+            if state == "failed" and _auto_retry_transient(task, run_id, reason, headline):
+                # Rerun from the failed phase; the task stays on the same run.
+                record["auto_retried"] = True
+                closed.append(record)
+                continue
             result = f"{state}: {reason}"
             message = f"#{task_id} {state}: {headline}. {reason}"
             final = "blocked"

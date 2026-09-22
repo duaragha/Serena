@@ -1005,3 +1005,62 @@ def test_task_texts_name_the_project_and_what_it_does(queue, monkeypatch):
     monkeypatch.undo()
     monkeypatch.setattr(phone_intent, "_endpoint", lambda: None)
     assert scheduler_actions._describe(task["content"]) == ("redesign the chat view like", False)
+
+
+def test_a_transient_failure_reruns_itself_twice_then_asks_him(queue, monkeypatch):
+    from core import agent_checkouts, scheduler_actions
+    from fleet import supervisor
+
+    task = store.enqueue_task(BRIEF, source_id="imessage:t")
+    claimed = store.claim_next_task("d")
+    store.mark_task_running(task["id"], "d", claimed["lease_token"], "run-t")
+    runs = {"run-t": {"state": "failed", "error": "finalize: database is locked",
+                      "cwd": "/agents/demo.task-1"}}
+    monkeypatch.setattr(supervisor, "get_run", lambda run_id: runs[run_id])
+    monkeypatch.setattr(agent_checkouts, "locate", lambda path: None)
+    retried = []
+
+    def retry(run_id):
+        retried.append(run_id)
+        runs[run_id]["state"] = "queued"
+
+    monkeypatch.setattr(supervisor, "retry_run", retry)
+    monkeypatch.setattr(scheduler_actions, "_task_label", lambda task: "In Demo (thing)")
+    texts = []
+    monkeypatch.setattr(scheduler_actions, "_notify_phone",
+                        lambda text, key, **kw: texts.append((key, text)) or True)
+    action = scheduler_actions.REVIEWED_ACTIONS["serena.fleet.reconcile"]
+
+    for attempt in (1, 2):
+        runs["run-t"]["state"] = "failed"
+        action({})
+        assert store.get_memory(task["id"])["state"] == "running"
+        assert len(retried) == attempt
+    runs["run-t"]["state"] = "failed"
+    action({})
+    assert len(retried) == 2
+    assert store.get_memory(task["id"])["state"] == "blocked"
+    keys = [key for key, _ in texts]
+    assert keys[:2] == [f"task:{task['id']}:autoretry:run-t:1", f"task:{task['id']}:autoretry:run-t:2"]
+    assert "rerunning it myself (1/2)" in texts[0][1]
+    assert keys[-1] == f"task:{task['id']}:blocked"
+
+
+def test_a_real_failure_is_not_retried_behind_his_back(queue, monkeypatch):
+    from core import agent_checkouts, scheduler_actions
+    from fleet import supervisor
+
+    task = store.enqueue_task(BRIEF, source_id="imessage:u")
+    claimed = store.claim_next_task("d")
+    store.mark_task_running(task["id"], "d", claimed["lease_token"], "run-u")
+    monkeypatch.setattr(supervisor, "get_run", lambda run_id: {
+        "state": "failed", "error": "execute: test gate failed after integration", "cwd": ""})
+    monkeypatch.setattr(agent_checkouts, "locate", lambda path: None)
+    retry = Mock()
+    monkeypatch.setattr(supervisor, "retry_run", retry)
+    monkeypatch.setattr(scheduler_actions, "_task_label", lambda task: "In Demo (thing)")
+    monkeypatch.setattr(scheduler_actions, "_notify_phone", lambda text, key, **kw: True)
+
+    scheduler_actions.REVIEWED_ACTIONS["serena.fleet.reconcile"]({})
+    retry.assert_not_called()
+    assert store.get_memory(task["id"])["state"] == "blocked"
