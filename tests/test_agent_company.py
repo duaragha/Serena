@@ -1064,3 +1064,61 @@ def test_a_real_failure_is_not_retried_behind_his_back(queue, monkeypatch):
     scheduler_actions.REVIEWED_ACTIONS["serena.fleet.reconcile"]({})
     retry.assert_not_called()
     assert store.get_memory(task["id"])["state"] == "blocked"
+
+
+def test_with_cards_a_finished_job_is_one_card_and_no_call(queue, monkeypatch):
+    from core import agent_checkouts, job_cards, scheduler_actions
+    from fleet import supervisor
+
+    task = store.enqueue_task(BRIEF, source_id="imessage:c")
+    claimed = store.claim_next_task("d")
+    store.mark_task_running(task["id"], "d", claimed["lease_token"], "run-c")
+    runs = {"run-c": {"state": "running", "cwd": "/agents/demo.task-1",
+                      "phases": [{"name": "discover", "state": "completed"}]}}
+    monkeypatch.setattr(supervisor, "get_run", lambda run_id: runs[run_id])
+    checkout = SimpleNamespace(path=Path("/agents/demo.task-1"))
+    monkeypatch.setattr(agent_checkouts, "locate", lambda path: checkout)
+    monkeypatch.setattr(agent_checkouts, "deliver",
+                        Mock(return_value=agent_checkouts.Delivery("merged", url="https://pr/2")))
+    monkeypatch.setattr(agent_checkouts, "ship", lambda checkout: "codemagic build b9")
+    monkeypatch.setattr(agent_checkouts, "cleanup", Mock())
+    monkeypatch.setattr(scheduler_actions, "_task_label", lambda task: "In Demo (thing)")
+    cards, texts, calls = [], [], []
+    monkeypatch.setattr(job_cards, "show",
+                        lambda task, run, status, label, **kw: cards.append((status, kw)) or True)
+    monkeypatch.setattr(scheduler_actions, "_notify_phone",
+                        lambda text, key, **kw: texts.append(key) or True)
+    monkeypatch.setattr(scheduler_actions, "_ring_phone", lambda *a: calls.append(a) or True)
+    action = scheduler_actions.REVIEWED_ACTIONS["serena.fleet.reconcile"]
+
+    action({})
+    runs["run-c"]["state"] = "completed"
+    action({})
+    assert [status for status, _ in cards] == ["running", "merged"]
+    assert cards[-1][1] == {"url": "https://pr/2", "note": "📱 SideStore build started"}
+    assert texts == [] and calls == []
+    assert store.get_memory(task["id"])["state"] == "done"
+
+
+def test_notices_land_in_their_topic_and_only_outages_buzz():
+    from core.notification_authority import NotificationRequest
+    from core.notification_senders import telegram_silent, telegram_topic
+
+    def request(kind, summary="x"):
+        return NotificationRequest(kind=kind, summary=summary, channel="imessage")
+
+    assert telegram_topic(request("task.update")) == "jobs"
+    assert telegram_topic(request("fleet.run.failed")) == "jobs"
+    assert telegram_topic(request("serena.doctor")) == "health"
+    assert telegram_topic(request("something.else")) == "chat"
+    assert telegram_silent(request("serena.doctor", "PC: repo.stale_fetch: old")) is True
+    assert telegram_silent(request("serena.doctor", "PC: brain.down: gone")) is False
+    assert telegram_silent(request("task.update")) is False
+
+
+def test_fleet_self_test_runs_never_text_him():
+    from fleet.supervisor import is_canary_run
+
+    assert is_canary_run({"cwd": "C:\\\\Users\\\\ragha\\\\Projects\\\\fleet-canary"})
+    assert is_canary_run({"source_cwd": "/home/r/Projects/fleet-canary/sub"})
+    assert not is_canary_run({"cwd": "/home/r/Projects/unified"})

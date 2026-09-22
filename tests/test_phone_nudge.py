@@ -131,3 +131,18 @@ def test_a_corrupt_state_file_does_not_silence_her(line, monkeypatch, tmp_path):
     _tasks(monkeypatch, [_task(15, "blocked")])
     assert scheduler_actions.nudge_phone_line({}).output["task_id"] == 15
     assert json.loads((tmp_path / "phone-nudge.json").read_text(encoding="utf-8"))["task_id"] == 15
+
+
+def test_each_stuck_job_is_raised_once_ever_not_every_shift(line, monkeypatch, tmp_path):
+    import json
+
+    _tasks(monkeypatch, [_task(65, "blocked"), _task(66, "blocked")])
+    state = tmp_path / "phone-nudge.json"
+    for _ in range(4):
+        scheduler_actions.nudge_phone_line({})
+        # Pretend a whole shift passed before the next pass.
+        data = json.loads(state.read_text(encoding="utf-8"))
+        data["nudged_at"] = 0
+        state.write_text(json.dumps(data), encoding="utf-8")
+    # #65 got 23 identical reminders before this; now each job is raised once.
+    assert [key for _text, key in line] == ["nudge:65:blocked", "nudge:66:blocked"]

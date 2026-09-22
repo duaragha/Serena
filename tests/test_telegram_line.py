@@ -163,7 +163,7 @@ def _dedicated(monkeypatch, tmp_path, rows, *, brain="down"):
     monkeypatch.setattr(phone_line._FileStateBackend, "_state_path", lambda self: state)
     monkeypatch.setattr(telegram_line, "recent_messages", lambda offset=0: list(rows))
     sent: list[str] = []
-    monkeypatch.setattr(telegram_line, "send_text", lambda text: sent.append(text) or True)
+    monkeypatch.setattr(telegram_line, "send_text", lambda text, **kw: sent.append(text) or True)
     asked: list[str] = []
 
     def _read(text, *, queue=""):
@@ -485,3 +485,77 @@ def test_a_caller_can_still_ask_without_waiting(monkeypatch, tmp_path):
     assert calls[0][1]["timeout"] == 0
     # A no-wait poll must not inherit a long socket timeout either.
     assert calls[0][2] == telegram_line.TIMEOUT_SECONDS
+
+
+def test_button_taps_come_through_only_from_his_chat(monkeypatch, tmp_path):
+    from core import telegram_line
+
+    _configure(monkeypatch, tmp_path)
+    mine = telegram_line.chat_id()
+    monkeypatch.setattr(telegram_line, "updates", lambda **kw: [
+        {"update_id": 7, "callback_query": {"id": "cb1", "data": "retry:9",
+         "from": {"id": int(mine)}, "message": {"chat": {"id": int(mine)}, "message_thread_id": 18669}}},
+        {"update_id": 8, "callback_query": {"id": "cb2", "data": "retry:9",
+         "from": {"id": 1}, "message": {"chat": {"id": 1}}}},
+    ])
+    rows = telegram_line.recent_messages()
+    assert [(r["kind"], r["data"], r["callback_id"], r["thread_id"]) for r in rows] == [
+        ("callback", "retry:9", "cb1", 18669)]
+
+
+def test_send_text_goes_into_its_topic_and_survives_a_deleted_one(monkeypatch, tmp_path):
+    from core import telegram_line
+
+    _configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("SERENA_TELEGRAM_TOPICS", str(tmp_path / "topics.json"))
+    (tmp_path / "topics.json").write_text(
+        '{"chat_id": "%s", "threads": {"jobs": 11, "health": 12, "journal": 13, "chat": 14}}'
+        % telegram_line.chat_id(), encoding="utf-8")
+    payloads = []
+
+    def call(method, payload=None, **kw):
+        payloads.append((method, dict(payload or {})))
+        if method == "sendMessage" and payload.get("message_thread_id") == 12:
+            raise telegram_line.TelegramLineError("telegram sendMessage failed: message thread not found")
+        return {"message_id": 55}
+
+    monkeypatch.setattr(telegram_line, "_call", call)
+    assert telegram_line.send_text("<b>hi</b>", topic="jobs", html=True, silent=True,
+                                   buttons=[[{"text": "x", "url": "https://x.y"}]]) == 55
+    method, sent = payloads[0]
+    assert sent["message_thread_id"] == 11 and sent["parse_mode"] == "HTML"
+    assert sent["disable_notification"] is True
+    assert sent["reply_markup"] == {"inline_keyboard": [[{"text": "x", "url": "https://x.y"}]]}
+    assert telegram_line.send_text("alert", topic="health") == 55
+    assert "message_thread_id" not in payloads[-1][1]  # fell back to the plain chat
+
+
+def test_topics_are_created_once_when_threaded_mode_is_on(monkeypatch, tmp_path):
+    from core import telegram_line
+
+    _configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("SERENA_TELEGRAM_TOPICS", str(tmp_path / "topics.json"))
+    created = []
+
+    def call(method, payload=None, **kw):
+        if method == "getMe":
+            return {"id": 1, "has_topics_enabled": True}
+        created.append(payload["name"])
+        return {"message_thread_id": 100 + len(created)}
+
+    monkeypatch.setattr(telegram_line, "_call", call)
+    assert telegram_line.ensure_topics() == {"jobs": 101, "health": 102, "journal": 103, "chat": 104}
+    assert telegram_line.ensure_topics()["chat"] == 104
+    assert created == ["🛠 Jobs", "🩺 Health", "📓 Journal", "💬 Chat"]
+
+
+def test_the_retry_button_reruns_the_job_and_answers_the_tap(monkeypatch, tmp_path):
+    from core import phone_line, telegram_line
+
+    retried, toasts = [], []
+    monkeypatch.setattr(phone_line, "_retry", lambda task_id: retried.append(task_id) or "retrying #9.")
+    monkeypatch.setattr(telegram_line, "answer_callback",
+                        lambda cid, text="": toasts.append((cid, text)) or True)
+    outcome = phone_line._handle_button({"kind": "callback", "data": "retry:9", "callback_id": "cb1"})
+    assert retried == [9] and toasts == [("cb1", "retrying #9.")]
+    assert outcome["task_id"] == 9

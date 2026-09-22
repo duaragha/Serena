@@ -1581,6 +1581,13 @@ def _terminal_notification_authority(run: dict[str, Any], token: str):
     )
 
 
+def is_canary_run(run: dict[str, Any]) -> bool:
+    """A run in Fleet's self-test repository (fleet-canary)."""
+
+    return any("fleet-canary" in str(run.get(field) or "").replace("\\", "/")
+               for field in ("cwd", "source_cwd"))
+
+
 def _request_terminal_notification(run: dict[str, Any], token: str):
     from core.notification_authority import NotificationRequest
 
@@ -1665,6 +1672,9 @@ def _terminal_notification_outcome(store: FleetStore, run: dict[str, Any]) -> di
         if str(run.get("origin_session_id") or "").startswith("serena-task:"):
             # The task dispatcher owns this announcement: it texts him once the
             # pull request exists, which is the part he actually needs.
+            return run
+        if is_canary_run(run):
+            # Fleet's own self-test repo: proof for the test suite, not news for him.
             return run
         result = _request_terminal_notification(run, token)
         if result.decision in {"deferred", "pending_approval", "suppressed"}:

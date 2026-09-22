@@ -53,8 +53,12 @@ def build(day: date) -> dict[str, Any]:
     return store.load_day(key) or {}
 
 
-def send(day: date, *, call: bool = True) -> dict[str, Any]:
-    """Text him the draft; ring him too when there is something to ask."""
+def send(day: date, *, call: bool = False) -> dict[str, Any]:
+    """Text him the draft in the Journal topic; ring only when asked to.
+
+    The nightly call repeated the text's own first question, so it is off by
+    default; the text alone is the journal.
+    """
 
     from core import phone_line
 
@@ -64,7 +68,7 @@ def send(day: date, *, call: bool = True) -> dict[str, Any]:
         raise JournalError(f"no draft for {key}; build it first")
     open_questions = store.unanswered(record)
     sent = phone_line.send(draft.telegram_text(key, record["summary"], open_questions),
-                           key=f"journal:{key}")
+                           key=f"journal:{key}", topic="journal")
     result = {"texted": bool(sent), "called": False}
     if sent:
         store.save_day(key, sent_at=time.time())
