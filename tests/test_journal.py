@@ -625,3 +625,25 @@ class TestPlaceNamesFromTheMap:
 
         monkeypatch.setenv("SERENA_OSM_PLACES", str(tmp_path / "missing.sqlite3"))
         assert osm_places.lookup(43.6, -79.64) is None
+
+
+def test_stops_inside_a_drive_are_kept_but_idling_at_either_end_is_not(monkeypatch):
+    """Monday: a pickup near home, a drop-off on Steeles, then idling at home."""
+
+    from core.journal import facts
+
+    monkeypatch.setattr(facts, "_name_visit", lambda lat, lng: {"place": "", "near": "a house on X St"})
+    drive = {"from": {"lat": 43.68584, "lng": -79.80148}, "to": {"lat": 43.71791, "lng": -79.46915},
+             "stops": [
+                 {"startedAt": "2026-09-21T11:19:00Z", "minutes": 8, "lat": 43.69028, "lng": -79.79538},
+                 {"startedAt": "2026-09-21T13:17:00Z", "minutes": 1, "lat": 43.71800, "lng": -79.46920},
+             ]}
+    stops = facts._stops(drive)
+    assert stops == [{"at": "7:19am", "minutes": 8, "place": "a house on X St"}]
+
+
+def test_a_stop_shows_on_the_timeline():
+    facts = {"drives": [{"start": "7:16am", "from": "home", "to": "work",
+                         "stops": [{"at": "7:19am", "minutes": 8, "place": ""}]}]}
+    assert [line for _, line in draft._timeline(facts)] == ["7:16am · drove home → work",
+                                                            "7:19am · stopped 8 min"]

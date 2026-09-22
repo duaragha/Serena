@@ -98,6 +98,9 @@ def _timeline(facts: dict[str, Any]) -> list[tuple[str, str]]:
     for d in facts.get("drives") or []:
         if d.get("from") and d.get("to") and d["from"] != d["to"]:
             rows.append((key(d["start"]), f"{d['start']} · drove {d['from']} → {d['to']}"))
+        for stop in d.get("stops") or []:
+            where = f" · {stop['place']}" if stop.get("place") else ""
+            rows.append((key(stop["at"]), f"{stop['at']} · stopped {stop['minutes']} min{where}"))
     return sorted(rows)
 
 

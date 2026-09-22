@@ -132,6 +132,7 @@ def _locket(facts: DayFacts, day: date) -> None:
             "minutes": d.get("minutes"), "km": d.get("km"),
             "from": named(d.get("from")), "to": named(d.get("to")),
             "from_point": d.get("from"), "to_point": d.get("to"),
+            "stops": _stops(d),
         })
     for w in data.get("workouts") or []:
         facts.workouts.append({
@@ -140,6 +141,34 @@ def _locket(facts: DayFacts, day: date) -> None:
         })
     for a in data.get("activity") or []:
         facts.activity.append({"kind": a.get("kind"), "summary": a.get("summary") or a.get("label")})
+
+
+# Idling in the driveway or the parking lot is not a stop he made.
+STOP_ENDPOINT_RADIUS_M = 250.0
+
+
+def _stops(drive: dict[str, Any]) -> list[dict[str, Any]]:
+    """Where a drive paused with the engine on -- a pickup, a drop-off.
+
+    Monday's commute was 52 km in two hours for a 27 km trip; the two stops
+    inside it were picking Sarim up and dropping him near York.
+    """
+
+    from core.journal.store import distance_m
+
+    ends = [p for p in (drive.get("from"), drive.get("to")) if p]
+    out = []
+    for stop in drive.get("stops") or []:
+        lat, lng = float(stop["lat"]), float(stop["lng"])
+        if any(distance_m(lat, lng, float(p["lat"]), float(p["lng"])) <= STOP_ENDPOINT_RADIUS_M
+               for p in ends):
+            continue
+        named = _name_visit(lat, lng)
+        out.append({
+            "at": _clock(stop.get("startedAt")), "minutes": stop.get("minutes"),
+            "place": named.get("place") or named.get("near") or "",
+        })
+    return out
 
 
 def _repos(root: Path) -> list[Path]:
