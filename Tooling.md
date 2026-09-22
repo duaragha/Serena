@@ -66,8 +66,9 @@ Never install an update by hand via SSH or manual copying. Both desktop apps sel
   4. GitHub Actions verifies `UNIFIED_RELEASES_TOKEN` and publishes to `duaragha/unified-releases`.
 
 ### 3. iOS Apps (CodeMagic Feeds)
-- Self-updates via live SideStore/LiveContainer feed endpoints (e.g. `/api/v1/sidestore/source`), which query CodeMagic API for the newest finished build.
-- Shipped when a CodeMagic build for that app ID completes.
+- Unified uses the public source `https://raw.githubusercontent.com/duaragha/unified-releases/main/sidestore-source.json`. A completed Codemagic build is only shipped after its IPA is published there.
+- Fleet's `serena.fleet.reconcile` polls configured SideStore builds and publishes verified IPAs as `mobile-v<app-version>` in the releases repo. It preserves feed history and the desktop release's latest status, retries partial uploads, and survives dispatcher restarts. Configuration and verification rules: `docs/operations.md`, "SideStore publication".
+- Other apps can use live SideStore/LiveContainer feed endpoints (e.g. `/api/v1/sidestore/source`) that query Codemagic directly.
 
 ## Memory
 

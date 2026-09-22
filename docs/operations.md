@@ -390,6 +390,37 @@ Only `enqueue_task` stamps a `source_id`, and only sourced `ready` tasks are
 dispatched. Notes from `chats memory add` and every pre-queue task are
 `backlog`.
 
+### SideStore publication
+
+For Unified, add this object inside its existing `ship["duaragha/unified"]`
+rule in the PC's `~/.config/serena/dispatch.json`:
+
+```json
+"sidestore": {
+  "repo": "duaragha/unified-releases",
+  "bundle_id": "dev.unifiedinbox.mobile",
+  "branch": "main"
+}
+```
+
+`serena.fleet.reconcile` polls Codemagic's saved build history even when no Fleet
+tasks remain open. It selects the newest successful app version on that branch
+and configured workflow; failed builds and PR builds do not publish. This also
+recovers a build whose initiating dispatcher stopped. Publication verifies the
+build commit and manifest, IPA SHA-256/size, and the bundle/version/build/minimum
+iOS fields inside the IPA before uploading only the IPA. Small manifests may be
+inside Codemagic's `_artifacts.zip`. Public notes are generic; private task briefs,
+source archives, and commit messages are never copied to the public release.
+
+Mobile releases use `mobile-v<version>` and `--latest=false` to preserve the
+desktop updater's latest release. Existing assets must match the build; they
+are never overwritten. A contents-API SHA check preserves concurrent feed edits,
+older builds cannot displace newer versions, and a retry resumes a partial
+publication. Completion requires fetching the public feed and IPA successfully.
+Verified receipts live in `~/.config/serena/sidestore-publish.sqlite3`, separate
+from the task database. Reconcile's `publications` output exposes retry failures.
+`SERENA_SIDESTORE_PUBLISH_DB` overrides the receipt database for isolated checks.
+
 ## PC layout
 
 | What | Where |

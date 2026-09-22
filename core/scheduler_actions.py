@@ -795,10 +795,18 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
         if _notify_phone(question, f"task:{task_id}:question", answers_request=True):
             store.mark_task_asked(task_id)
             asked.append(task_id)
+    from core import sidestore_publish
+
+    publications = sidestore_publish.reconcile()
+    publication_summary = ""
+    if publications:
+        publication_summary = "; SideStore: " + ", ".join(
+            str(item.get("version") or item.get("source") or "publisher")
+            + " " + item["status"] for item in publications)
     return ActionOutcome(
         True, f"closed {sum(1 for r in closed if 'notified' in r)} task(s), "
-              f"asked {len(asked)} question(s)",
-        output={"closed": closed, "asked": asked},
+              f"asked {len(asked)} question(s){publication_summary}",
+        output={"closed": closed, "asked": asked, "publications": publications},
     )
 
 
