@@ -532,6 +532,25 @@ print(json.dumps({"type":"result","session_id":sid,"result":"reviewed","is_error
     assert result.actual_effort == "high"
 
 
+@pytest.mark.parametrize("terminal_errors", [True, False])
+def test_claude_terminal_result_preserves_overload_error(tmp_path, monkeypatch, terminal_errors):
+    error = "API Error: 529 overloaded_error"
+    events = [] if terminal_errors else [{"type": "error", "error": error}]
+    events.append({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                   "errors": [error] if terminal_errors else [], "result": ""})
+    source = "#!/usr/bin/env python3\nimport sys\nsys.stdin.read()\n"
+    source += "\n".join(f"print({json.dumps(event)!r}, flush=True)" for event in events)
+    source += "\nsys.exit(1)\n"
+    binary = _executable(tmp_path / "overloaded-claude", source)
+    monkeypatch.setenv("SERENA_FLEET_CLAUDE_BIN", str(binary))
+    monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr("core.fleet_workers._claude_actual_identity", lambda *a: (None, None))
+    result = run_worker(_request(tmp_path, "claude"), cancel_requested=lambda: False,
+                        on_event=lambda *a: None)
+    assert result.ok is False
+    assert result.error == error
+
+
 def test_synthetic_claude_error_never_overwrites_real_model_identity(tmp_path, monkeypatch):
     rollout = tmp_path / "claude.jsonl"
     rollout.write_text(

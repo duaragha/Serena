@@ -596,7 +596,12 @@ def _run_claude(
             session_id = str(event.get("session_id") or session_id or "") or None
             output_text = str(event.get("result") or "").strip() or output_text
             if event.get("is_error"):
-                error_detail = output_text or str(
+                errors = event.get("errors")
+                details = "\n".join(str(item) for item in errors if item) if isinstance(errors, list) else ""
+                # Claude's failed result can have an empty result and carry
+                # the actual API error only in errors[]. Keep an earlier
+                # typed error too, instead of replacing it with a subtype.
+                error_detail = details.strip() or output_text or error_detail or str(
                     event.get("subtype") or "Claude reported an error"
                 )
         elif event_type == "error":
