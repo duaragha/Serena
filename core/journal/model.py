@@ -15,9 +15,15 @@ import json
 import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 
 CLAUDE_MODEL = "sonnet"
 CODEX_TIMEOUT_SECONDS = 300
+# Every one-shot call is a saved session, and his chat list shows every saved
+# session -- the first week of drafts put a column of "You are reading
+# Raghav's own chat messages..." chats in his sidebar. A cwd under
+# ~/.cache/serena-headless-* is the scanner's skip convention (core/scanner.py).
+HEADLESS_CWD = Path.home() / ".cache" / "serena-headless-journal"
 
 
 class ModelUnavailable(RuntimeError):
@@ -33,8 +39,9 @@ async def _claude(prompt: str, system: str) -> str:
         query,
     )
 
+    HEADLESS_CWD.mkdir(parents=True, exist_ok=True)
     options = ClaudeAgentOptions(model=CLAUDE_MODEL, tools=[], allowed_tools=[], setting_sources=[],
-                                 max_turns=1, system_prompt=system)
+                                 max_turns=1, system_prompt=system, cwd=str(HEADLESS_CWD))
     chunks: list[str] = []
     async for message in query(prompt=prompt, options=options):
         if isinstance(message, AssistantMessage):
@@ -53,7 +60,9 @@ def _codex(prompt: str, system: str) -> str:
         # past Windows' 32K command-line limit, and the first fallback run on
         # the PC died on exactly that ("filename or extension is too long").
         done = subprocess.run(
-            [codex, "exec", "--json", "--skip-git-repo-check", "-s", "read-only", "-C", scratch, "-"],
+            # --ephemeral: no saved rollout, so no chat in his sidebar.
+            [codex, "exec", "--json", "--ephemeral", "--skip-git-repo-check", "-s", "read-only",
+             "-C", scratch, "-"],
             input=f"{system}\n\n{prompt}",
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=CODEX_TIMEOUT_SECONDS, check=False)

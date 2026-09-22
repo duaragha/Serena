@@ -647,3 +647,24 @@ def test_a_stop_shows_on_the_timeline():
                          "stops": [{"at": "7:19am", "minutes": 8, "place": ""}]}]}
     assert [line for _, line in draft._timeline(facts)] == ["7:16am · drove home → work",
                                                             "7:19am · stopped 8 min"]
+
+
+def test_journal_model_calls_never_become_chats_in_his_sidebar(monkeypatch):
+    """A saved session under a normal cwd shows up in his chat list."""
+
+    import subprocess
+
+    from core.journal import model
+
+    assert "serena-headless" in str(model.HEADLESS_CWD)
+    seen = {}
+
+    class Done:
+        returncode = 0
+        stderr = ""
+        stdout = '{"item": {"type": "agent_message", "text": "ok"}}'
+
+    monkeypatch.setattr(model.shutil, "which", lambda name: "codex")
+    monkeypatch.setattr(subprocess, "run", lambda args, **kw: seen.update(args=args) or Done())
+    model._codex("p", "s")
+    assert "--ephemeral" in seen["args"]
