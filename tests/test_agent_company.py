@@ -20,6 +20,9 @@ BRIEF = "Fix memory/store.py so expired task claims can be reclaimed safely."
 
 @pytest.fixture
 def queue(tmp_path, monkeypatch):
+    # Reconcile also polls configured publication destinations. Never inherit
+    # the operator's real ship rules when exercising the task loop.
+    monkeypatch.setenv("SERENA_DISPATCH_CONFIG", str(tmp_path / "dispatch.json"))
     monkeypatch.setattr(store, "MEMORY_DIR", tmp_path / "memory")
     monkeypatch.setattr(store, "_active_v2_store", lambda: None)
     monkeypatch.setattr(store, "_source_context", lambda: ("", "", "", ""))
