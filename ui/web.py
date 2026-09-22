@@ -5046,7 +5046,21 @@ function showSessionContextMenu(evt, idx) {
             },
           });
         }
-        items.push({ label: 'Unlink this', action: () => unlinkSession(sid) });
+        // A linked thread shows as one row, so "unlink this row" could only ever
+        // remove whichever member heads it. Name every member instead, so any
+        // one can leave while the rest stay linked.
+        const members = [s, ...sibs];
+        if (members.length > 2) {
+          const counts = {};
+          for (const m of members) { const a = _agentLabel(m.agent || 'claude'); counts[a] = (counts[a] || 0) + 1; }
+          for (const m of members) {
+            const agent = _agentLabel(m.agent || 'claude');
+            const who = counts[agent] > 1 ? agent + ' · ' + _menuLabel(m.display_title || 'Untitled') : agent;
+            items.push({ label: 'Remove ' + who + ' from thread', action: () => unlinkSession(m.session_id) });
+          }
+        } else {
+          items.push({ label: 'Unlink this', action: () => unlinkSession(sid) });
+        }
         items.push({ label: 'Disband linked thread', danger: true, action: () => disbandGroup(s.group) });
       }
     }
