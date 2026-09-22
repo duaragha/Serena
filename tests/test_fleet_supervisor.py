@@ -2057,9 +2057,11 @@ def test_confirmed_capacity_exhaustion_hands_the_same_slot_to_the_other_provider
     assert completed["chat_count"] == 4
 
 
+@pytest.mark.parametrize("provider_error", ["rate_limit_reached", "API Error: 529 Overloaded"])
 def test_explicit_single_provider_parks_for_capacity_and_allows_user_handoff(
     fleet_env,
     monkeypatch,
+    provider_error,
 ):
     calls: list[WorkerRequest] = []
     failed_once = False
@@ -2077,7 +2079,7 @@ def test_explicit_single_provider_parks_for_capacity_and_allows_user_handoff(
                 request.model,
                 request.effort,
                 1,
-                "rate_limit_reached",
+                provider_error,
             )
         return WorkerResult(
             True,
@@ -2191,9 +2193,11 @@ def test_capacity_wait_requires_positive_signal_then_resumes_the_same_provider(
     assert calls[1].resume_session_id == "claude-capacity-session"
 
 
+@pytest.mark.parametrize("provider_error", ["rate_limit_reached", "API Error: 529 Overloaded"])
 def test_balanced_run_hands_a_parked_worker_to_the_first_recovered_provider(
     fleet_env,
     monkeypatch,
+    provider_error,
 ):
     calls: list[WorkerRequest] = []
     failed_claude = False
@@ -2211,7 +2215,7 @@ def test_balanced_run_hands_a_parked_worker_to_the_first_recovered_provider(
                 request.model,
                 request.effort,
                 1,
-                "rate_limit_reached",
+                provider_error,
             )
         return WorkerResult(
             True,
@@ -2269,6 +2273,73 @@ def test_balanced_run_hands_a_parked_worker_to_the_first_recovered_provider(
     assert queued["policy"]["provider_mode"] == "adaptive"
     assert queued["policy"]["handoffs"][0]["automatic"] is True
     assert queued["phases"][0]["legs"][1]["runtime"] == "codex"
+
+
+@pytest.mark.parametrize("provider_error", [
+    '529 {"error":{"type":"overloaded_error","message":"Overloaded"}}',
+    "API Error: Repeated 529 Overloaded errors",
+    "Error code: 529",
+])
+def test_claude_overload_continues_on_codex_despite_healthy_usage(
+    fleet_env, monkeypatch, provider_error,
+):
+    calls = []
+
+    def worker(request, **kwargs):
+        calls.append(request)
+        if request.provider == "claude":
+            return WorkerResult(False, "saved the parser fix before the outage", "claude-outage",
+                                request.model, request.effort, 1, provider_error)
+        return WorkerResult(True, f"{request.phase}:complete", "codex-pickup",
+                            request.model, request.effort, 0)
+
+    monkeypatch.setattr(supervisor, "run_worker", worker)
+    run = supervisor.start_run("implement the parser fix", activity="coding",
+                               provider_mode="balanced", worker_count=1, cwd=str(fleet_env))
+    completed = supervisor.run_supervisor(run["run_id"])
+    assert completed["state"] == "completed", completed.get("error")
+    fixing = [request for request in calls if request.phase == "finalize"]
+    assert [request.provider for request in fixing] == ["claude", "codex"]
+    assert fixing[0].worker_key == fixing[1].worker_key
+    assert fixing[1].resume_session_id is None
+    assert "saved the parser fix before the outage" in fixing[1].prompt
+    handoff = completed["policy"]["handoffs"][0]
+    assert handoff["automatic"] is True
+    assert "service overload" in handoff["reason"]
+
+
+@pytest.mark.parametrize("provider_error", ["compile failed at line 529", "HTTP 401 unauthorized"])
+def test_non_overload_claude_error_does_not_change_provider(fleet_env, monkeypatch, provider_error):
+    def worker(request, **kwargs):
+        return WorkerResult(request.provider != "claude", "work", "session",
+                            request.model, request.effort, 1 if request.provider == "claude" else 0,
+                            provider_error if request.provider == "claude" else None)
+
+    monkeypatch.setattr(supervisor, "run_worker", worker)
+    run = supervisor.start_run("implement the parser fix", activity="coding",
+                               provider_mode="balanced", worker_count=1, cwd=str(fleet_env))
+    failed = supervisor.run_supervisor(run["run_id"])
+    assert failed["state"] == "failed"
+    assert not failed["policy"].get("handoffs")
+
+
+def test_overload_retry_does_not_wait_hours_for_an_account_reset(fleet_env, monkeypatch):
+    run = supervisor.start_run("implement with Claude only", activity="coding",
+                               provider_mode="claude", worker_count=1, cwd=str(fleet_env))
+    now = time.time()
+    monkeypatch.setattr(supervisor, "read_fleet_capacity", lambda: {
+        "claude": {"usable": True, "status": "available", "resets_at": now + 18000},
+        "codex": {"usable": False, "status": "unavailable", "resets_at": now + 18000},
+    })
+    monkeypatch.setattr(supervisor, "run_worker", lambda request, **kw: WorkerResult(
+        False, "saved work", "outage-session", request.model, request.effort, 1,
+        "API Error: 529 Overloaded"))
+    waiting = supervisor.run_supervisor(run["run_id"])
+    assert waiting["state"] == "waiting_for_capacity"
+    wait = waiting["capacity_waits"][0]
+    assert now + 30 <= wait["not_before"] < now + 90
+    assert wait["resets_at"] is None
+    assert wait["eligible_providers"] == ["claude"]
 
 
 def test_coding_lock_wait_is_polled_and_cancellable(fleet_env, monkeypatch):

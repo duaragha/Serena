@@ -952,6 +952,16 @@ Bounded inspection returns the newest events in chronological order; streaming c
 Confirmed provider exhaustion moves a worker to `waiting_for_capacity` instead of failing the run.
 The wait records the failed provider, eligible providers, reason, next probe, and any known reset.
 
+A terminal Claude `529` / `overloaded_error` also enters this recovery path,
+even when usage telemetry says the account has quota. Auto and balanced runs
+immediately hand the same logical worker and its saved work to Codex when it
+can accept work. The provider change is recorded in the frozen policy. If no
+allowed provider can take over, the resident loop probes again after at most
+60 seconds; it does not wait for an unrelated quota reset or a human retry.
+Explicit provider-only restrictions and cancellation still apply. Claude's
+terminal `errors[]` details are preserved so overloads are not hidden behind
+the generic `error_during_execution` subtype.
+
 ```text
 running worker
       |

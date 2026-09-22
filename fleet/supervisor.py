@@ -61,6 +61,7 @@ POLL_SECONDS = 0.5
 WAIT_POLL_SECONDS = 0.5
 CAPACITY_POLL_SECONDS = 30.0
 CAPACITY_RETRY_COOLDOWN_SECONDS = 300.0
+OVERLOAD_RETRY_COOLDOWN_SECONDS = 60.0
 CONTROL_PLANE_FLUSH_SECONDS = 2.0
 MAX_CONTEXT_CHARS = 96_000
 MAX_STEERING_CONTEXT_CHARS = 16_000
@@ -80,6 +81,11 @@ _CAPACITY_EXHAUSTION_ERROR = re.compile(
     r"usage (?:is )?(?:exhausted|limit reached)|(?:weekly|five[- ]hour|session) limit|"
     r"out of (?:extra )?usage|credit balance (?:is )?(?:too low|zero)|"
     r"(?:subscription|account) limit (?:has been )?reached)",
+    re.IGNORECASE,
+)
+_CLAUDE_OVERLOAD_ERROR = re.compile(
+    r"\boverloaded_error\b|\b529\s+(?:overloaded|overload)\b|"
+    r"\b(?:HTTP(?:Error)?|API[ _-]?error|(?:status|error)(?:[ _-]code)?)\s*[:=(]?\s*529\b",
     re.IGNORECASE,
 )
 
@@ -776,15 +782,17 @@ def _queue_automatic_capacity_handoff(
     capacity = _read_start_capacity()
     source_usable, source_reason = _capacity_decision(capacity.get(source))
     error = str(result.error or "")
-    confirmed = not source_usable or bool(_CAPACITY_EXHAUSTION_ERROR.search(error))
+    overloaded = source == "claude" and bool(_CLAUDE_OVERLOAD_ERROR.search(error))
+    confirmed = overloaded or not source_usable or bool(_CAPACITY_EXHAUSTION_ERROR.search(error))
     if not confirmed:
         return
     target_usable, target_reason = _capacity_decision(capacity.get(target))
     may_cross_provider = automatic_handoff and requested_mode in {"auto", "balanced", "mixed"}
+    failure = f"confirmed {source} " + ("service overload" if overloaded else "capacity exhaustion")
+    detail = error[:500] if overloaded else source_reason or error[:500]
     if may_cross_provider and target_usable:
         reason = (
-            f"confirmed {source} capacity exhaustion; continuing with {target}. "
-            f"{source_reason or error[:500]}"
+            f"{failure}; continuing with {target}. {detail}"
         ).strip()
         store.request_leg_handoff(
             str(run["run_id"]),
@@ -805,10 +813,14 @@ def _queue_automatic_capacity_handoff(
         if (reset := _capacity_reset(capacity.get(provider))) is not None and reset > now
     ]
     next_probe = min(resets) if resets else now + CAPACITY_RETRY_COOLDOWN_SECONDS
+    if overloaded:
+        # Usage telemetry may be healthy during a service outage. Its quota
+        # reset (possibly hours away) is not the next time Claude can be tried.
+        next_probe = min(next_probe, now + OVERLOAD_RETRY_COOLDOWN_SECONDS)
     next_probe = max(now + CAPACITY_POLL_SECONDS, next_probe)
     reason_parts = [
-        f"confirmed {source} capacity exhaustion",
-        source_reason or error[:500],
+        failure,
+        detail,
     ]
     if may_cross_provider and not target_usable:
         reason_parts.append(f"{target} is also unavailable: {target_reason or 'no capacity'}")
@@ -824,7 +836,7 @@ def _queue_automatic_capacity_handoff(
         eligible_providers=eligible,
         reason=wait_reason,
         not_before=next_probe,
-        resets_at=min(resets) if resets else None,
+        resets_at=min(resets) if resets and not overloaded else None,
     )
 
 
