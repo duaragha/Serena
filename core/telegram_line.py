@@ -169,7 +169,8 @@ def updates(*, offset: int = 0, wait_seconds: float = LONG_POLL_SECONDS) -> list
     payload: dict[str, Any] = {
         "limit": MAX_UPDATES,
         "timeout": wait,
-        "allowed_updates": ["message"],
+        # Button taps (retry, …) arrive as callback queries, not messages.
+        "allowed_updates": ["message", "callback_query"],
     }
     if offset:
         payload["offset"] = int(offset) + 1
@@ -188,6 +189,26 @@ def recent_messages(*, offset: int = 0,
     mine = str(chat_id())
     rows: list[dict[str, Any]] = []
     for update in updates(offset=offset, wait_seconds=wait_seconds):
+        callback = update.get("callback_query")
+        if isinstance(callback, dict):
+            source = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+            chat = source.get("chat") if isinstance(source.get("chat"), dict) else {}
+            author = callback.get("from") if isinstance(callback.get("from"), dict) else {}
+            # A tap only counts from his chat, and only from him.
+            if str(chat.get("id") or "") != mine or str(author.get("id") or "") != mine:
+                continue
+            rows.append({
+                "id": f"cb-{callback.get('id') or ''}",
+                "text": "",
+                "created": int(update.get("update_id") or 0),
+                "own": False,
+                "deleted": False,
+                "kind": "callback",
+                "data": str(callback.get("data") or ""),
+                "callback_id": str(callback.get("id") or ""),
+                "thread_id": source.get("message_thread_id"),
+            })
+            continue
         message = update.get("message")
         if not isinstance(message, dict):
             continue
@@ -203,20 +224,152 @@ def recent_messages(*, offset: int = 0,
             "own": bool(author.get("is_bot")),
             "deleted": False,
             "kind": "text" if isinstance(text, str) and text.strip() else "other",
+            "thread_id": message.get("message_thread_id"),
         })
     return rows
 
 
-def send_text(text: str) -> bool:
+# Her chat is split into threads so a health alert never buries a job update.
+# icon_color must be one of Telegram's six fixed topic colours.
+TOPICS: tuple[tuple[str, str, int], ...] = (
+    ("jobs", "🛠 Jobs", 0x6FB9F0),
+    ("health", "🩺 Health", 0xFB6F5F),
+    ("journal", "📓 Journal", 0xCB86DB),
+    ("chat", "💬 Chat", 0x8EEE98),
+)
+
+
+def topics_path() -> Path:
+    configured_path = os.environ.get("SERENA_TELEGRAM_TOPICS", "").strip()
+    return Path(configured_path).expanduser() if configured_path else (
+        Path.home() / ".config" / "serena" / "telegram-topics.json")
+
+
+def _load_topics() -> dict[str, int]:
+    try:
+        data = json.loads(topics_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or str(data.get("chat_id") or "") != str(chat_id()):
+        return {}
+    threads = data.get("threads") if isinstance(data.get("threads"), dict) else {}
+    return {str(k): int(v) for k, v in threads.items() if str(v).lstrip("-").isdigit()}
+
+
+def ensure_topics() -> dict[str, int]:
+    """Create any missing topic in his chat, once; {} when threaded mode is off."""
+
+    threads = _load_topics()
+    if all(name in threads for name, _label, _color in TOPICS):
+        return threads
+    try:
+        if not identity().get("has_topics_enabled"):
+            return threads
+        for name, label, color in TOPICS:
+            if name in threads:
+                continue
+            created = _call("createForumTopic", {
+                "chat_id": chat_id(), "name": label, "icon_color": color})
+            if isinstance(created, dict) and created.get("message_thread_id"):
+                threads[name] = int(created["message_thread_id"])
+    except TelegramLineError:
+        pass
+    path = topics_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"chat_id": str(chat_id()), "threads": threads}, indent=2),
+                    encoding="utf-8")
+    return threads
+
+
+def topic_thread(topic: str | None) -> int | None:
+    if not topic:
+        return None
+    return ensure_topics().get(topic)
+
+
+def _markup(buttons: list[list[dict[str, Any]]] | None) -> dict[str, Any] | None:
+    rows = [[dict(button) for button in row if isinstance(button, dict)]
+            for row in (buttons or []) if row]
+    rows = [row for row in rows if row]
+    return {"inline_keyboard": rows} if rows else None
+
+
+def send_text(text: str, *, topic: str | None = None, thread: int | None = None,
+              html: bool = False, buttons: list[list[dict[str, Any]]] | None = None,
+              silent: bool = False) -> int:
+    """Send one message; the new message_id (truthy) or 0.
+
+    ``topic`` names one of TOPICS; ``thread`` is an explicit thread id (a reply
+    goes back into the thread he wrote in). With neither, it lands in the chat
+    as before. A thread that no longer exists falls back to no thread rather
+    than losing the message.
+    """
+
     body = (text or "").strip()
     if not body:
-        return False
+        return 0
     target = chat_id()
     if not target:
         raise TelegramLineError("telegram.env has no TELEGRAM_CHAT_ID")
-    result = _call("sendMessage", {
+    payload: dict[str, Any] = {
         "chat_id": target,
         "text": body[:4096],
-        "disable_web_page_preview": True,
-    })
-    return isinstance(result, dict) and bool(result.get("message_id"))
+        "link_preview_options": {"is_disabled": True},
+    }
+    if html:
+        payload["parse_mode"] = "HTML"
+    markup = _markup(buttons)
+    if markup:
+        payload["reply_markup"] = markup
+    if silent:
+        payload["disable_notification"] = True
+    where = thread if thread else topic_thread(topic)
+    if where:
+        payload["message_thread_id"] = int(where)
+    try:
+        result = _call("sendMessage", payload)
+    except TelegramLineError as error:
+        if "message_thread_id" not in payload or "thread" not in str(error).lower():
+            raise
+        payload.pop("message_thread_id")
+        result = _call("sendMessage", payload)
+    return int(result.get("message_id") or 0) if isinstance(result, dict) else 0
+
+
+def edit_text(message_id: int, text: str, *, html: bool = True,
+              buttons: list[list[dict[str, Any]]] | None = None) -> bool:
+    """Rewrite a message in place; editing never buzzes his phone."""
+
+    payload: dict[str, Any] = {
+        "chat_id": chat_id(),
+        "message_id": int(message_id),
+        "text": (text or "").strip()[:4096],
+        "link_preview_options": {"is_disabled": True},
+    }
+    if html:
+        payload["parse_mode"] = "HTML"
+    markup = _markup(buttons)
+    payload["reply_markup"] = markup or {"inline_keyboard": []}
+    try:
+        _call("editMessageText", payload)
+    except TelegramLineError as error:
+        # Unchanged content is success; anything else (deleted, too old) is not.
+        return "not modified" in str(error).lower()
+    return True
+
+
+def delete_message(message_id: int) -> bool:
+    try:
+        return bool(_call("deleteMessage", {"chat_id": chat_id(), "message_id": int(message_id)}))
+    except TelegramLineError:
+        return False
+
+
+def answer_callback(callback_id: str, text: str = "") -> bool:
+    """Stop the button's spinner; ``text`` shows as a small toast."""
+
+    try:
+        return bool(_call("answerCallbackQuery", {
+            "callback_query_id": callback_id, "text": text[:200]}))
+    except TelegramLineError:
+        return False

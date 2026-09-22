@@ -111,10 +111,10 @@ class _HubBackend:
             })
         return rows
 
-    def send(self, text: str, key: str) -> bool:
+    def send(self, text: str, key: str, **options: Any) -> bool:
         from core import unified_hub
 
-        body = text.strip()
+        body = _plain(text, options).strip()
         if not body.lower().startswith(PREFIX):
             body = f"{PREFIX} {body}"
         return unified_hub.send_text(body, idempotency_key=key).ok
@@ -172,10 +172,10 @@ class _BlueBubblesBackend(_FileStateBackend):
         prefix = PREFIX if bluebubbles_line.self_thread() else ""
         return bluebubbles_line.recent_messages(limit=50, own_prefix=prefix)
 
-    def send(self, text: str, key: str) -> bool:
+    def send(self, text: str, key: str, **options: Any) -> bool:
         from core import bluebubbles_line
 
-        body = text.strip()
+        body = _plain(text, options).strip()
         if bluebubbles_line.self_thread():
             # The prefix is what tells her messages from his in that thread.
             if not body.lower().startswith(PREFIX):
@@ -216,7 +216,7 @@ class _TelegramBackend(_FileStateBackend):
             offset = 0
         return telegram_line.recent_messages(offset=offset)
 
-    def send(self, text: str, key: str) -> bool:
+    def send(self, text: str, key: str, **options: Any) -> bool:
         from core import telegram_line
 
         # The bot is its own sender, so the "serena:" disambiguator is noise.
@@ -224,9 +224,25 @@ class _TelegramBackend(_FileStateBackend):
         if body.lower().startswith(PREFIX):
             body = body[len(PREFIX):].strip()
         try:
-            return telegram_line.send_text(body)
+            return bool(telegram_line.send_text(
+                body, topic=options.get("topic"), thread=options.get("thread"),
+                html=bool(options.get("html")), buttons=options.get("buttons"),
+                silent=bool(options.get("silent"))))
         except telegram_line.TelegramLineError:
             return False
+
+
+_TAG = re.compile(r"<[^>]+>")
+
+
+def _plain(text: str, options: dict[str, Any]) -> str:
+    """Flatten Telegram HTML for a transport that shows tags literally."""
+
+    if not options.get("html"):
+        return text
+    import html as html_lib
+
+    return html_lib.unescape(_TAG.sub("", text))
 
 
 def _backend():
@@ -242,10 +258,16 @@ def backend_name() -> str:
     return _backend().name
 
 
-def send(text: str, *, key: str = "") -> bool:
-    """Text Raghav. Returns True only when the transport accepted the message."""
+def send(text: str, *, key: str = "", topic: str | None = None, thread: int | None = None,
+         html: bool = False, buttons: list | None = None, silent: bool = False) -> bool:
+    """Text Raghav. Returns True only when the transport accepted the message.
 
-    return _backend().send(text, key)
+    ``topic`` ("jobs", "health", "journal", "chat"), ``thread``, ``html``,
+    ``buttons`` and ``silent`` are Telegram's; other lines flatten or ignore them.
+    """
+
+    return _backend().send(text, key, topic=topic, thread=thread, html=html,
+                           buttons=buttons, silent=silent)
 
 
 def send_fallback(text: str, *, key: str = "") -> bool:
@@ -403,6 +425,25 @@ def _record_swap(moment: float) -> str:
     return "noted. next sim refresh reminder in 6 weeks; i'll check the number tomorrow."
 
 
+def _handle_button(message: dict[str, Any]) -> dict[str, Any]:
+    """A tap on one of her buttons. Only "retry:<task id>" exists today."""
+
+    from core import telegram_line
+
+    data = str(message.get("data") or "")
+    outcome: dict[str, Any] = {"kind": "button", "data": data}
+    match = re.fullmatch(r"retry:(\d+)", data)
+    if match:
+        task_id = int(match.group(1))
+        reply = _retry(task_id)
+        outcome["task_id"] = task_id
+    else:
+        reply = "that button doesn't do anything yet."
+    telegram_line.answer_callback(str(message.get("callback_id") or ""), reply)
+    outcome["replied"] = True
+    return outcome
+
+
 def poll(*, now: float | None = None) -> PollReport:
     """Read new thread messages once and act on the commands among them."""
 
@@ -433,6 +474,12 @@ def poll(*, now: float | None = None) -> PollReport:
             continue
         message_id = message["id"]
         text = message["text"]
+        thread = message.get("thread_id")
+        if message.get("kind") == "callback":
+            newest = max(newest, created)
+            report.seen += 1
+            report.commands.append(_handle_button(message))
+            continue
         command = None
         his = bool(message_id) and not message["own"] and not message["deleted"]
         if his and message["kind"] == "text":
@@ -452,7 +499,8 @@ def poll(*, now: float | None = None) -> PollReport:
             handled[fingerprint] = moment
             report.commands.append({
                 "kind": "say", "message_id": message_id,
-                "replied": send(command[1]["say"], key=f"serena-reply-{message_id}"),
+                "replied": send(command[1]["say"], key=f"serena-reply-{message_id}",
+                                thread=thread),
             })
             continue
         if command is None:
@@ -462,7 +510,7 @@ def poll(*, now: float | None = None) -> PollReport:
             # read as work, and saying so beats looking dead.
             if his and line.dedicated:
                 send("i can only read text. type what you want done.",
-                     key=f"serena-unreadable-{message_id}")
+                     key=f"serena-unreadable-{message_id}", thread=thread)
             continue
         if fingerprint in handled and moment - float(handled[fingerprint]) < DUPLICATE_WINDOW_SECONDS:
             continue
@@ -500,7 +548,7 @@ def poll(*, now: float | None = None) -> PollReport:
         except (ValueError, TimeoutError) as error:
             reply = f"couldn't take that: {error}"
             outcome["error"] = str(error)
-        outcome["replied"] = send(reply, key=f"serena-reply-{message_id}")
+        outcome["replied"] = send(reply, key=f"serena-reply-{message_id}", thread=thread)
         report.commands.append(outcome)
     cutoff = moment - DUPLICATE_WINDOW_SECONDS
     line.save_state(

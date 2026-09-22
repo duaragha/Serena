@@ -147,9 +147,43 @@ def _chats_binary() -> str | None:
     return found if found and Path(found).is_file() else None
 
 
-def send_telegram(request: NotificationRequest) -> bool:
-    """Text his phone through the existing bot, via the chats CLI."""
+# Which thread of her Telegram chat each kind of notice belongs in.
+_TOPIC_PREFIXES = (
+    ("task.", "jobs"),
+    ("fleet.", "jobs"),
+    ("serena.doctor", "health"),
+    ("journal", "journal"),
+)
+# Health checks that mean she is actually down. Everything else the doctor
+# reports lands silently in the Health topic: readable, but never a buzz.
+_LOUD_HEALTH = ("brain.down",)
 
+
+def telegram_topic(request: NotificationRequest) -> str:
+    kind = str(request.kind or "")
+    for prefix, topic in _TOPIC_PREFIXES:
+        if kind.startswith(prefix):
+            return topic
+    return "chat"
+
+
+def telegram_silent(request: NotificationRequest) -> bool:
+    return (str(request.kind or "").startswith("serena.doctor")
+            and not any(check in str(request.summary or "") for check in _LOUD_HEALTH))
+
+
+def send_telegram(request: NotificationRequest) -> bool:
+    """Text his phone through the bot, into the notice's own topic."""
+
+    from core import telegram_line
+
+    if telegram_line.configured():
+        try:
+            return bool(telegram_line.send_text(
+                request.summary, topic=telegram_topic(request),
+                silent=telegram_silent(request)))
+        except telegram_line.TelegramLineError:
+            return False
     executable = _chats_binary()
     if not executable:
         return False
@@ -173,7 +207,8 @@ def send_imessage(request: NotificationRequest) -> bool:
     from core import phone_line
 
     try:
-        return phone_line.send(request.summary, key=request.dedupe_key or "")
+        return phone_line.send(request.summary, key=request.dedupe_key or "",
+                               topic=telegram_topic(request), silent=telegram_silent(request))
     except Exception:
         return False
 

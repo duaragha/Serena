@@ -45,6 +45,19 @@ def _no_live_brain(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_live_text_line(tmp_path, monkeypatch):
+    """No test reaches his real Telegram chat.
+
+    The laptop carries the live bot token and phone-line.json, so a test that
+    exercised job cards once posted real "#1" cards into his Jobs topic. Tests
+    that need the line configure these paths themselves.
+    """
+    monkeypatch.setenv("SERENA_TELEGRAM_ENV", str(tmp_path / "no-telegram.env"))
+    monkeypatch.setenv("SERENA_PHONE_LINE_CONFIG", str(tmp_path / "no-phone-line.json"))
+    monkeypatch.setenv("SERENA_TELEGRAM_TOPICS", str(tmp_path / "no-topics.json"))
+
+
+@pytest.fixture(autouse=True)
 def fleet_private_proof_state(request, tmp_path, monkeypatch):
     """Fleet fixtures never acquire operator locks or write operator artifacts."""
     if not request.node.path.name.startswith('test_fleet'):

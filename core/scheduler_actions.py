@@ -564,14 +564,6 @@ def _notify_once(text: str, key: str, *, answers_request: bool = False) -> bool:
     return True
 
 
-def _spoken_summary(task_id: int, final: str, headline: str) -> str:
-    """What she says when he picks up; links stay in the text."""
-
-    if final == "done":
-        return f"hey, task {task_id} is done: {headline}. details are in your messages."
-    return f"hey, task {task_id} got stuck: {headline}. i texted you what happened."
-
-
 _LABEL_FILLER = re.compile(
     r"^\s*(?:in|for|on)\s+[\w-]+\s*(?:\([^)]*\))?\s*[,:-]?\s*", re.IGNORECASE)
 
@@ -684,7 +676,8 @@ _TRANSIENT_FAILURES = re.compile(
 MAX_AUTO_RETRIES = 2
 
 
-def _auto_retry_transient(task: dict[str, Any], run_id: str, reason: str, headline: str) -> bool:
+def _auto_retry_transient(task: dict[str, Any], run_id: str, reason: str, headline: str,
+                          *, announce: bool = True) -> bool:
     """Rerun a run that failed on a transient error, at most twice. True if rerun."""
 
     import sqlite3
@@ -711,12 +704,13 @@ def _auto_retry_transient(task: dict[str, Any], run_id: str, reason: str, headli
     except Exception:
         return False
     attempt = used + 1
-    _notify_once(
-        f"#{task_id} hit a temporary error ({reason[:120]}), rerunning it myself "
-        f"({attempt}/{MAX_AUTO_RETRIES}): {headline}",
-        f"task:{task_id}:autoretry:{run_id}:{attempt}",
-        answers_request=_he_asked(task),
-    )
+    if announce:
+        _notify_once(
+            f"#{task_id} hit a temporary error ({reason[:120]}), rerunning it myself "
+            f"({attempt}/{MAX_AUTO_RETRIES}): {headline}",
+            f"task:{task_id}:autoretry:{run_id}:{attempt}",
+            answers_request=_he_asked(task),
+        )
     with closing(sqlite3.connect(path, timeout=5)) as db, db:
         # Counted even if the text was held back, so the budget cannot reset.
         db.execute("INSERT OR IGNORE INTO notices(key) VALUES (?)",
@@ -734,7 +728,7 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
 
     import hashlib
 
-    from core import agent_checkouts
+    from core import agent_checkouts, job_cards
     from fleet.supervisor import get_run
     from memory import store
 
@@ -757,6 +751,10 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             # once per distinct question; the task stays open for a retry.
             reason = " ".join(str(run.get("error") or "needs input").split())[:300]
             digest = hashlib.sha256(reason.encode("utf-8")).hexdigest()[:12]
+            if job_cards.show(task, run, "waiting", _task_label(task), reason=reason):
+                closed.append({"task_id": int(task["id"]), "run_state": state,
+                               "waiting": True, "card": True})
+                continue
             if _notify_once(
                 f"#{task['id']} is stuck waiting on input (fleet {run_id[:8]}): {reason}",
                 f"task:{task['id']}:waiting:{digest}",
@@ -765,7 +763,11 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
                 closed.append({"task_id": int(task["id"]), "run_state": state,
                                "waiting": True})
             continue
-        _announce_finished_phases(task, run_id, run)
+        # One card per job, rewritten in place as phases finish; the old
+        # per-phase texts remain only for a line that cannot edit messages.
+        if state not in TERMINAL_RUN_STATES and not job_cards.show(
+                task, run, "running", _task_label(task)):
+            _announce_finished_phases(task, run_id, run)
         if state not in TERMINAL_RUN_STATES:
             continue
         task_id = int(task["id"])
@@ -790,6 +792,10 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
                 # instead of pushing every 60 seconds and never mentioning it.
                 reason = " ".join(str(error).split())[:300]
                 stuck = hashlib.sha256(reason.encode("utf-8")).hexdigest()[:12]
+                if job_cards.show(task, run, "undeliverable", headline, reason=reason):
+                    record["card"] = True
+                    closed.append(record)
+                    continue
                 record["notified"] = _notify_once(
                     f"#{task_id} built, can't deliver: {headline}. {reason}",
                     f"task:{task_id}:delivery:{stuck}",
@@ -798,6 +804,7 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
                 closed.append(record)
                 continue
             record.update(delivery=delivery.status, url=delivery.url)
+            card: dict[str, Any] = {"url": delivery.url}
             if delivery.status == "no_changes":
                 result, message = "done: no changes needed", (
                     f"#{task_id} done, no code changes needed: {headline}")
@@ -810,26 +817,40 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
                 tail = f"; {shipped}" if shipped else ""
                 result, message = f"merged: {delivery.url}{tail}", (
                     f"#{task_id} merged (4/4): {headline}{tail}. {delivery.url}")
+                card.update(status="merged", note=(
+                    "📱 SideStore build started" if "codemagic" in shipped
+                    else shipped))
             else:
                 note = f" ({delivery.detail})" if delivery.detail else ""
                 result, message = f"pr: {delivery.url}", (
                     f"#{task_id} PR ready (4/4): {headline}{note}. {delivery.url}")
+                card.update(status="pr", note=delivery.detail)
+            card.setdefault("status", "no_changes")
             final = "done"
         else:
             reason = str(run.get("error") or state)[:200]
-            if state == "failed" and _auto_retry_transient(task, run_id, reason, headline):
+            carded = job_cards.enabled()
+            if state == "failed" and _auto_retry_transient(
+                    task, run_id, reason, headline, announce=not carded):
                 # Rerun from the failed phase; the task stays on the same run.
                 record["auto_retried"] = True
+                job_cards.show(task, run, "retrying", headline,
+                               note="hit a temporary error, rerunning it myself",
+                               reason=reason)
                 closed.append(record)
                 continue
             result = f"{state}: {reason}"
             message = f"#{task_id} {state}: {headline}. {reason}"
+            card = {"status": "failed", "reason": reason}
             final = "blocked"
         if store.finish_task_run(task_id, run_id, final, result):
-            record["notified"] = _notify_phone(
-                message, f"task:{task_id}:{final}", answers_request=_he_asked(task))
-            record["called"] = _ring_phone(_spoken_summary(task_id, final, headline),
-                                           f"task:{task_id}:{final}")
+            # The card is the announcement; the plain text is for other lines.
+            # No phone call any more: it only repeated the text he already had.
+            status = card.pop("status")
+            record["card"] = job_cards.show(task, run, status, headline, **card)
+            if not record["card"]:
+                record["notified"] = _notify_phone(
+                    message, f"task:{task_id}:{final}", answers_request=_he_asked(task))
             if checkout is not None and final == "done":
                 # A failed run keeps its worktree so the partial work can be read.
                 agent_checkouts.cleanup(checkout)
@@ -957,9 +978,14 @@ def nudge_phone_line(payload: dict[str, Any]) -> ActionOutcome:
     if quiet_for > 0:
         return ActionOutcome(True, f"spoke recently; quiet for {int(quiet_for / 60)}m more")
 
+    # Each stuck job is raised once. Asking again every shift is how #65 got
+    # 23 identical reminders; its card already says it is stuck.
+    told = set(state.get("told") or [])
     candidate = None
     for task in store.tasks_in_state("blocked", "needs_triage"):
         if store._is_snoozed(task):
+            continue
+        if f"nudge:{task['id']}:{task['state']}" in told:
             continue
         if task["state"] == "needs_triage":
             # Unasked briefs are the reconciler's job; she only chases the
@@ -986,7 +1012,9 @@ def nudge_phone_line(payload: dict[str, Any]) -> ActionOutcome:
     # started it: she re-raised the same task every fifteen minutes all night
     # and he woke to the pile.
     if decision in NUDGE_SPOKEN_DECISIONS:
-        state.update(nudged_at=now, task_id=candidate["id"], key=key)
+        told.add(key)
+        state.update(nudged_at=now, task_id=candidate["id"], key=key,
+                     told=sorted(told)[-500:])
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(state, indent=2), encoding="utf-8")
     return ActionOutcome(

@@ -13,6 +13,10 @@ def notify_blocked_run(store, run, authority_factory):
         "completed", "failed", "cancelled", "stopping",
     }:
         return
+    from fleet.supervisor import is_canary_run
+
+    if is_canary_run(run):
+        return
     if str(run.get("origin_session_id") or "").startswith("serena-task:"):
         # The task dispatcher texts him about its own parked runs, with the
         # task number he can reply to. A second, generic alert is noise.
