@@ -248,6 +248,17 @@ class TestWhenItRuns:
         at(9, 0)
         assert [(d.isoformat(), call) for d, call in calls["send"]] == [("2026-09-20", False)]
 
+    def test_yesterday_is_refreshed_once_in_the_morning_without_a_text(self, clock):
+        """The 11:45pm draft predates his getting home; the morning fills it in."""
+
+        calls, at, _ = clock
+        store.save_day("2026-09-20", sent_at=1.0)
+        at(10, 5)
+        assert [d.isoformat() for d in calls["build"]] == ["2026-09-20"]
+        assert calls["send"] == []
+        at(10, 10)
+        assert len(calls["build"]) == 1, "only once"
+
     def test_the_morning_catch_up_waits_for_quiet_hours_to_end(self, clock):
         calls, at, policy = clock
         policy.quiet = True
@@ -530,3 +541,29 @@ class TestFromAnyMachine:
 
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done())
         assert "error" in remote.call("answer", {"answer": "x"})
+
+
+
+def test_agent_commits_are_not_his():
+    """They go out under his git name; 'you made 16 commits' was all agents."""
+
+    from core.journal.facts import _is_agents
+
+    assert _is_agents("fix(journal): x", "Claude Opus 5 (1M context) <noreply@anthropic.com>")
+    assert _is_agents("serena: In Locket, add a scanner", "")
+    assert _is_agents("feat: y", "Codex <codex@openai.com>")
+    assert not _is_agents("fix typo in readme", "")
+
+
+def test_visit_spans_read_the_way_his_day_does():
+    assert draft.span({"arrived": "2:10pm", "departed": "5:40pm"}) == "2:10pm–5:40pm"
+    assert draft.span({"arrived": "10:19pm", "departed": "~12:27am"}) == "10:19pm–~12:27am"
+    assert draft.span({"arrived": "12:27am", "departed": "7:20am", "ends_after": True}) == "from 12:27am"
+    assert draft.span({"arrived": "11pm", "departed": "7:20am", "started_before": True}) == "until 7:20am"
+
+
+def test_home_and_work_are_never_asked_about():
+    visit = {"arrived": "9:17am", "departed": "5:09pm", "arrived_ts": 1.0, "minutes": 470,
+             "lat": 43.718, "lng": -79.469}
+    facts = {"visits": [{**visit, "place": "work"}, {**visit, "arrived_ts": 2.0, "place": "home"}]}
+    assert draft.questions(facts) == []

@@ -54,7 +54,7 @@ def _connect() -> sqlite3.Connection:
         );
         """)
     # Added after the first release; older databases get them here.
-    for column in ("entry_base", "entry_written"):
+    for column in ("entry_base", "entry_written", "refreshed_at"):
         with suppress(sqlite3.OperationalError):
             connection.execute(f"ALTER TABLE days ADD COLUMN {column} TEXT")
     if os.name != "nt":
@@ -72,6 +72,20 @@ def distance_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 
 
 def place_for(lat: float, lng: float) -> str:
+    """What to call a spot: the name he gave it, else home or work, else ''."""
+
+    named = _named_place(lat, lng)
+    if named:
+        return named
+    try:
+        from core.journal.places import anchor_for
+
+        return anchor_for(lat, lng)
+    except Exception:
+        return ""
+
+
+def _named_place(lat: float, lng: float) -> str:
     """The name he gave the nearest known place, or '' when there is none."""
 
     with closing(_connect()) as connection:
@@ -117,6 +131,7 @@ def load_day(day: str) -> dict[str, Any] | None:
         "called_at": row["called_at"],
         "entry_base": row["entry_base"],
         "entry_written": row["entry_written"],
+        "refreshed_at": row["refreshed_at"],
     }
 
 
@@ -126,6 +141,7 @@ def save_day(day: str, **fields: Any) -> None:
         "summary": "summary", "entry_id": "entry_id", "drafted_at": "drafted_at",
         "sent_at": "sent_at", "called_at": "called_at",
         "entry_base": "entry_base", "entry_written": "entry_written",
+        "refreshed_at": "refreshed_at",
     }
     values = {}
     for key, value in fields.items():

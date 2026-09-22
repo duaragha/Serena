@@ -1221,6 +1221,19 @@ def journal_nightly(payload: dict[str, Any]) -> ActionOutcome:
         return ActionOutcome(True, f"journal for {due}: {outcome}", output=outcome)
 
     yesterday = today - timedelta(days=1)
+    # The 11:45pm draft is written before the night is over -- he got home at
+    # 12:27am on the first night it ran, and his phone had died, so even that
+    # uploaded at 7:34am. Once his day has ended (5am) and the phone has had
+    # the morning to catch up, yesterday is rebuilt once, silently, in place.
+    record = store.load_day(yesterday.isoformat())
+    if (record and record.get("sent_at") and not record.get("refreshed_at")
+            and now.hour >= JOURNAL_REFRESH_AFTER_HOUR):
+        try:
+            nightly.build(yesterday)
+        except Exception as error:
+            return ActionOutcome(False, f"morning refresh of {yesterday} failed: {_why(error)}")
+        store.save_day(yesterday.isoformat(), refreshed_at=time.time())
+        return ActionOutcome(True, f"refreshed journal for {yesterday}")
     if not default_authority().policy.in_quiet_hours(time.time()) and unsent(yesterday):
         try:
             nightly.build(yesterday)
@@ -1236,6 +1249,8 @@ def journal_nightly(payload: dict[str, Any]) -> ActionOutcome:
 JOURNAL_SEND_AT = (23, 45)
 # A tick that lands just past midnight still sends the day that just ended.
 JOURNAL_GRACE_UNTIL_HOUR = 1
+# Late enough that a phone which died overnight has been charged and synced.
+JOURNAL_REFRESH_AFTER_HOUR = 10
 
 
 REVIEWED_ACTIONS = {

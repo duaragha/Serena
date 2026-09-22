@@ -43,10 +43,9 @@ def questions(facts: dict[str, Any]) -> list[dict[str, Any]]:
         out.append({"id": f"who-{i + 1}", "kind": "who", "text": text})
     for visit in facts.get("visits") or []:
         if not visit.get("place") and (visit.get("minutes") or 0) >= ASK_ABOUT_VISIT_MINUTES:
-            span = f"{visit['arrived']}–{visit['departed'] or 'late'}"
             out.append({
                 "id": f"where-{int(visit['arrived_ts'])}", "kind": "where",
-                "text": f"where were you {span}?",
+                "text": f"where were you {span(visit)}?",
                 "lat": visit["lat"], "lng": visit["lng"],
             })
     people = [p["name"] for p in facts.get("people") or []]
@@ -57,6 +56,18 @@ def questions(facts: dict[str, Any]) -> list[dict[str, Any]]:
         out.append({"id": "where-with", "kind": "where-with",
                     "text": f"where did you go with {names}?"})
     return out[:MAX_QUESTIONS]
+
+
+def span(visit: dict[str, Any]) -> str:
+    """"2:10pm–5:40pm", or open-ended when the visit runs past his day."""
+
+    start = "" if visit.get("started_before") else visit.get("arrived", "")
+    end = "" if visit.get("ends_after") else (visit.get("departed") or "")
+    if start and end:
+        return f"{start}–{end}"
+    if end:
+        return f"until {end}"
+    return f"from {start}" if start else "all day"
 
 
 def _timeline(facts: dict[str, Any]) -> list[tuple[str, str]]:
@@ -78,7 +89,8 @@ def _timeline(facts: dict[str, Any]) -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = []
     for v in facts.get("visits") or []:
         if v.get("place"):
-            rows.append((key(v["arrived"]), f"{v['arrived']}–{v['departed'] or 'late'} · {v['place']}"))
+            rows.append(("00:00" if v.get("started_before") else key(v["arrived"]),
+                         f"{span(v)} · {v['place']}"))
     for d in facts.get("drives") or []:
         if d.get("from") and d.get("to") and d["from"] != d["to"]:
             rows.append((key(d["start"]), f"{d['start']} · drove {d['from']} → {d['to']}"))
