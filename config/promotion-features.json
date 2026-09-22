@@ -58,6 +58,14 @@
       "commit": "75d5f6bcd26eb4fdd8ca4f509fd09fcfb9c573ca",
       "requires": [],
       "paths": ["ui/static/workspace.css", "tests/test_workspace_browser.py"]
+    },
+    {
+      "id": "linked-member-removal",
+      "title": "Remove any one member from a linked thread",
+      "devTag": "v0.3.10-dev.5",
+      "commit": "4db8879cc4752bfb0f6912512e46d68e79d9a2ef",
+      "requires": [],
+      "paths": ["ui/web.py", "tests/test_linked_thread_menu.py", "tests/test_group_unlink_member.py"]
     }
   ]
 }
