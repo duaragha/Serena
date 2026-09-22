@@ -580,3 +580,48 @@ def test_a_drive_that_ends_where_he_parks_still_names_the_place(tmp_path, monkey
     store.name_place("work", 43.718, -79.4691)
     assert store.place_for(43.722591, -79.463628) == ""                    # ~630 m: a visit here is elsewhere
     assert store.place_for(43.722591, -79.463628, radius_m=1000) == "work"  # a drive ending here is work
+
+
+class TestPlaceNamesFromTheMap:
+    """Offline OpenStreetMap names, nothing sent anywhere."""
+
+    @pytest.fixture
+    def osm(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        path = tmp_path / "osm.sqlite3"
+        db = sqlite3.connect(path)
+        db.executescript("""
+            CREATE TABLE pois (id INTEGER PRIMARY KEY, name TEXT, kind TEXT, lat REAL, lng REAL);
+            CREATE TABLE addresses (id INTEGER PRIMARY KEY, street TEXT, number TEXT, lat REAL, lng REAL);
+        """)
+        db.execute("INSERT INTO pois(name, kind, lat, lng) VALUES ('MOTW Cafe', 'amenity=cafe', 43.6000, -79.6400)")
+        db.execute("INSERT INTO pois(name, kind, lat, lng) VALUES ('Far Shop', 'shop=books', 43.6010, -79.6400)")
+        db.execute("INSERT INTO addresses(street, number, lat, lng) VALUES ('Sandalwood Pkwy', '12', 43.7000, -79.8000)")
+        db.commit()
+        db.close()
+        monkeypatch.setenv("SERENA_OSM_PLACES", str(path))
+        from core.journal import osm_places
+
+        return osm_places
+
+    def test_the_nearest_place_within_reach_names_the_visit(self, osm):
+        assert osm.lookup(43.60010, -79.64005)["name"] == "MOTW Cafe"   # ~13 m
+
+    def test_a_place_too_far_away_is_not_a_guess(self, osm):
+        assert osm.lookup(43.6005, -79.6480) is None                     # ~650 m
+
+    def test_a_house_gives_its_street_not_a_name(self, osm):
+        assert osm.lookup(43.70005, -79.80005) == {"street": "Sandalwood Pkwy"}
+
+    def test_the_question_about_a_house_names_the_street(self):
+        visit = {"place": "", "near": "a house on Sandalwood Pkwy", "arrived": "10:19pm",
+                 "departed": "~12:27am", "arrived_ts": 5.0, "minutes": 128, "lat": 43.7, "lng": -79.8}
+        [q] = draft.questions({"visits": [visit]})
+        assert q["text"] == "whose place was that, a house on Sandalwood Pkwy, 10:19pm–~12:27am?"
+
+    def test_without_the_map_file_nothing_breaks(self, monkeypatch, tmp_path):
+        from core.journal import osm_places
+
+        monkeypatch.setenv("SERENA_OSM_PLACES", str(tmp_path / "missing.sqlite3"))
+        assert osm_places.lookup(43.6, -79.64) is None

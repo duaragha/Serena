@@ -67,7 +67,7 @@ def _people(facts: DayFacts, day: date) -> None:
 
 
 def _visits(facts: DayFacts, day: date) -> None:
-    from core.journal import location, store
+    from core.journal import location
 
     start, end = location.day_window(day)
     for visit in location.visits_on(day):
@@ -84,8 +84,32 @@ def _visits(facts: DayFacts, day: date) -> None:
             "started_before": visit.arrived < start,
             "ends_after": visit.departed is None or visit.departed > end,
             "minutes": minutes,
-            "place": store.place_for(visit.lat, visit.lng),
+            **_name_visit(visit.lat, visit.lng),
         })
+
+
+def _name_visit(lat: float, lng: float) -> dict[str, str]:
+    """A name he gave it, else home/work, else the map; a house gets its street.
+
+    The map lookup is offline (core.journal.osm_places). A house is never
+    named from the map -- "a house on X" is a hint for the question, since
+    only he knows whose it was.
+    """
+
+    from core.journal import osm_places, store
+
+    named = store.place_for(lat, lng)
+    if named:
+        return {"place": named}
+    try:
+        found = osm_places.lookup(lat, lng)
+    except Exception:
+        found = None
+    if found and found.get("name"):
+        return {"place": found["name"], "place_source": "map"}
+    if found and found.get("street"):
+        return {"place": "", "near": f"a house on {found['street']}"}
+    return {"place": ""}
 
 
 def _locket(facts: DayFacts, day: date) -> None:

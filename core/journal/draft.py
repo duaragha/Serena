@@ -45,7 +45,8 @@ def questions(facts: dict[str, Any]) -> list[dict[str, Any]]:
         if not visit.get("place") and (visit.get("minutes") or 0) >= ASK_ABOUT_VISIT_MINUTES:
             out.append({
                 "id": f"where-{int(visit['arrived_ts'])}", "kind": "where",
-                "text": f"where were you {span(visit)}?",
+                "text": (f"whose place was that, {visit['near']}, {span(visit)}?"
+                         if visit.get("near") else f"where were you {span(visit)}?"),
                 "lat": visit["lat"], "lng": visit["lng"],
             })
     people = [p["name"] for p in facts.get("people") or []]
@@ -149,7 +150,7 @@ def _prompt_facts(facts: dict[str, Any]) -> dict[str, Any]:
     for p in trimmed.get("people") or []:
         p.pop("evidence", None)
     for v in trimmed.get("visits") or []:
-        for k in ("lat", "lng", "arrived_ts", "departed_ts"):
+        for k in ("lat", "lng", "arrived_ts", "departed_ts", "place_source"):
             v.pop(k, None)
     for d in trimmed.get("drives") or []:
         d.pop("from_point", None)
