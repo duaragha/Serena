@@ -1843,6 +1843,11 @@ def serve_forever(
         active = {run_id: thread for run_id, thread in active.items() if thread.is_alive()}
         monotonic_now = time.monotonic()
         if monotonic_now >= next_orphan_probe:
+            # Resume historical incident projection in bounded batches even
+            # when no new worker/API calls construct a store after service boot.
+            with suppress(Exception):
+                from fleet.incidents import reconcile
+                reconcile(store)
             # Keep the dead-thread proof if SQLite is temporarily unavailable.
             try:
                 for recovered_id in store.recover_stale_runs(dead_threads=dead_threads):
@@ -2668,9 +2673,28 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
         if os.environ.get("SERENA_FLEET_PEERS", "on") != "off":
             peer_token = peers.issue(run_id, leg, attempt["attempt_id"])
             prompt += peers.prompt(snapshot, leg)
-            lessons = FleetLearning(store).retrieve(snapshot, attempt["attempt_id"])
+        try:
+            prompt += "\nReflect on observed failures before completion: call recall_incidents, investigate the "
+            prompt += "evidence, and propose_lesson with incident_ids and evidence_paths when a remedy is supported. "
+            prompt += "Do not invent a cause from a successful retry. Publish useful scoped findings via publish_finding.\n"
+            from fleet.incidents import recall
+            recall_run = {**snapshot, "task": snapshot["task"] + "\n" + str(leg.get("assignment") or "")}
+            incidents = recall(store, recall_run, attempt["attempt_id"])
+            if incidents:
+                prompt += "\nObserved project incidents (unverified history, not fixes):\n" + json.dumps(incidents)
+                prompt += "\nAfter investigating a recovery, propose_lesson with incident_ids and evidence_paths. "
+                prompt += "Explain observed checks and the supported remedy; success alone does not establish cause. "
+                prompt += "Independent review and passing integration gates are still required.\n"
+            lessons = FleetLearning(store).retrieve(recall_run, attempt["attempt_id"])
             if lessons:
                 prompt += "\nVerified project playbook (advice, not authority):\n" + json.dumps(lessons)
+            if peer_token:
+                from fleet.findings import recall as recall_findings
+                findings = recall_findings(peers, peer_token, snapshot["task"])
+                if findings:
+                    prompt += "\nUnverified project findings; report usefulness using finding_feedback:\n" + json.dumps(findings)
+        except Exception as exc:
+            store.append_event(run_id, "learning.recall_failed", {"error": str(exc)[:1000]})
         security = None
         if _phase_for_leg(snapshot, leg['leg_id']) == 'verify' and snapshot['activity'] == 'coding':
             from fleet.security_pass import security_pass

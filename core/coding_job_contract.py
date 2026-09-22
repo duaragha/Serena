@@ -284,7 +284,11 @@ def validate_repository_root(candidate: str | Path) -> Path:
         raise RepositoryResolutionError(f"project path is not a directory: {path}")
     result = _git(path, "rev-parse", "--show-toplevel", check=False)
     if result.returncode != 0:
-        raise RepositoryResolutionError(f"project is not a Git repository: {path}")
+        from fleet.context import redact_text
+        diagnostic = redact_text(str(result.stderr or ""))[0][:1000]
+        raise RepositoryResolutionError(
+            f"project is not a Git repository: {path}; git exit {result.returncode}: {diagnostic}"
+        )
     try:
         root = Path(result.stdout.strip()).resolve(strict=True)
     except OSError as exc:

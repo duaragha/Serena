@@ -14,16 +14,16 @@ import uuid
 from pathlib import Path
 
 from fleet.context import redact_text
+from fleet.incidents import links_valid
+from fleet.incidents import report as incident_report
+from fleet.project_identity import (
+    project_identity,
+    report_identity,
+    repository_identity,
+    run_identity,
+    terms,
+)
 from fleet.store import FleetStore
-
-
-def project_identity(run: dict) -> str:
-    checkout = run.get("checkout") or {}
-    current = Path(run["cwd"]).resolve()
-    if (checkout.get("state") == "ready" and checkout.get("path")
-            and Path(checkout["path"]).resolve() == current):
-        return str(Path(checkout["source_cwd"]).resolve())
-    return str(current)
 
 
 def fingerprints(cwd: str, paths: list[str]) -> dict[str, str]:
@@ -79,8 +79,15 @@ class FleetLearning:
                     pid INTEGER, process_token TEXT, session_id TEXT, error TEXT
                 );
             """)
+            # Upgrade only locally verifiable legacy paths; never merge unknown
+            # historical namespaces into a global default.
+            for row in db.execute("SELECT id,project FROM fleet_lessons WHERE project NOT LIKE 'git:%' "
+                                  "AND project NOT LIKE 'local:%' LIMIT 100").fetchall():
+                if Path(row["project"]).is_dir():
+                    db.execute("UPDATE fleet_lessons SET project=? WHERE id=?",
+                               (repository_identity(row["project"]), row["id"]))
 
-    def propose(self, who: dict, summary: str, evidence_paths: list[str]) -> dict:
+    def propose(self, who: dict, summary: str, evidence_paths: list[str], incident_ids: list[str] | None = None) -> dict:
         if who.get("help_id") or not 20 <= len(summary.strip()) <= 1200:
             raise ValueError(
                 "ordinary workers may propose a 20–1200 character evidence-backed lesson"
@@ -90,6 +97,13 @@ class FleetLearning:
         summary = redact_text(summary.strip())[0]
         with self.store._connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            if len(incident_ids or []) > 8:
+                raise ValueError("at most eight incident links")
+            for incident_id in incident_ids or []:
+                incident = db.execute("SELECT * FROM fleet_incidents WHERE id=? AND project=? AND expires>?",
+                                      (incident_id, project_identity(run), time.time())).fetchone()
+                if not incident:
+                    raise ValueError("incident is missing, expired or belongs to another project")
             count = db.execute(
                 "SELECT COUNT(*) FROM fleet_lessons WHERE source_run = ?", (who["run_id"],)
             ).fetchone()[0]
@@ -118,6 +132,8 @@ class FleetLearning:
                     now + 30 * 86400,
                 ),
             )
+            for incident_id in incident_ids or []:
+                db.execute("INSERT OR IGNORE INTO fleet_lesson_incidents VALUES(?,?)", (lesson_id, incident_id))
             self.store._insert_event(
                 db,
                 run_id=who["run_id"],
@@ -147,6 +163,8 @@ class FleetLearning:
                     "review must be independent and candidate must belong to this run"
                 )
             evidence = json.loads(row["evidence"])
+            if row["expires"] <= time.time() or not links_valid(db, lesson_id, project_identity(run)):
+                raise ValueError("candidate incident evidence expired or unavailable")
             if fingerprints(run["cwd"], list(evidence)) != evidence:
                 raise ValueError("candidate evidence changed; propose a fresh lesson")
             state = "endorsed" if approve else "rejected"
@@ -170,11 +188,20 @@ class FleetLearning:
         selected = []
         with self.store._connect() as db:
             rows = db.execute(
-                """SELECT * FROM fleet_lessons WHERE project = ? AND state = 'verified'
+                """SELECT * FROM fleet_lessons WHERE project IN (?,?) AND state = 'verified'
                 AND expires > ? ORDER BY promoted DESC LIMIT 40""",
-                (project, time.time()),
+                (project, str(Path((run.get('checkout') or {}).get('source_cwd') or run['cwd']).resolve()), time.time()),
             ).fetchall()
+            wanted = terms(run["task"])
+            rows = sorted(rows, key=lambda row: len(wanted & terms(row["summary"] + " " + row["evidence"])), reverse=True)
             for row in rows:
+                source = db.execute("SELECT state,cancel_requested FROM fleet_runs WHERE run_id=?", (row["source_run"],)).fetchone()
+                if not source or source["cancel_requested"] or source["state"] == "cancelled":
+                    continue
+                if run_identity(db, row["source_run"]) != project:
+                    continue
+                if not links_valid(db, row["id"], project):
+                    continue
                 evidence = json.loads(row["evidence"])
                 try:
                     current = fingerprints(run["cwd"], list(evidence))
@@ -182,10 +209,7 @@ class FleetLearning:
                     continue
                 if current != evidence:
                     continue
-                # Exact file applicability, not a generic bag of all previous advice.
-                if not any(
-                    path in run["task"] or Path(path).name in run["task"] for path in evidence
-                ):
+                if not (terms(run["task"]) & terms(row["summary"] + " " + " ".join(evidence))):
                     continue
                 selected.append(
                     {
@@ -248,7 +272,8 @@ class FleetLearning:
             db.execute(
                 "UPDATE fleet_lesson_uses SET outcome = ? WHERE run_id = ?", (run["state"], run_id)
             )
-            if run["state"] != "completed" or not gates:
+            current = db.execute("SELECT cancel_requested FROM fleet_runs WHERE run_id=?", (run_id,)).fetchone()
+            if run["state"] != "completed" or run.get("cancel_requested") or not current or current[0] or not gates:
                 return
             for row in db.execute(
                 "SELECT * FROM fleet_lessons WHERE source_run = ? AND state = 'endorsed'", (run_id,)
@@ -273,6 +298,9 @@ class FleetLearning:
                     unchanged = False
                 if (
                     not unchanged
+                    or not links_valid(db, row["id"], project_identity(run))
+                    or row["expires"] <= time.time()
+                    or row["project"] not in {project_identity(run), str(Path(run["cwd"]).resolve())}
                     or not reviewer
                     or reviewer[0] != "completed"
                     or not author
@@ -310,6 +338,10 @@ class FleetLearning:
     def projection(self, run_id: str) -> dict:
         with self.store._connect() as db:
             return {
+                "incidents": [dict(r) for r in db.execute(
+                    "SELECT * FROM fleet_incidents WHERE run_id=? ORDER BY event_seq DESC LIMIT 100", (run_id,))],
+                "incident_links": [dict(r) for r in db.execute(
+                    "SELECT x.* FROM fleet_lesson_incidents x JOIN fleet_lessons l ON l.id=x.lesson_id WHERE l.source_run=?", (run_id,))],
                 "candidates": [
                     dict(r)
                     for r in db.execute(
@@ -339,8 +371,8 @@ class FleetLearning:
             rows = [
                 dict(row)
                 for row in db.execute(
-                    "SELECT * FROM fleet_learning_outcomes WHERE project = ? ORDER BY created DESC LIMIT 100",
-                    (str(Path(project).resolve()),),
+                    "SELECT * FROM fleet_learning_outcomes WHERE project IN (?,?) ORDER BY created DESC LIMIT 100",
+                    (report_identity(db, project), str(Path(project).resolve())),
                 )
             ]
             for row in rows:
@@ -362,6 +394,7 @@ class FleetLearning:
                 )
         return {
             "runs": rows,
+            "incident_history": incident_report(self.store, project),
             "interpretation": "Observed outcomes only. Different tasks/models confound comparisons; "
             "no guarantee of speedup, no measured escaped-defect rate, no automatic model/policy changes. "
             "Token counts are provider-reported and null when unavailable.",

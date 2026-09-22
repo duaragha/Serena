@@ -251,6 +251,20 @@ def prepare_report(run_id: str, store: FleetStore):
               "artifacts": store.artifact_links(run_id), "review": store.review_report(run_id),
               "narrative": None, "next_prompt": None, "actions": handoffs or None,
               "generator": "none (generation pending)"}
+    from fleet.collaboration import PeerStore
+    with store._connect() as db:
+        knowledge["incidents"] = [dict(r) for r in db.execute(
+            "SELECT id,category,event_seq,recovery_event,substr(summary,1,1000) AS summary "
+            "FROM fleet_incidents WHERE run_id=? ORDER BY event_seq DESC LIMIT 20", (run_id,))]
+        knowledge["incident_uses"] = db.execute(
+            "SELECT COUNT(*) FROM fleet_incident_uses WHERE run_id=?", (run_id,)).fetchone()[0]
+    collaboration = PeerStore(store).projection(run_id)
+    knowledge["collaboration"] = {
+        "messages": len(collaboration["messages"]),
+        "requests": [{k: m[k] for k in ("id", "run_id", "target_run", "outcome", "outcome_reason")}
+                     for m in collaboration["messages"] if m["outcome"]][-24:],
+        "consultations": [{k: job[k] for k in ("id", "state", "helper_run", "deadline")} for job in collaboration["help"]],
+        "findings": len(collaboration["findings"]), "finding_uses": collaboration["finding_uses"]}
     generation = store.save_report(run_id, report)
     if not generation:
         return None

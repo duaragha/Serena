@@ -765,7 +765,7 @@ for OS isolation against a deliberately malicious process running under the same
 | Worker tool | Contract |
 | --- | --- |
 | `read_messages(acknowledge)` | Exact roster keys, unacknowledged inbox, own help status, lesson candidates. Delivery and acknowledgement are separate. |
-| `send_message(recipient, body, dedupe, reply_to)` | Targeted same-run advice; stable dedupe keys and parent-linked replies. No broadcasts or cross-run addressing. |
+| `send_message(recipient, body, dedupe, reply_to, target_run, evidence_paths)` | Targeted advice; optional target run must share the canonical repository. Stable dedupe keys and parent-linked replies. |
 | `request_help(recipient, body, dedupe)` | Durable bounded diagnostic request, serviced even after the peer's normal turn ends. |
 | `resolve_request(message_id, resolved, reason)` | Original requesting logical worker confirms the observed solution or explicitly escalates. |
 | `propose_lesson(summary, evidence_paths)` | Candidate project fact backed by files in the integrated checkout. No immediate reuse. |
@@ -843,8 +843,8 @@ Review failure leaves candidates unverified and does not fail otherwise accepted
 independent endorsement STILL needs successful terminal run, completed author, real integration
 test receipts and matching fingerprints before promotion. Model weights and routing remain unchanged.
 
-Later turns receive at most three verified lessons from the same canonical project, only when the
-task names an evidence file and every fingerprint still matches. Lessons expire after 30 days;
+Later turns receive at most three verified lessons from the same canonical project, ranked by
+task terms and evidence paths, while every fingerprint must still match. Lessons expire after 30 days;
 changed files make them inapplicable immediately. `fleet_revoke_lesson(lesson_id, reason)` rolls back
 a bad lesson without mutating model/permission/test policy. Source-run deletion removes its lessons
 and uses, rather than leaving unverifiable knowledge behind.
@@ -855,6 +855,75 @@ missing usage is null, not a guessed number. These are observed cohorts, not cau
 task difficulty, model choice, cache state and tool latency confound comparisons. No escaped-defect
 rate is inferred from passing tests. No model weights are trained, and no model matrix or safety gate
 is automatically optimized. Use matched held-out tasks before promoting broader workflow changes.
+
+## Shared incidents, experts, and findings
+
+`fleet/project_identity.py` uses local Git common-directory metadata and normalized HTTPS/SSH
+origin URLs. Credential-bearing URLs are rejected as identity material. Repositories without a
+trusted origin use a digest of their common directory; non-Git fixtures use their own resolved path.
+Locally verifiable legacy lesson paths are migrated in bounded batches. No remote command or
+network lookup is performed. Git metadata queries detach stdin so Windows stdio MCP stays usable.
+Run creation persists this identity independently of incident projection. Bounded legacy hydration
+uses existing checkout `source_cwd` metadata while that directory still exists. Missing checkouts
+can subsequently use the persisted identity; live remote changes still invalidate advice boundaries,
+including automatic prompts. Legacy records with neither a surviving trusted checkout/source nor
+a persisted identity remain isolated: their repository must not be guessed from task text.
+Failure and recovery journal events snapshot the observed repository identity independently of
+incident projection. Reconciliation retains that event-time scope after remote changes or cleanup;
+unavailable Git metadata can use the latest trusted event snapshot, falling back to the run's
+original identity. Legacy journal rows retain the original identity. Findings and verified lessons
+also revalidate the source repository before reuse, retaining the deleted-checkout fallback.
+
+The event writer projects failures into `fleet_incidents`: command/tool observations, provider
+errors, rejected completion/integration gates, and recovery failures. Provider event/item identities
+deduplicate replay; otherwise the immutable journal sequence identifies the observation. Events
+from consultants are deduplicated within a help ID and dispatch generation. Separate consultations
+and restarted processes retain separate failures; legacy consultant events without a proven dispatch
+use their journal sequence rather than assuming repeated native item IDs are replay. Summaries
+are bounded and redacted. A savepoint isolates projection errors, retaining the original event for
+reconciliation. Initialization, the resident recovery poll, and recall advance a durable cursor by at most 200 events per call.
+Existing task evidence therefore becomes observable after upgrade without editing live databases.
+Subsequent accepted gates/attempt completion link recovery, never infer a cause or verified remedy.
+Failed command events retain at most 1,500 redacted diagnostic characters; successful command
+transcripts are not captured. Repository-root validation failures include the Git exit code and
+at most 1,000 redacted stderr characters. Expected missing-ref probes remain observations, not
+proof of defects or verified remedies. Schema, reconciliation, savepoint and recall outages must
+not stop the primary worker lifecycle.
+
+Root-observed operational incident (task98, supplied review evidence, not independently reproduced
+by this worker): the limited resident scheduled-task principal received Git exit128, `detected
+dubious ownership`, for an elevated-SSH-created checkout owned by BUILTIN Administrators.
+Root reports correcting ownership only on the affected checkout and linked Git metadata, then
+observing exit0 under the same principal. Preserve resident-user ownership when provisioning
+checkouts; do not add broad `safe.directory` exceptions or infer this cause from generic Git errors.
+This account is evidence for a future incident-linked proposal, not a promoted lesson: the normal
+independent evidence review and successful-run gates still apply before reusable guidance.
+
+Workers receive up to five relevant incidents and three verified lessons before work, and can call
+`recall_incidents(query)` when blocked. `read_messages` includes current incident evidence and a
+reflection prompt. Workers propose supported explanations/remedies using `propose_lesson` with
+`incident_ids` and file evidence; independent reviewers receive those incidents. Expired, missing,
+foreign-project incident links prevent review/promotion/reuse. The existing successful-run,
+integration-gate, independent-review, and file-hash requirements remain mandatory.
+
+`discover_experts(query)` returns at most twelve workers from active same-project runs. Address
+questions/replies using both `target_run` and `recipient`; keys such as `agent:a` are not globally
+unique. Capabilities bind the canonical project and current attempt. Legacy grants cannot send
+cross-run mail. Questions retain the 300-second deadline, one outstanding request per attempt,
+eight jobs/run, 96 outgoing messages/run, four reply hops, and one consultation slot per requester run.
+An ended ordinary expert turn can be serviced in a fresh read-only session using its frozen model
+and positively available capacity; requester provider restrictions still apply. Cancelled/terminal
+runs and stale tokens cannot send. Unconfirmed requests escalate rather than claiming resolution.
+
+`publish_finding(summary,evidence_paths,dedupe)` publishes at most eight bounded findings per run.
+Recall supplies at most three matching, unexpired findings with unchanged file hashes and records
+the recipient. `finding_feedback` records that recipient's observed usefulness, never promotion.
+Usefulness breaks relevance ties. Private memory remains local; no embedding service is added.
+Learning reports include incident recurrence and supplied counts; terminal reports include incidents,
+consultations, lesson uses, findings, and outcomes. Counts describe observed cohorts, not causality.
+
+Root owns reviewed PR/merge, rollout after active workers finish, and the task94/task95 PC canary.
+Use synthetic temporary stores for local tests; never copy private production transcripts.
 
 ## Writer isolation and integration
 

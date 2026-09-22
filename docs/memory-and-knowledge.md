@@ -6,7 +6,11 @@ Fleet worker learning is a separate, project-scoped store in the Fleet database,
 personal memory. `fleet/learning.py` requires independent Review endorsement, a successfully
 completed run with supervisor-observed passing integration gates, completed author/reviewer attempts,
 and unchanged evidence-file fingerprints before promotion. Retrieval is bounded to three matching
-lessons, the same canonical project, named evidence paths, matching hashes and a 30-day lifetime.
+lessons, the same canonical Git project, task-term relevance, matching evidence hashes and a 30-day lifetime.
+`fleet/incidents.py` separately captures unverified failure observations from the event writer,
+with a bounded restart backfill. Workers recall incidents and link evidence-backed proposals to them;
+observed recovery alone never establishes a cause or promotes a remedy. Proactive findings and
+recipient usefulness receipts remain unverified advice in the same local Fleet database.
 Candidates are never injected as trusted future guidance. `fleet_revoke_lesson` provides explicit
 rollback, and deletion of source runs cascades their provenance-dependent lessons.
 
