@@ -26,7 +26,7 @@ function feeds() {
   return { linux: linux[0], windows: windows[0] };
 }
 
-function loadUpdates({ packaged = true, platform = 'linux', appImage = '/tmp/Serena.AppImage', updater, version = '0.1.0' } = {}) {
+function loadUpdates({ packaged = true, platform = 'linux', appImage = '/tmp/Serena.AppImage', updater, version = '0.1.0', resolveRelease = async () => ({ version: '0.3.10-dev.2', url: 'https://github.com/duaragha/Serena/releases/download/v0.3.10-dev.2/' }) } = {}) {
   const source = fs.readFileSync(path.join(ROOT, 'updates.js'), 'utf8');
   const dialogCalls = [];
   const electron = {
@@ -41,6 +41,7 @@ function loadUpdates({ packaged = true, platform = 'linux', appImage = '/tmp/Ser
   const sandboxRequire = (name) => {
     if (name === 'node:fs' || name === 'node:path') return require(name);
     if (name === './profile') return require('../profile');
+    if (name === './update-feed.cjs') return { resolveDevRelease: resolveRelease };
     if (name === 'electron') return electron;
     if (name === 'electron-updater') {
       if (updater === null) throw new Error('not installed');
@@ -89,6 +90,7 @@ function fakeUpdater(overrides = {}) {
     quitAndInstall() {
       this.installed = true;
     },
+    setFeedURL(feed) { this.feed = feed; },
     ...overrides,
   };
 }
@@ -139,7 +141,7 @@ test('a matching version reports current, not available', async () => {
   assert.equal(outcome.state, 'current');
 });
 
-test('no published release reads as none-published, not as an error', async () => {
+test('a missing manifest is an error, not proof that no release exists', async () => {
   const updater = fakeUpdater({
     checkForUpdates: async () => {
       throw new Error('HttpError: 404 Not Found');
@@ -149,7 +151,41 @@ test('no published release reads as none-published, not as an error', async () =
 
   const outcome = await api.check();
 
-  assert.equal(outcome.state, 'none-published');
+  assert.equal(outcome.state, 'error');
+  assert.match(outcome.reason, /404/);
+});
+
+test('Dev pins a complete published release instead of the newest bare tag', async () => {
+  const updater = fakeUpdater({ checkForUpdates: async () => ({ updateInfo: { version: '0.3.10-dev.2' } }) });
+  const { api } = loadUpdates({ updater, version: '0.3.8-dev.3' });
+  const outcome = await api.check();
+  assert.equal(outcome.state, 'available');
+  assert.equal(outcome.remoteVersion, '0.3.10-dev.2');
+  assert.equal(updater.feed.provider, 'generic');
+  assert.equal(updater.feed.channel, 'dev');
+  assert.equal(updater.feed.url, 'https://github.com/duaragha/Serena/releases/download/v0.3.10-dev.2/');
+  assert.equal(updater.autoDownload, false);
+});
+
+test('Dev only reports no release after a successful empty discovery', async () => {
+  const updater = fakeUpdater({ checkForUpdates: async () => { throw new Error('must not query Atom'); } });
+  const { api } = loadUpdates({ updater, version: '0.3.8-dev.3', resolveRelease: async () => null });
+  assert.equal((await api.check()).state, 'none-published');
+  await assert.rejects(api.download(), /before downloading/);
+});
+
+test('Dev does not hide release API errors or allow download after them', async () => {
+  const { api } = loadUpdates({ updater: fakeUpdater(), version: '0.3.8-dev.3', resolveRelease: async () => { throw new Error('HTTP 403'); } });
+  const result = await api.check();
+  assert.equal(result.state, 'error');
+  assert.match(result.reason, /403/);
+  await assert.rejects(api.download(), /before downloading/);
+});
+
+test('Dev rejects a manifest whose version differs from its release tag', async () => {
+  const { api } = loadUpdates({ updater: fakeUpdater({ checkForUpdates: async () => ({ updateInfo: { version: '0.3.11-dev.1' } }) }), version: '0.3.8-dev.3' });
+  assert.equal((await api.check()).state, 'error');
+  await assert.rejects(api.download(), /before downloading/);
 });
 
 test('a real failure is surfaced as an error with its reason', async () => {
@@ -280,6 +316,8 @@ test('both desktop packages include the themed panel independently of the backen
   const windows = yaml.load(fs.readFileSync(WIN_CONFIG, 'utf8'));
   assert.ok(linux.files.includes('about-panel.js'));
   assert.ok(windows.files.includes('about-panel.js'));
+  assert.ok(linux.files.includes('update-feed.cjs'));
+  assert.ok(windows.files.includes('update-feed.cjs'));
   const preload = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8');
   assert.match(preload, /ipcRenderer\.on\('updates:open', listener\)/);
   assert.match(preload, /ipcRenderer\.removeListener\('updates:open', listener\)/);
