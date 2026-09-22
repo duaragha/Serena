@@ -61,7 +61,12 @@ function publish(root, dir, { command = run, authorization = {
     '--title', `Serena ${plan.version.slice(1)}`, '--notes',
     `Selected features: ${plan.features.map(f => f.id).join(', ')}\n\nBased on ${plan.baseTag}. Linux and Windows build gates passed. Original CLI terminals retained.`,
     ...names.map(name => path.join(dir, name)), receiptFile]);
-  const release = JSON.parse(gh(['api', `repos/${REPO}/releases/tags/${plan.version}`]));
+  // The by-tag endpoint resolves published releases only, so it 404s on the
+  // draft just created and every publish stopped here. Listing includes drafts.
+  const drafts = JSON.parse(gh(['api', `repos/${REPO}/releases?per_page=100`]))
+    .filter(r => r.tag_name === plan.version && r.draft === true);
+  if (drafts.length !== 1) throw new Error(`Expected one draft for ${plan.version}, found ${drafts.length}. Release remains a draft.`);
+  const [release] = drafts;
   for (const file of [...names, 'stable-promotion.json']) {
     const asset = release.assets.find(a => a.name === file);
     if (!asset || asset.state !== 'uploaded' || asset.size !== fs.statSync(path.join(dir, file)).size)

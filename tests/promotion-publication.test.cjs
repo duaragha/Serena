@@ -67,9 +67,15 @@ for (const failure of [null, 'incomplete upload', 'baseline changed', 'wrong aut
         baselineReads++;
         return JSON.stringify({ tag_name: failure === 'baseline changed' && baselineReads > 1 ? 'v0.3.6' : plan.baseTag });
       }
-      if (args[0] === 'api') return JSON.stringify({ assets: [...names, 'latest.yml', 'latest-linux.yml', 'stable-promotion.json'].map(name => ({
-        name, state: failure === 'incomplete upload' ? 'new' : 'uploaded', size: fs.statSync(path.join(dir, name)).size,
-      })) });
+      // GitHub's by-tag endpoint only resolves published releases: a draft
+      // there is a 404, exactly as run 35676448974 hit when publishing v0.3.5.
+      if (args[0] === 'api' && args[1].includes('/releases/tags/')) throw new Error('gh: Not Found (HTTP 404)');
+      if (args[0] === 'api' && args[1].includes('/releases?')) return JSON.stringify([
+        { tag_name: 'v0.3.4', draft: false, assets: [] },
+        { tag_name: plan.version, draft: true, assets: [...names, 'latest.yml', 'latest-linux.yml', 'stable-promotion.json'].map(name => ({
+          name, state: failure === 'incomplete upload' ? 'new' : 'uploaded', size: fs.statSync(path.join(dir, name)).size,
+        })) },
+      ]);
       return '';
     };
     const options = { command, authorization: { request: plan.request, mode: failure === 'wrong authorization' ? 'verify' : 'publish' } };
