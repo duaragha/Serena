@@ -195,7 +195,7 @@ def worker_command(request: WorkerRequest, *, session_id: str | None = None) -> 
             config["mcpServers"]["serena_peer"] = {"type": "stdio", "command": command[0], "args": command[1:]}
             allowed = (read_mcp[3] + ",") if read_mcp else ""
             allowed += ",".join("mcp__serena_peer__" + name for name in
-                                ("read_messages", "send_message", "request_help", "resolve_request", "propose_lesson", "review_lesson"))
+                                ("read_messages", "send_message", "request_help", "resolve_request", "propose_lesson", "review_lesson", "discover_experts", "recall_incidents", "publish_finding", "finding_feedback"))
             read_mcp = ["--mcp-config", json.dumps(config), "--allowedTools", allowed]
         # --safe-mode disables MCP servers outright, so a leg that was actually
         # granted read access swaps it for the narrower isolation that does the
@@ -1178,6 +1178,9 @@ def _claude_actual_identity(
 def _event_summary(event: dict[str, Any]) -> dict[str, Any]:
     event_type = str(event.get("type") or "event")
     summary: dict[str, Any] = {"type": event_type}
+    for key in ("id", "is_error", "error"):
+        if event.get(key) is not None:
+            summary["event_id" if key == "id" else key] = redact_text(str(event[key]))[0][:1000] if key != "is_error" else event[key]
     # Transport chatter, token deltas and reasoning are liveness, not useful progress.
     summary["progress"] = event_type in {"turn.completed", "result"} or (
         event_type == "item.completed" and (event.get("item") or {}).get("type")
@@ -1202,18 +1205,38 @@ def _event_summary(event: dict[str, Any]) -> dict[str, Any]:
     item = event.get("item")
     if isinstance(item, dict):
         summary["item_type"] = item.get("type")
+        if item.get("id"):
+            summary["item_id"] = item["id"]
+        if item.get("status"):
+            summary["status"] = item["status"]
+        if item.get("error"):
+            summary["error"] = redact_text(str(item["error"]))[0][:1000]
+        if isinstance(item.get("result"), dict) and item["result"].get("isError"):
+            summary["is_error"] = True
+            summary["error"] = redact_text(str(item["result"]))[0][:1000]
         if item.get("type") == "command_execution":
             summary["command"] = str(item.get("command") or "")[:1_000]
             if item.get("exit_code") is not None:
                 summary["exit_code"] = item.get("exit_code")
             if item.get("status"):
                 summary["status"] = item.get("status")
+            if (isinstance(item.get("exit_code"), int) and item["exit_code"] != 0) or item.get("status") == "failed":
+                diagnostic = item.get("aggregated_output") or item.get("stderr") or item.get("output")
+                if diagnostic:
+                    summary["failure_excerpt"] = redact_text(str(diagnostic))[0][:1500]
         elif item.get("type") == "agent_message":
             summary["text"] = str(item.get("text") or "")[:2_000]
     message = event.get("message")
     if isinstance(message, dict):
         if event_type in {"assistant", "user"}:
             content = message.get("content")
+            errors = [block for block in (content if isinstance(content, list) else [])
+                      if isinstance(block, dict) and block.get("type") == "tool_result" and
+                      (block.get("is_error") or (isinstance(block.get("exit_code"), int) and block["exit_code"] != 0))]
+            if errors:
+                summary["is_error"] = True
+                summary["item_id"] = ",".join(str(b.get("tool_use_id", "")) for b in errors)
+                summary["error"] = redact_text(str(errors))[0][:1000]
             summary["progress"] = any(isinstance(block, dict) and block.get("type") in {"tool_result", "text"}
                                       for block in (content if isinstance(content, list) else []))
         model = _reported_model(message.get("model"))

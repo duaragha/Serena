@@ -10,6 +10,8 @@ import uuid
 from core.work_jobs import process_start_token
 from fleet.context import redact_text
 from fleet.learning import FleetLearning, fingerprints
+from fleet.incidents import linked, links_valid
+from fleet.project_identity import project_identity
 from fleet.store import _process_alive
 from fleet.workers import WorkerRequest, run_worker
 
@@ -143,6 +145,10 @@ def review_final_lessons(store, run_id: str, *, runner=None, capacity=None) -> N
             evidence = json.loads(candidate["evidence"])
             try:
                 unchanged = fingerprints(run["cwd"], list(evidence)) == evidence
+                with store._connect() as db:
+                    unchanged = unchanged and links_valid(db, candidate["id"], project_identity(run))
+                    candidate["incidents"] = linked(db, candidate["id"])
+                unchanged = unchanged and candidate["expires"] > time.time()
             except (ValueError, OSError):
                 unchanged = False
             (valid if unchanged else changed).append(candidate)
@@ -179,6 +185,7 @@ def review_final_lessons(store, run_id: str, *, runner=None, capacity=None) -> N
                                 "id": c["id"],
                                 "summary": c["summary"],
                                 "evidence": json.loads(c["evidence"]),
+                                "incidents": c.get("incidents", []),
                             }
                             for c in valid
                         ]
@@ -232,6 +239,7 @@ def review_final_lessons(store, run_id: str, *, runner=None, capacity=None) -> N
                 decision = by_id.get(
                     candidate["id"], {"approve": False, "reason": "evidence changed after proposal"}
                 )
+                unchanged = unchanged and candidate["expires"] > time.time() and links_valid(db, candidate["id"], project_identity(run))
                 approved = decision["approve"] and unchanged
                 reason = decision["reason"] if unchanged else "evidence changed after proposal"
                 db.execute(

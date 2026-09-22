@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 import signal
 import sqlite3
@@ -49,6 +50,7 @@ from fleet.dag import (
 from fleet.dag import (
     reset_leg_for_retry as reset_work_unit_leg_for_retry,
 )
+from fleet.project_identity import stored_identity
 
 DEFAULT_DB_PATH = Path.home() / ".local" / "state" / "serena" / "fleet.sqlite3"
 TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled", "planned"})
@@ -125,6 +127,8 @@ class FleetStore:
                     now,
                 ),
             )
+            from fleet.project_identity import remember
+            remember(connection, run_id, cwd)
             if baseline:
                 connection.execute(
                     "INSERT INTO fleet_run_checkouts(run_id, source_cwd, baseline, path, state) "
@@ -3301,6 +3305,7 @@ class FleetStore:
             "cwd": str(checkout["path"] if checkout and checkout["state"] == "ready" else run["cwd"]),
             "source_cwd": str(run["cwd"]),
             "checkout": dict(checkout) if checkout else None,
+            "repository_identity": stored_identity(connection, run_id),
             "origin_session_id": run["origin_session_id"],
             "origin_agent": run["origin_agent"],
             "worker_group_id": run["worker_group_id"],
@@ -3391,12 +3396,23 @@ class FleetStore:
         if len(encoded) > MAX_EVENT_CHARS:
             encoded = json.dumps({"truncated": True, "preview": encoded[:MAX_EVENT_CHARS]})
         created_at = time.time()
+        from fleet.incidents import capture_safely, failure
+        project = None
+        try:
+            if failure(event_type, safe_payload) or event_type in {"worker.integration.accepted", "attempt.completed"}:
+                from fleet.project_identity import run_identity
+                project = run_identity(connection, run_id)
+        except Exception:
+            logging.getLogger(__name__).exception("Optional event project snapshot unavailable")
         inserted = connection.execute(
-            "INSERT INTO fleet_events(run_id, leg_id, attempt_id, type, payload_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (run_id, leg_id, attempt_id, event_type, encoded, created_at),
+            "INSERT INTO fleet_events(run_id, leg_id, attempt_id, type, payload_json, created_at, repository_identity) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (run_id, leg_id, attempt_id, event_type, encoded, created_at, project),
         )
         event_seq = int(inserted.lastrowid)
+        capture_safely(connection, {"event_seq": event_seq, "run_id": run_id,
+                       "leg_id": leg_id, "attempt_id": attempt_id, "type": event_type,
+                       "payload_json": encoded, "created_at": created_at, "repository_identity": project})
         run = connection.execute(
             "SELECT task, activity, origin_session_id, origin_agent FROM fleet_runs "
             "WHERE run_id = ?",
@@ -3662,6 +3678,25 @@ class FleetStore:
                 );
                 """
             )
+            connection.execute("CREATE TABLE IF NOT EXISTS fleet_run_projects ("
+                               "run_id TEXT PRIMARY KEY REFERENCES fleet_runs ON DELETE CASCADE, "
+                               "project TEXT NOT NULL)")
+            connection.execute("BEGIN IMMEDIATE")
+            if "repository_identity" not in {r[1] for r in connection.execute("PRAGMA table_info(fleet_events)")}:
+                connection.execute("ALTER TABLE fleet_events ADD COLUMN repository_identity TEXT")
+            from fleet.project_identity import remember
+            for legacy in connection.execute(
+                "SELECT r.run_id, COALESCE(c.source_cwd,r.cwd) AS source FROM fleet_runs r "
+                "LEFT JOIN fleet_run_checkouts c ON c.run_id=r.run_id "
+                "LEFT JOIN fleet_run_projects p ON p.run_id=r.run_id "
+                "WHERE p.run_id IS NULL ORDER BY r.created_at DESC LIMIT 200"
+            ).fetchall():
+                remember(connection, legacy["run_id"], legacy["source"])
+            from fleet.incidents import initialize as initialize_incidents
+            try:
+                initialize_incidents(connection)
+            except Exception:
+                logging.getLogger(__name__).exception("Optional incident schema unavailable; retaining Fleet events")
             ensure_work_unit_schema(connection)
             if not connection.in_transaction:
                 connection.execute("BEGIN IMMEDIATE")
@@ -3703,6 +3738,11 @@ class FleetStore:
                 """
             )
             backfill_work_unit_runs(connection)
+        # Bounded restart/upgrade reconciliation. The original journal remains
+        # authoritative if an optional learning projection is unavailable.
+        from fleet.incidents import reconcile
+        with suppress(Exception):
+            reconcile(self)
         if os.name != "nt":
             with suppress(OSError):
                 self.path.chmod(0o600)

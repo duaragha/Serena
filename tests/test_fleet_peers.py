@@ -293,7 +293,7 @@ def test_supervisor_recovers_through_peer_advice_with_real_git_and_test_gate(
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"], check=True)
     monkeypatch.delenv("SERENA_FLEET_ISOLATION", raising=False)
     monkeypatch.setenv("SERENA_FLEET_WORKSPACE_ROOT", str(fleet_env / "worktrees"))
-    monkeypatch.setenv("SERENA_FLEET_INTEGRATION_TEST_COMMAND", f"{sys.executable} test_value.py")
+    monkeypatch.setenv("SERENA_FLEET_INTEGRATION_TEST_COMMAND", f'"{sys.executable}" test_value.py')
     calls = []
 
     def worker(request, *, cancel_requested, on_event):
@@ -459,6 +459,7 @@ def test_frozen_peer_command_does_not_treat_sidecar_as_python(monkeypatch):
 
 @pytest.mark.parametrize("entrypoint", ["native", "sidecar.py", "windows/sidecar-win.py"])
 def test_real_stdio_peer_tools_from_isolated_working_directory(team, entrypoint):
+    from datetime import timedelta
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
@@ -488,7 +489,7 @@ def test_real_stdio_peer_tools_from_isolated_working_directory(team, entrypoint)
         )
         async with (
             stdio_client(params) as (reader, writer),
-            ClientSession(reader, writer) as session,
+            ClientSession(reader, writer, read_timeout_seconds=timedelta(seconds=30)) as session,
         ):
             await session.initialize()
             tools = await session.list_tools()
@@ -500,6 +501,10 @@ def test_real_stdio_peer_tools_from_isolated_working_directory(team, entrypoint)
                 "resolve_request",
                 "propose_lesson",
                 "review_lesson",
+                "discover_experts",
+                "recall_incidents",
+                "publish_finding",
+                "finding_feedback",
             }
             response = await session.call_tool("read_messages", {})
             assert not response.isError
