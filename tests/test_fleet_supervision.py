@@ -317,3 +317,77 @@ def test_live_supervisor_stops_a_stalled_worker_and_exhausts_retry_budget(
     assert projection["workers"][0]["state"] == "failed"
     assert projection["workers"][0]["retries_used"] == 1
     assert "phase did not complete" in str(outcome["error"])
+
+
+def test_a_locked_database_skips_a_heartbeat_instead_of_killing_the_worker(tmp_path, monkeypatch) -> None:
+    from fleet import supervision as supervision_module
+
+    fleet = FleetStore(tmp_path / "fleet.sqlite3")
+    run = _run(fleet)
+    attempt = fleet.begin_attempt(run["phases"][0]["legs"][0]["leg_id"])
+    store = FleetSupervisionStore(fleet.path)
+    lease = store.acquire(attempt["attempt_id"])
+    monkeypatch.setattr(supervision_module, "_LOCK_RETRY_DELAYS", (0.0, 0.0))
+    monitor = supervision_module.WorkerLeaseMonitor(store, lease, heartbeat_seconds=60)
+
+    calls = []
+
+    def locked(*args, **kwargs):
+        calls.append(kwargs)
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "heartbeat", locked)
+    # Task #99 died here: the lock escaped and failed a healthy finalize worker.
+    assert monitor.progress() is True
+    assert monitor.fenced is False and monitor.should_cancel() is False
+    assert len(calls) == 3
+
+
+def test_progress_writes_are_throttled_to_one_per_interval(tmp_path, monkeypatch) -> None:
+    from fleet import supervision as supervision_module
+
+    fleet = FleetStore(tmp_path / "fleet.sqlite3")
+    run = _run(fleet)
+    attempt = fleet.begin_attempt(run["phases"][0]["legs"][0]["leg_id"])
+    store = FleetSupervisionStore(fleet.path)
+    lease = store.acquire(attempt["attempt_id"])
+    monitor = supervision_module.WorkerLeaseMonitor(store, lease, heartbeat_seconds=60)
+    beats = []
+    real = store.heartbeat
+    monkeypatch.setattr(store, "heartbeat", lambda *a, **kw: beats.append(1) or real(*a, **kw))
+
+    for _ in range(20):
+        assert monitor.progress() is True
+    assert len(beats) == 1
+
+
+def test_a_real_lock_on_the_file_does_not_fail_progress(tmp_path, monkeypatch) -> None:
+    from fleet import supervision as supervision_module
+
+    fleet = FleetStore(tmp_path / "fleet.sqlite3")
+    run = _run(fleet)
+    attempt = fleet.begin_attempt(run["phases"][0]["legs"][0]["leg_id"])
+    store = FleetSupervisionStore(fleet.path)
+    lease = store.acquire(attempt["attempt_id"])
+    monkeypatch.setattr(supervision_module, "_LOCK_RETRY_DELAYS", (0.05,))
+    monitor = supervision_module.WorkerLeaseMonitor(store, lease, heartbeat_seconds=60)
+    holder = sqlite3.connect(fleet.path, timeout=0)
+    holder.execute("BEGIN EXCLUSIVE")
+    try:
+        monkeypatch.setattr(store, "_connect", _short_timeout(store))
+        assert monitor.progress() is True
+        assert monitor.fenced is False
+    finally:
+        holder.rollback()
+        holder.close()
+
+
+def _short_timeout(store):
+    original = store._connect
+
+    def connect():
+        connection = original()
+        connection.execute("PRAGMA busy_timeout = 50")
+        return connection
+
+    return connect

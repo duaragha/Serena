@@ -618,6 +618,15 @@ class FleetSupervisionStore:
                     connection.execute(f"ALTER TABLE fleet_worker_leases ADD COLUMN {name} {definition}")
 
 
+_LOCK_RETRY_DELAYS = (0.25, 0.5, 1.0, 2.0)
+PROGRESS_MIN_INTERVAL_SECONDS = 2.0
+
+
+def _sqlite_locked(error: sqlite3.OperationalError) -> bool:
+    text = str(error).lower()
+    return "database is locked" in text or "database table is locked" in text
+
+
 class WorkerLeaseMonitor:
     """Renew a lease independently while the provider stream is quiet."""
 
@@ -635,6 +644,7 @@ class WorkerLeaseMonitor:
             "SERENA_FLEET_HEARTBEAT_SECONDS",
             DEFAULT_HEARTBEAT_SECONDS,
         )
+        self._last_progress = 0.0
         self._stop = threading.Event()
         self._stalled = threading.Event()
         self._fenced = threading.Event()
@@ -647,12 +657,38 @@ class WorkerLeaseMonitor:
     def start(self) -> None:
         self._thread.start()
 
+    def _beat(self, *, progress: bool) -> bool | None:
+        """Renew the lease; None when the database stayed locked.
+
+        A lock held by another writer for longer than SQLite's busy timeout
+        used to escape as an exception and kill a healthy worker mid-thought
+        (task #99's finalize). One missed beat is harmless: the lease outlives
+        several of them, so after a few retries the beat is simply skipped.
+        """
+        for delay in (0.0, *_LOCK_RETRY_DELAYS):
+            if delay:
+                time.sleep(delay)
+            try:
+                return self.store.heartbeat(
+                    self.lease.attempt_id,
+                    self.lease.lease_token,
+                    **({"progress": True} if progress else {}),
+                )
+            except sqlite3.OperationalError as error:
+                if not _sqlite_locked(error):
+                    raise
+        return None
+
     def progress(self) -> bool:
-        renewed = self.store.heartbeat(
-            self.lease.attempt_id,
-            self.lease.lease_token,
-            progress=True,
-        )
+        # Providers stream a line a second while thinking; one durable write
+        # per line is lock contention for nothing, so progress is throttled.
+        now = time.monotonic()
+        if now - self._last_progress < PROGRESS_MIN_INTERVAL_SECONDS:
+            return not self._fenced.is_set()
+        self._last_progress = now
+        renewed = self._beat(progress=True)
+        if renewed is None:
+            return not self._fenced.is_set()
         if not renewed:
             self._fenced.set()
         return renewed
@@ -675,10 +711,9 @@ class WorkerLeaseMonitor:
 
     def _run(self) -> None:
         while not self._stop.wait(self.heartbeat_seconds):
-            renewed = self.store.heartbeat(
-                self.lease.attempt_id,
-                self.lease.lease_token,
-            )
+            renewed = self._beat(progress=False)
+            if renewed is None:
+                continue
             if not renewed:
                 self._fenced.set()
                 return
