@@ -639,7 +639,7 @@ def test_stops_inside_a_drive_are_kept_but_idling_at_either_end_is_not(monkeypat
                  {"startedAt": "2026-09-21T13:17:00Z", "minutes": 1, "lat": 43.71800, "lng": -79.46920},
              ]}
     stops = facts._stops(drive)
-    assert stops == [{"at": "7:19am", "minutes": 8, "place": "a house on X St"}]
+    assert stops == [{"at": "7:19am", "minutes": 8, "place": "on X St"}]
 
 
 def test_a_stop_shows_on_the_timeline():

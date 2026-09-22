@@ -164,9 +164,12 @@ def _stops(drive: dict[str, Any]) -> list[dict[str, Any]]:
                for p in ends):
             continue
         named = _name_visit(lat, lng)
+        # A two-minute stop on a main road is not "a house on" it; for a stop
+        # the nearest address only says which street the car was on.
+        near = named.get("near", "").replace("a house on ", "on ", 1)
         out.append({
             "at": _clock(stop.get("startedAt")), "minutes": stop.get("minutes"),
-            "place": named.get("place") or named.get("near") or "",
+            "place": named.get("place") or near,
         })
     return out
 
