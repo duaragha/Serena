@@ -46,6 +46,7 @@
       "build/icon.png",
       "menu.js",
       "updates.js",
+      "update-feed.cjs",
       "about-panel.js",
       "releases.js",
       "logging.js",
@@ -104,6 +105,7 @@
     ]
   },
   "dependencies": {
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "semver": "^7.8.5"
   }
 }

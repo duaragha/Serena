@@ -16,10 +16,11 @@
  * thing forfeited is the SmartScreen prompt on a manual install.
  */
 
-const { app } = require('electron');
+const { app, net } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { desktopProfile, acceptsVersion } = require('./profile');
+const { resolveDevRelease } = require('./update-feed.cjs');
 const profile = desktopProfile(app.getVersion());
 
 const FEED_HOST = 'github.com';
@@ -133,8 +134,22 @@ async function check({ silent = false } = {}) {
   inFlight = (async () => {
     availableVersion = null;
     try {
+      let selected = null;
+      if (profile.channel === 'dev') {
+        selected = await resolveDevRelease({
+          fetch: (...args) => net.fetch(...args), profile,
+          platform: process.platform, arch: process.arch, ...FEED,
+        });
+        if (!selected) return { state: 'none-published', ...describe() };
+        // Pin the complete release instead of asking the Atom provider to pick
+        // the newest tag again. electron-updater still verifies its SHA512.
+        auto.setFeedURL({ provider: 'generic', url: selected.url, channel: profile.updateChannel });
+      }
       const result = await auto.checkForUpdates();
       const remote = result && result.updateInfo && result.updateInfo.version;
+      if (selected && remote !== selected.version) {
+        throw new Error('Update manifest does not match the selected release');
+      }
       if (remote && !acceptsVersion(profile, remote)) {
         throw new Error('Update belongs to a different Serena edition');
       }
@@ -144,10 +159,8 @@ async function check({ silent = false } = {}) {
       }
       return { state: 'current', ...describe() };
     } catch (error) {
-      // A missing feed is the normal state before the first release, and it
-      // should read as "nothing published yet" rather than as a fault.
       const message = String((error && error.message) || error);
-      const missing = /404|ERR_UPDATER_CHANNEL_FILE_NOT_FOUND|No published versions/i.test(message);
+      const missing = /No published versions/i.test(message);
       return {
         state: missing ? 'none-published' : 'error',
         reason: message.slice(0, 500),
