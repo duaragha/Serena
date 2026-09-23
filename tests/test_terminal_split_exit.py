@@ -7,6 +7,7 @@ half-width beside an empty black mount until the whole chat was reopened.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -18,8 +19,11 @@ from ui import web
 
 def _extract(name: str) -> str:
     start = web.HTML.index(f"function {name}(")
+    # Destructured/default parameters can contain braces before the body.
+    signature_end = re.search(r"\)\s*\{", web.HTML[start:])
+    assert signature_end, f"{name} has no function body"
     depth = 0
-    for index in range(web.HTML.index("{", start), len(web.HTML)):
+    for index in range(start + signature_end.end() - 1, len(web.HTML)):
         char = web.HTML[index]
         if char == "{":
             depth += 1
