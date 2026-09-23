@@ -24,7 +24,7 @@ def test_page_reload_detaches_terminals_instead_of_killing_them() -> None:
 
 def test_explicit_terminal_close_still_uses_the_kill_endpoint() -> None:
     html = web.HTML
-    start = html.index("function teardownLiveTerminal(sid)")
+    start = html.index("function teardownLiveTerminal(")
     end = html.index("function detachLiveTerminalsForReload()", start)
 
     assert "/api/kill-terminal/" in html[start:end]
