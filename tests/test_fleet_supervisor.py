@@ -71,6 +71,18 @@ def fleet_env(tmp_path, monkeypatch):
     # Account read access is opt-in per test; the default would reach the real
     # MCP servers over the network at run start.
     monkeypatch.setenv("SERENA_FLEET_READ_MCP_SERVERS", "none")
+    # Every leg freezes its worker argv before dispatch, and building that argv
+    # resolves the provider's CLI. The workers here are fakes, so the CLIs must
+    # be too: on a runner with no codex or claude installed, the freeze failed
+    # and runs that should park ended "failed" -- which kept every Dev release
+    # from building after 2026-09-22.
+    stubs = tmp_path / "provider-bin"
+    stubs.mkdir()
+    for provider in ("codex", "claude", "muse", "agy"):
+        stub = stubs / provider
+        stub.write_text("#!/bin/sh\necho stub-" + provider + "\n")
+        stub.chmod(0o755)
+        monkeypatch.setenv(f"SERENA_FLEET_{provider.upper()}_BIN", str(stub))
     monkeypatch.delenv("SERENA_FLEET_INLINE", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
