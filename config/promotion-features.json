@@ -78,8 +78,9 @@
     {
       "id": "durable-chat-unlink",
       "title": "Persistent unlink and safe chat deletion",
-      "devTag": "v0.3.10-dev.11",
-      "commit": "51e52ead13fd29054cdabf641caf61e454ca64f6",
+      "devTag": "v0.3.10-dev.12",
+      "base": "e5f44112603a1b8014e1b7e6b7035593122b0014",
+      "commit": "31dd5147b3026875d20097a2a6f00439aaec24d4",
       "requires": ["linked-member-removal"],
       "paths": [
         "core/autolink.py", "core/indexer.py", "core/metadata.py", "ui/web.py",
