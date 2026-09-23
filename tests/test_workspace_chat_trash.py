@@ -149,3 +149,40 @@ def test_unlink_failures_are_visible_without_refresh(workspace, operation, argum
     expect(page.locator(".toast").last).to_contain_text("Metadata unavailable")
     assert calls.count(("/api/sessions", "GET")) == initial
     assert not errors
+
+
+@pytest.mark.parametrize("pending", [False, True])
+@pytest.mark.parametrize("disband", [False, True])
+@pytest.mark.parametrize("active", [0, 2])
+def test_unlink_updates_live_split_without_stopping_any_member(workspace, pending, disband, active):
+    page, calls, errors, rows = workspace
+    sids = [row["session_id"] for row in rows[:3]]
+    page.evaluate("""({sids, pending, active}) => {
+      if (pending) for (const sid of sids) _setPendingPartners(sid, sids);
+      openConv(sids[active]);
+    }""", {"sids": sids, "pending": pending, "active": active})
+    page.wait_for_function("termSessions.size === 3 && _gtkSplitSids?.length === 3")
+
+    def unlink(route):
+        for row in rows[:3]:
+            if disband or row["session_id"] == sids[2]:
+                row["group"] = None
+        route.fulfill(json={"ok": True})
+
+    page.route("**/api/group/*", unlink)
+    if disband:
+        page.evaluate("() => { window.disbanded = false; disbandGroup('linked').then(() => window.disbanded = true); }")
+        page.locator("#modalConfirmBtn").click()
+        page.wait_for_function("window.disbanded")
+    else:
+        page.evaluate("sid => unlinkSession(sid)", sids[2])
+    assert page.evaluate("sid => _linkedGroupSids(sid, {liveOnly:false})", sids[2]) == [sids[2]]
+    if disband or active == 2:
+        assert page.evaluate("_gtkSplitActive") is False
+    else:
+        assert page.evaluate("_gtkSplitSids") == sids[:2]
+    if disband:
+        assert page.evaluate("_pendingTermPartners.size") == 0
+    assert page.evaluate("termSessions.size") == 3
+    assert not any("kill-terminal" in path for path, _ in calls)
+    assert not errors
