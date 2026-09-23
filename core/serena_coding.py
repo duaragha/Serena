@@ -402,6 +402,64 @@ def _messages(path: Path) -> list[tuple[str, str, str]]:
     return parse_messages_for_search(path)
 
 
+def _assistant_text(record: Any) -> str:
+    if not isinstance(record, dict):
+        return ""
+    if record.get("type") == "assistant":  # claude
+        content = (record.get("message") or {}).get("content")
+        if isinstance(content, list):
+            return "".join(b.get("text", "") for b in content
+                           if isinstance(b, dict) and b.get("type") == "text")
+        return content if isinstance(content, str) else ""
+    payload = record.get("payload") or {}
+    if payload.get("type") == "agent_message":  # codex event_msg
+        return str(payload.get("message") or "")
+    if payload.get("type") == "message" and payload.get("role") == "assistant":
+        return "".join(b.get("text", "") for b in payload.get("content") or []
+                       if isinstance(b, dict) and b.get("type") in ("output_text", "text"))
+    return ""
+
+
+_LAST_SAID: dict[str, tuple[tuple[int, int], str]] = {}
+
+
+def _last_said(path: Path, tail_bytes: int = 512 * 1024) -> str:
+    """Her session's latest words, from the end of the transcript.
+
+    The app asks every few seconds while a transcript grows by megabytes;
+    parsing the whole file each time is what this avoids.
+    """
+
+    try:
+        stat = path.stat()
+    except OSError:
+        return ""
+    version = (stat.st_size, stat.st_mtime_ns)
+    cached = _LAST_SAID.get(str(path))
+    if cached and cached[0] == version:
+        return cached[1]
+    said = ""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, stat.st_size - tail_bytes))
+            lines = fh.read().splitlines()
+        for line in reversed(lines[1:] if stat.st_size > tail_bytes else lines):
+            try:
+                text = _assistant_text(json.loads(line))
+            except ValueError:
+                continue
+            if text.strip():
+                said = text.strip()
+                break
+    except OSError:
+        return ""
+    if not said and stat.st_size > tail_bytes:
+        texts = [t for role, t, _ in _messages(path) if role == "assistant" and t.strip()]
+        said = texts[-1].strip() if texts else ""
+    _LAST_SAID[str(path)] = (version, said)
+    return said
+
+
 def status(record: dict[str, Any], *, now: float | None = None,
            adopt: bool = True) -> dict[str, Any]:
     moment = time.time() if now is None else now
@@ -413,8 +471,7 @@ def status(record: dict[str, Any], *, now: float | None = None,
     if path is None:
         out.update(state="starting", last="")
         return out
-    said = [text for role, text, _ in _messages(path) if role == "assistant" and text.strip()]
-    last = said[-1].strip() if said else ""
+    last = _last_said(path)
     marker = next((line.strip() for line in reversed(last.splitlines())
                    if _MARKER.match(line)), "")
     quiet = moment - (_mtime(path) or moment)

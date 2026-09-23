@@ -146,6 +146,21 @@ def test_codex_rollouts_match_on_the_users_first_message(tmp_path):
     assert sc._opens_with(path, "serena-task-cx")
 
 
+def test_last_words_come_from_the_tail_of_a_long_transcript(tmp_path):
+    path = tmp_path / "t.jsonl"
+    early = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": "early words"}]}}
+    late = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": "DONE: shipped"}]}}
+    filler = json.dumps({"type": "attachment", "content": "x" * 5000})
+    path.write_text(json.dumps(early) + "\n" + (filler + "\n") * 300 + json.dumps(late) + "\n")
+    assert sc._last_said(path, tail_bytes=64 * 1024) == "DONE: shipped"
+    codex = tmp_path / "rollout.jsonl"
+    codex.write_text(json.dumps({"type": "event_msg", "payload": {
+        "type": "agent_message", "message": "BLOCKED: no PC"}}) + "\n")
+    assert sc._last_said(codex) == "BLOCKED: no PC"
+
+
 def test_codex_session_id_comes_from_the_rollout_name():
     path = Path("rollout-2026-09-22T10-00-00-0199aaaa-bbbb-cccc-dddd-eeeeffff0000.jsonl")
     assert sc._session_id("codex", path) == "0199aaaa-bbbb-cccc-dddd-eeeeffff0000"
@@ -172,7 +187,13 @@ def test_status_reads_the_sessions_own_words(tmp_path, monkeypatch, last, age, s
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("{}\n")
     os.utime(transcript, (time.time() - age, time.time() - age))
-    monkeypatch.setattr(sc, "_messages", lambda _p: [("user", "go", ""), ("assistant", last, "")])
+    lines = [{"type": "user", "message": {"role": "user", "content": "go"}},
+             {"type": "assistant", "message": {"role": "assistant",
+                                               "content": [{"type": "text", "text": last}]}},
+             {"type": "assistant", "message": {"role": "assistant", "content": [
+                 {"type": "tool_use", "name": "Bash", "input": {}}]}}]
+    transcript.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+    os.utime(transcript, (time.time() - age, time.time() - age))
     result = sc.status(_record(tmp_path, transcript))
     assert result["state"] == state
     if state in ("done", "blocked"):
@@ -182,7 +203,6 @@ def test_status_reads_the_sessions_own_words(tmp_path, monkeypatch, last, age, s
 def test_a_stopped_session_reads_stopped_whatever_it_last_said(tmp_path, monkeypatch):
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("{}\n")
-    monkeypatch.setattr(sc, "_messages", lambda _p: [("assistant", "Running the tests now.", "")])
     record = {**_record(tmp_path, transcript), "stopped_at": time.time()}
     sc._save({record["id"]: record})
     assert sc.status(record)["state"] == "stopped"
