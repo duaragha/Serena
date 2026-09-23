@@ -419,6 +419,15 @@ def _persona_context() -> str:
         "visible session in his home folder; you have no shell of your own, "
         "so never say you ran a command yourself. sudo needs his password: "
         "when root is unavoidable the session hands him the exact command. "
+        "His Serena app has its own browser, and so do you: "
+        "mcp__serena-browser__browser_open puts a site, a dev server "
+        "(localhost:5173) or a file in a tab inside his app window, "
+        "browser_look reads it back as text plus numbered elements, "
+        "browser_click and browser_type act on those numbers, browser_logs "
+        "shows console errors and failed requests, and browser_screenshot "
+        "lets you see it. Use it to check a page he is building, test a flow, "
+        "or read something he points you at; look before and after you act. "
+        "Never type his passwords, card numbers or one-time codes. "
         "For a small contained fix he asks for out "
         "loud, mcp__serena-work__start_coding_work is the quieter option. "
         "When he asks you on a spoken turn to build, fix, change, investigate, "
@@ -2215,6 +2224,8 @@ def _build_agent_options(
     journal_tool_names: list[str] | None = None,
     code_tools=None,
     code_tool_names: list[str] | None = None,
+    browser_tools=None,
+    browser_tool_names: list[str] | None = None,
     session_id: str | None = None,
 ):
     """Build the narrow, unattended options used by every daemon session."""
@@ -2240,6 +2251,7 @@ def _build_agent_options(
         *(walmart_tool_names or []),
         *(journal_tool_names or []),
         *(code_tool_names or []),
+        *(browser_tool_names or []),
     ]
     if laptop_tools is not None:
         mcp_servers["serena-laptop"] = laptop_tools
@@ -2263,6 +2275,8 @@ def _build_agent_options(
         mcp_servers["serena-journal"] = journal_tools
     if code_tools is not None:
         mcp_servers["serena-code"] = code_tools
+    if browser_tools is not None:
+        mcp_servers["serena-browser"] = browser_tools
     remote_servers, remote_allow = _remote_mcp_servers()
     mcp_servers.update(remote_servers)
     print(f"[brain] {len(mcp_servers)} mcp servers, "
@@ -2383,6 +2397,8 @@ class ResidentClientManager:
         journal_tool_names: list[str] | None = None,
         code_tools_factory=None,
         code_tool_names: list[str] | None = None,
+        browser_tools_factory=None,
+        browser_tool_names: list[str] | None = None,
         journal: RecentThreadJournal | None = None,
         lifetime: LifetimeLedger | None = None,
         voice_transcripts: VoiceTranscriptStore | None = None,
@@ -2420,6 +2436,8 @@ class ResidentClientManager:
         self.journal_tool_names = list(journal_tool_names or [])
         self.code_tools_factory = code_tools_factory
         self.code_tool_names = list(code_tool_names or [])
+        self.browser_tools_factory = browser_tools_factory
+        self.browser_tool_names = list(browser_tool_names or [])
         self.journal = journal or RecentThreadJournal()
         self.lifetime = lifetime or LifetimeLedger()
         self.voice_transcripts = voice_transcripts or VoiceTranscriptStore()
@@ -3061,6 +3079,12 @@ class ResidentClientManager:
                 else None
             ),
             code_tool_names=self.code_tool_names,
+            browser_tools=(
+                self.browser_tools_factory()
+                if self.browser_tools_factory is not None
+                else None
+            ),
+            browser_tool_names=self.browser_tool_names,
             session_id=requested_session_id,
         )
         secure_directory(Path(options.cwd))
@@ -3630,6 +3654,7 @@ async def _run_daemon() -> None:
 
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
+    from core.brain_browser_tools import BROWSER_TOOL_NAMES, browser_tools_server
     from core.brain_capability_tools import (
         CAPABILITY_TOOL_NAMES,
         capability_tools_server,
@@ -3681,6 +3706,8 @@ async def _run_daemon() -> None:
         journal_tool_names=JOURNAL_TOOL_NAMES,
         code_tools_factory=code_tools_server,
         code_tool_names=CODE_TOOL_NAMES,
+        browser_tools_factory=browser_tools_server,
+        browser_tool_names=BROWSER_TOOL_NAMES,
         codex_brain_factory=lambda: CodexBrainClient(
             cwd=BRAIN_CWD,
             developer_instructions=_persona_context(),

@@ -1232,6 +1232,20 @@ def mark_done(sid, port):
         pass  # best-effort; never block claude's Stop hook on this
 
 
+@main.command(name="page", context_settings={"ignore_unknown_options": True,
+                                             "allow_extra_args": True, "help_option_names": []})
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def page(args):
+    """Drive the Serena app's in-app browser: open, look, click, type, logs, screenshot.
+
+    `chats page --help` lists the commands. The tabs are the ones in his app
+    window, so he watches what you do.
+    """
+    from core.app_browser import main as browser_main
+
+    raise SystemExit(browser_main([*args]))  # `list` is the list command here
+
+
 @main.command(name="gen-image")
 @click.option("--out", "-o", help="Output path (file or dir). If a dir, image gets a generated filename. Default: print where codex saved it.")
 @click.option("--timeout", default=600, help="Max seconds to wait for image generation (default 600)")

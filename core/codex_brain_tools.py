@@ -209,6 +209,7 @@ def _dynamic_result(success: bool, text: str) -> dict[str, Any]:
 def build_serena_codex_brain_tools() -> CodexBrainToolRegistry:
     """Build the exact brokered tool surface used by the resident brain."""
 
+    from core.brain_browser_tools import BROWSER_TOOLS
     from core.brain_capability_tools import CAPABILITY_TOOLS
     from core.brain_code_tools import CODE_TOOLS
     from core.brain_document_tools import DOCUMENT_TOOLS
@@ -227,6 +228,10 @@ def build_serena_codex_brain_tools() -> CodexBrainToolRegistry:
             "serena_code": (
                 "Open, watch, steer and stop Serena's own coding terminals.",
                 CODE_TOOLS,
+            ),
+            "serena_browser": (
+                "Open, read and act on pages in the Serena app's own browser.",
+                BROWSER_TOOLS,
             ),
             "serena_memory": (
                 "Write Serena memories and knowledge when authorized.",
