@@ -1,0 +1,18 @@
+[Unit]
+Description=Serena orb: her voice and animation, brought up by "hey serena"
+# The orb and the wake listener take turns with the microphone: starting the
+# orb stops the listener, and the orb hands it back when it closes.
+Conflicts=serena-wake-listener.service
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/Projects/serena/voice/orb
+ExecStart=%h/Documents/Projects/serena/voice/orb/node_modules/.bin/electron . --wake
+# Whether it closed itself after the conversation, he closed it, or it
+# crashed: her ears come back.
+ExecStopPost=/usr/bin/systemctl --user --no-block start serena-wake-listener.service
+Restart=no
+# Electron exits 1 when told to stop; that is a normal close, not a failure.
+SuccessExitStatus=1
+TimeoutStopSec=5

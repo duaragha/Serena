@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
 import os
@@ -44,7 +45,18 @@ DEFAULT_PHRASE_MODEL = (
 )
 TARGET_WAKE_PHRASE = "hey serena"
 PHRASE_WINDOW_FRAMES = 20
-PHRASE_POST_ROLL_FRAMES = 2
+# The model often fires on "sere-"; 160ms of post-roll cut the rest of her
+# name off and Whisper heard something else.
+PHRASE_POST_ROLL_FRAMES = 4
+# A score this strong is her name. The desk loop that answered him for weeks
+# woke on the model alone at 0.55; the phrase check exists for the doubtful
+# middle, and on 2026-09-22 it refused him at 0.91 while the desk loop, which
+# never asked Whisper, answered instead -- voice with no orb.
+STRONG_WAKE_SCORE = 0.8
+# Tiny Whisper spells her name every way it can ("serene", "selena",
+# "cerena"). Close enough to "serena" after a hello counts; "sabrina" (0.62)
+# and "siri" do not.
+NAME_SIMILARITY = 0.75
 WAKE_EVENT_PREFIX = "SERENA_WAKE_EVENT "
 WAKE_HELLO_VARIANTS = frozenset({"hey", "hay", "hi"})
 WAKE_NAME_VARIANTS = frozenset(
@@ -101,9 +113,15 @@ def wake_phrase_matches(text: str, target_phrase: str = TARGET_WAKE_PHRASE) -> b
     # her name, a fragment of the question after it, or a stray article. He
     # said her name and was refused because of the words either side of it.
     return any(
-        first in WAKE_HELLO_VARIANTS and second in WAKE_NAME_VARIANTS
+        first in WAKE_HELLO_VARIANTS and _sounds_like_her_name(second)
         for first, second in zip(words, words[1:], strict=False)
     )
+
+
+def _sounds_like_her_name(word: str) -> bool:
+    if word in WAKE_NAME_VARIANTS:
+        return True
+    return difflib.SequenceMatcher(None, word, "serena").ratio() >= NAME_SIMILARITY
 
 
 def phrase_model_sha256(path: str | Path) -> str:
@@ -241,6 +259,7 @@ class WakeOnlyListener:
         phrase_verifier: WakePhraseVerifier,
         phrase_window_frames: int = PHRASE_WINDOW_FRAMES,
         phrase_post_roll_frames: int = PHRASE_POST_ROLL_FRAMES,
+        strong_score: float = STRONG_WAKE_SCORE,
         event_sink: Callable[[dict[str, object]], None] = journal_wake_event,
         event_context: dict[str, object] | None = None,
         heartbeat_seconds: float | None = None,
@@ -259,6 +278,7 @@ class WakeOnlyListener:
         self.phrase_verifier = phrase_verifier
         self.phrase_window_frames = phrase_window_frames
         self.phrase_post_roll_frames = phrase_post_roll_frames
+        self.strong_score = float(strong_score)
         self.event_sink = event_sink
         self.event_context = dict(event_context or {})
         self.microphone_stall_seconds = max(
@@ -355,6 +375,17 @@ class WakeOnlyListener:
                 score = self.scorer.score_frame(np.frombuffer(pcm, dtype="<i2"))
                 if not self.gate.observe(score):
                     continue
+                if score >= self.strong_score:
+                    self._event(
+                        "wake.phrase_candidate",
+                        score=round(score, 6),
+                        accepted=True,
+                        verified_by="score",
+                    )
+                    self.microphone.close()
+                    self._event("wake.accepted", score=round(score, 6))
+                    self.launcher()
+                    return True
                 candidate = list(recent_frames)
                 for _ in range(self.phrase_post_roll_frames):
                     try:

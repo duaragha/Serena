@@ -152,7 +152,8 @@ def test_valid_wake_launches_full_app_once_and_releases_microphone() -> None:
 def test_false_model_candidate_stays_asleep_without_exact_phrase() -> None:
     stop = threading.Event()
     microphone = _Microphone([b"\0" * 2_560, b"\0" * 2_560])
-    scorer = _Scorer([0.99, 0.1])
+    # A doubtful score is checked by Whisper; this one is below the strong bar.
+    scorer = _Scorer([0.7, 0.1])
     verifier = _Verifier([PhraseVerification(False, "open the window")])
     launches = 0
 
@@ -210,6 +211,7 @@ def test_wake_phrase_matcher_accepts_live_asr_variants(transcript: str) -> None:
         "Serena",
         "hey Siri",
         "hey Sabrina",
+        "hey Sarah",
         "hey there",
         "open the window",
     ],
@@ -222,7 +224,7 @@ def test_structured_wake_events_never_persist_the_transcript() -> None:
     microphone = _Microphone([b"\0" * 2_560])
     events = []
     listener = WakeOnlyListener(
-        _Scorer([0.9]),
+        _Scorer([0.7]),
         WakeGate(0.5, patience_frames=1, cooldown_seconds=0),
         microphone,
         lambda: None,
@@ -351,3 +353,37 @@ def test_his_name_for_her_is_heard_inside_a_longer_transcript(transcript) -> Non
 )
 def test_things_that_are_not_her_name_still_do_not_wake_her(transcript) -> None:
     assert wake_phrase_matches(transcript) is False
+
+
+@pytest.mark.parametrize("transcript", ["hey serene", "hey selena", "hey cerena, you there"])
+def test_near_spellings_of_her_name_after_a_hello_wake_her(transcript) -> None:
+    assert wake_phrase_matches(transcript) is True
+
+
+def test_a_strong_score_wakes_her_without_asking_whisper() -> None:
+    """2026-09-22: he said it, the model scored 0.91, Whisper refused, and the
+    voice-only desk loop answered instead of the orb."""
+    stop = threading.Event()
+    microphone = _Microphone([b"\0" * 2_560])
+    verifier = _Verifier([])
+    events: list[dict[str, object]] = []
+    launches = 0
+
+    def launch() -> None:
+        nonlocal launches
+        launches += 1
+
+    listener = WakeOnlyListener(
+        _Scorer([0.91]),
+        WakeGate(0.5, patience_frames=1, cooldown_seconds=0),
+        microphone,
+        launch,
+        phrase_verifier=verifier,
+        phrase_post_roll_frames=0,
+        event_sink=events.append,
+    )
+
+    assert listener.run(stop) is True
+    assert launches == 1
+    assert verifier.audio == []
+    assert any(e.get("verified_by") == "score" for e in events)

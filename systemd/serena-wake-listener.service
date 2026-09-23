@@ -3,11 +3,12 @@ Description=Serena local hey-serena wake-only listener
 After=wireplumber.service
 BindsTo=wireplumber.service
 PartOf=wireplumber.service
-Before=serena-dot-overlay.service
 ConditionPathExists=%h/.config/serena/models/hey_serena.onnx
 ConditionPathExists=%h/.config/serena/wakeword-acceptance.json
 StartLimitIntervalSec=180
-StartLimitBurst=3
+# Every wake-and-close cycle is a start; three quick questions must not lock
+# her out. Still low enough to stop a crash loop.
+StartLimitBurst=20
 
 [Service]
 Type=simple
@@ -15,7 +16,9 @@ WorkingDirectory=%h/Documents/Projects/serena
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-%h/.config/serena/desk.env
 ExecStart=%h/Documents/Projects/serena/voice/.venv-wake/bin/python -u -m voice.desk.wake_listener --manifest %h/.config/serena/wakeword-acceptance.json --pipewire-target dmic_dc_filtered --phrase-model %h/Documents/Projects/serena/voice/models/faster-whisper-tiny.en --phrase "hey serena"
-Restart=on-failure
+# always: after a wake it exits cleanly and hands over to serena-orb, which
+# starts it again when the orb closes; this covers the orb failing to start.
+Restart=always
 RestartSec=5
 TimeoutStopSec=2
 KillMode=control-group

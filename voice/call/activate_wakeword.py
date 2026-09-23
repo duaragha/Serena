@@ -52,26 +52,27 @@ UNITS = (
     "serena-brain-bridge.service",
     "serena-desk.service",
     "serena-wake-listener.service",
+    "serena-orb.service",
     "serena-work-supervisor.service",
     "serena-wakeword-acceptance.service",
     "serena-wakeword-acceptance-report.service",
     "serena-wakeword-acceptance-report.timer",
 )
-# serena-desk owns the microphone outright now. The old split -- a small
-# listener always on, handing off to the Electron app on the phrase -- existed
-# to avoid holding a window open for nothing. There is no window any more, and
-# the full client is the lighter of the two anyway: 74 MB against the phrase
-# listener's 511 MB peak, because that one loads whisper-tiny to double-check
-# the phrase. One process hears and answers, so there is no handoff to lose.
+# "hey serena" brings up the orb: her voice and her animation as one thing.
+# The wake listener owns the microphone while she is asleep and hands it to
+# serena-orb on the phrase; the orb hands it back when it closes. The
+# voice-only desk loop owned the mic from 2026-09-18, when there was no window
+# to show, and answered him with no orb once the orb existed -- two listeners
+# racing for one phrase. It stays installed but never runs at boot.
 START_UNITS = (
-    "serena-desk.service",
+    "serena-wake-listener.service",
     "serena-work-supervisor.service",
     "serena-wakeword-acceptance.service",
     "serena-wakeword-acceptance-report.timer",
 )
 NON_BOOT_UNITS = (
     "serena-brain-bridge.service",
-    "serena-wake-listener.service",
+    "serena-desk.service",
 )
 
 
