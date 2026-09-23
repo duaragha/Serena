@@ -21,6 +21,11 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("SERENA_CODING_BACKEND", raising=False)
     (tmp_path / "home").mkdir()
+    # Never text him from a test.
+    fake_line = types.SimpleNamespace(sent=[], send=lambda text, *, key="", topic="": (
+        fake_line.sent.append(text) or True))
+    monkeypatch.setitem(sys.modules, "core.phone_line", fake_line)
+    monkeypatch.setattr(sys.modules["core"], "phone_line", fake_line, raising=False)
 
 
 class _Proc:
@@ -38,6 +43,26 @@ def test_backend_prefers_the_installed_apps_own_sidecar(monkeypatch):
         _Proc(["python", "-m", "sidecar", "--port", "9000"], 300),
         _Proc(["/tmp/.mount_SerenaXYZ/resources/sidecar/sidecar", "--port", "40277"], 100),
         _Proc(["bash"], 50),
+    ])
+    assert sc.backend_url() == "http://127.0.0.1:40277"
+
+
+class _EnvProc(_Proc):
+    def __init__(self, cmdline, created, env):
+        super().__init__(cmdline, created)
+        self._env = env
+
+    def environ(self):
+        return self._env
+
+
+def test_backend_prefers_the_stable_app_over_serena_dev(monkeypatch):
+    # Dev opens chats in structured panes that cannot attach to her terminal.
+    _fake_psutil(monkeypatch, [
+        _EnvProc(["/tmp/.mount_SerenaAb/resources/sidecar/serena-web-sidecar", "--port", "41000"],
+                 500, {"SERENA_DESKTOP_CHANNEL": "dev", "SERENA_STRUCTURED_WORKSPACE": "1"}),
+        _EnvProc(["/tmp/.mount_SerenaCd/resources/sidecar/serena-web-sidecar", "--port", "40277"],
+                 100, {"SERENA_DESKTOP_CHANNEL": "stable", "SERENA_STRUCTURED_WORKSPACE": "0"}),
     ])
     assert sc.backend_url() == "http://127.0.0.1:40277"
 
@@ -206,6 +231,10 @@ def test_open_session_spawns_in_his_app_finds_and_titles_it(tmp_path, monkeypatc
     assert calls[1][3] == "http://127.0.0.1:40277"
     assert calls[2][:2] == ("POST", "/api/rename/33333333-cccc")
     assert sc._load()[record["id"]]["session_id"] == "33333333-cccc"
+    # He is told where to watch it the moment it opens.
+    started = sys.modules["core.phone_line"].sent
+    assert len(started) == 1 and "Serena app" in started[0] and record["title"] in started[0]
+    assert "chat titled" in record["where"]
     assert drained == [("http://127.0.0.1:40277", "term-9")]
     assert record["terminal_id"] == "term-9" and record["session_id"] == "33333333-cccc"
     assert sc._record("status label")["id"] == record["id"]

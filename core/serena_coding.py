@@ -60,7 +60,9 @@ def backend_url() -> str:
 
     The installed app runs its own sidecar on a random port; the always-on
     mobile host is 8767. A pane spawned on the wrong one would run where he
-    cannot see it, so the desktop app's own sidecar wins when it is running.
+    cannot see it. The stable app wins: its window opens her pane as the live
+    terminal it is. Serena Dev opens chats in structured panes of its own,
+    which cannot attach to a terminal, so there he only gets the transcript.
     """
 
     override = os.environ.get("SERENA_CODING_BACKEND", "").strip()
@@ -80,12 +82,25 @@ def backend_url() -> str:
             port = int(cmd[cmd.index("--port") + 1])
         except (ValueError, IndexError):
             continue
-        # The packaged app's sidecar is the one his window talks to.
-        rank = 0 if ("AppImage" in joined or ".mount_" in joined or "resources" in joined) else 1
-        candidates.append((rank, -(proc.info.get("create_time") or 0), port))
+        candidates.append((_sidecar_rank(proc, joined), -(proc.info.get("create_time") or 0), port))
     if not candidates:
         return FALLBACK_BACKEND
     return f"http://127.0.0.1:{sorted(candidates)[0][2]}"
+
+
+def _sidecar_rank(proc: Any, joined: str) -> int:
+    packaged = "AppImage" in joined or ".mount_" in joined or "resources" in joined
+    if not packaged:
+        return 3  # the mobile host: runs, but no window shows it
+    try:
+        env = proc.environ()
+    except Exception:
+        env = {}
+    if env.get("SERENA_STRUCTURED_WORKSPACE") == "1":
+        return 2
+    if env.get("SERENA_DESKTOP_CHANNEL", "stable") == "stable":
+        return 0
+    return 1
 
 
 def _request(method: str, path: str, body: dict[str, Any] | None = None,
@@ -290,9 +305,15 @@ def open_session(task: str, *, project: str = "", agent: str = "claude",
         "title": (title or f"Serena: {task.strip()}")[:80], "opened_at": started,
         "session_id": None, "transcript": None, "notified": False,
     }
+    record["where"] = (f"his Serena app, {repo.name} project, the chat titled "
+                       f"\"{record['title']}\"")
     state = _load()
     state[tag] = record
     _save(state)
+    # Proof it exists and where, before it has done anything worth reporting.
+    with contextlib.suppress(Exception):
+        notify(f"started: {record['title']}. watch it live in your Serena app: "
+               f"{repo.name} project, chat \"{record['title']}\". i'll text when it's done.")
     deadline = time.time() + FIND_SESSION_SECONDS
     while time.time() < deadline:
         if _transcript(record) is not None:
@@ -363,13 +384,15 @@ def _adopt(record: dict[str, Any], path: Path) -> None:
         _save(state)
 
 
-def _transcript(record: dict[str, Any]) -> Path | None:
+def _transcript(record: dict[str, Any], *, adopt: bool = True) -> Path | None:
     if record.get("transcript") and Path(record["transcript"]).exists():
         return Path(record["transcript"])
     path = _find_transcript(record["agent"], Path(record["cwd"]), record["id"],
                             float(record.get("opened_at") or 0))
-    if path:
+    if path and adopt:
         _adopt(record, path)
+    elif path:
+        record.update(transcript=str(path), session_id=_session_id(record["agent"], path))
     return path
 
 
@@ -379,11 +402,13 @@ def _messages(path: Path) -> list[tuple[str, str, str]]:
     return parse_messages_for_search(path)
 
 
-def status(record: dict[str, Any], *, now: float | None = None) -> dict[str, Any]:
+def status(record: dict[str, Any], *, now: float | None = None,
+           adopt: bool = True) -> dict[str, Any]:
     moment = time.time() if now is None else now
-    path = _transcript(record)
+    path = _transcript(record, adopt=adopt)
     out = {"id": record["id"], "title": record["title"], "project": record["project"],
            "agent": record["agent"], "session_id": record.get("session_id"),
+           "where": record.get("where", ""),
            "opened_minutes_ago": int((moment - float(record.get("opened_at") or moment)) // 60)}
     if path is None:
         out.update(state="starting", last="")
@@ -408,9 +433,13 @@ def status(record: dict[str, Any], *, now: float | None = None) -> dict[str, Any
     return out
 
 
-def list_sessions(*, include_finished: bool = True, limit: int = 12) -> list[dict[str, Any]]:
+def list_sessions(*, include_finished: bool = True, limit: int = 12,
+                  adopt: bool = True) -> list[dict[str, Any]]:
+    """Her sessions, newest first. The app lists them with adopt=False: its
+    own request handler must not make HTTP calls back into itself."""
+
     records = sorted(_load().values(), key=lambda r: -float(r.get("opened_at") or 0))[:limit]
-    out = [status(r) for r in records]
+    out = [status(r, adopt=adopt) for r in records]
     return out if include_finished else [s for s in out if s["state"] not in ("done", "stopped")]
 
 
