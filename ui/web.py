@@ -5652,6 +5652,8 @@ function renderCodeTabs() {
       + '<span>' + esc(f.name) + '</span>'
       + '<span class="ct-close" data-close="' + escAttr(f.path) + '" title="Close">✕</span></div>';
   }
+  // The in-app browser (desktop app only; see /static/app_browser.js).
+  if (window.SerenaAppBrowser) html += SerenaAppBrowser.tabHtml(_codeTab === '__browser__');
   el.innerHTML = html;
 }
 
@@ -5668,9 +5670,13 @@ function switchCodeTab(id) {
   _codeTab = id;
   document.getElementById('termPane').classList.toggle('hidden', id !== '__term__');
   for (const [p, info] of _filePanes) info.el.classList.toggle('hidden', p !== id);
+  if (window.SerenaAppBrowser) SerenaAppBrowser.setActive(id === '__browser__');
   document.querySelectorAll('#codeTabs .code-tab').forEach(t =>
     t.classList.toggle('active', t.dataset.tabid === id));
-  if (id === '__term__') {
+  if (id === '__browser__') {
+    if (window.__nativeTerminalBridge) stopGtkCode();
+    renderCodeTabs();
+  } else if (id === '__term__') {
     // Bring the live terminal/split pane back to front.
     if (window.__nativeTerminalBridge) {
       if (currentSessionId) startGtkCode(currentSessionId);
@@ -5764,19 +5770,22 @@ function resetCodeTabs() {
   _filePanes.clear();
   _openFiles.length = 0;
   _codeTab = '__term__';
+  if (window.SerenaAppBrowser) SerenaAppBrowser.setActive(false);
   renderCodeTabs();
 }
 
 // Re-render tabs + show the active pane (called on entering Code view).
 function syncCodeView() {
   renderCodeTabs();
-  if (_codeTab !== '__term__' && !_filePanes.has(_codeTab)) _codeTab = '__term__';
+  if (_codeTab !== '__term__' && _codeTab !== '__browser__' && !_filePanes.has(_codeTab)) _codeTab = '__term__';
   document.getElementById('termPane').classList.toggle('hidden', _codeTab !== '__term__');
   for (const [p, info] of _filePanes) info.el.classList.toggle('hidden', p !== _codeTab);
+  if (window.SerenaAppBrowser) SerenaAppBrowser.setActive(_codeTab === '__browser__');
 }
 
 document.getElementById('codeTabs').addEventListener('click', (e) => {
   const closeEl = e.target.closest('.ct-close');
+  if (closeEl && closeEl.dataset.close === '__browser__') { e.stopPropagation(); SerenaAppBrowser.hide(); return; }
   if (closeEl) { closeFileTab(closeEl.dataset.close, e); return; }
   const tab = e.target.closest('.code-tab');
   if (tab) switchCodeTab(tab.dataset.tabid);
@@ -11534,6 +11543,7 @@ function showToast(message, opts) {
 </script>
 <script src="/static/operator_workspace.js"></script>
 <script src="/static/serena_work.js"></script>
+<script src="/static/app_browser.js"></script>
 <script src="/static/workspace.js"></script>
 </body>
 </html>"""

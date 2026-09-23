@@ -18,6 +18,13 @@
   function openExternalUri(value, options) {
     const uri = normalizeExternalUri(value);
     if (!uri) return false;
+    // In the desktop app links open in its own browser tab, beside the
+    // terminal, instead of throwing him out to Chrome.
+    const inApp = options && 'inAppBrowser' in options ? options.inAppBrowser : root.SerenaAppBrowser;
+    if (inApp && typeof inApp.open === 'function') {
+      inApp.open(uri);
+      return true;
+    }
     const bridge = options && options.gtkSend
       ? options.gtkSend
       : root.gtkSend;

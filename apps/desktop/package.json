@@ -42,6 +42,7 @@
       "runtime.js",
       "profile.js",
       "folder-picker.js",
+      "app-browser.js",
       "package.json",
       "build/icon.png",
       "menu.js",
