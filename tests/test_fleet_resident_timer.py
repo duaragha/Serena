@@ -10,7 +10,7 @@ import time
 import psutil
 
 from core.work_jobs import process_start_token
-from fleet import supervisor, workers, peer_runtime, lesson_review
+from fleet import supervisor, workers, peer_runtime, lesson_review, leg_scripts
 from test_fleet_integration_recovery import _failed
 
 
@@ -44,6 +44,13 @@ def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, 
     monkeypatch.setattr(supervisor, "_terminal_outcome", lambda store, run: run)
     monkeypatch.setattr("fleet.attention.notify_blocked_runs", lambda *args: None)
     capacity = lambda: {"codex": {"usable": True}, "claude": {"usable": True}}
+    # Capacity above says both CLIs are usable; the binary lookup must agree.
+    # Freezing an attempt builds the real launch argv before dispatch, so on a
+    # machine without Codex (GitHub's Windows runner) Review failed with
+    # "codex CLI is not installed" and parked instead of reaching the stub.
+    # The override is the documented seam for building argv without installing.
+    for provider in ("CODEX", "CLAUDE"):
+        monkeypatch.setenv(f"SERENA_FLEET_{provider}_BIN", sys.executable)
     monkeypatch.setattr(supervisor, "_read_start_capacity", capacity)
     monkeypatch.setattr(supervisor, "read_fleet_capacity", capacity)
     stopper = threading.Event()
@@ -73,7 +80,7 @@ def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, 
             f"(only verify on {rid!r} is expected here)"
         )
         raise RuntimeError(unexpected[-1])
-    for module in (supervisor, workers, peer_runtime, lesson_review):
+    for module in (supervisor, workers, peer_runtime, lesson_review, leg_scripts):
         monkeypatch.setattr(module, "run_worker", no_model)
     service = threading.Thread(target=supervisor.serve_forever,
                                kwargs={"stop_event": stopper}, daemon=True)
@@ -119,6 +126,13 @@ def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, 
             if review_boundary.is_set():
                 break
             assert not unexpected, unexpected
+            if (final["state"] == "waiting_for_input"
+                    and final["phases"][1]["legs"][0]["state"] == "completed"):
+                # Review parked before dispatch. Say why now: the bare deadline
+                # message hid "codex CLI is not installed" for five days.
+                failed = [e for e in store.events(rid) if e["type"] == "attempt.failed"]
+                raise AssertionError(
+                    f"Review parked before dispatch: {failed[-1]['payload'] if failed else final['state']}")
             time.sleep(.1)
         assert final["phases"][1]["legs"][0]["state"] == "completed", final
         assert review_boundary.is_set(), "recovered Code did not make Review runnable"
