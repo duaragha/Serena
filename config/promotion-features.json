@@ -74,6 +74,22 @@
       "commit": "59af2d1d010b13946002a36153f89da3829c5aad",
       "requires": [],
       "paths": ["core/serena_coding.py", "ui/static/serena_work.js", "ui/web.py", "tests/test_serena_coding.py", "tests/test_serena_work_ui.py"]
+    },
+    {
+      "id": "durable-chat-unlink",
+      "title": "Persistent unlink and safe chat deletion",
+      "devTag": "v0.3.10-dev.12",
+      "base": "e5f44112603a1b8014e1b7e6b7035593122b0014",
+      "commit": "31dd5147b3026875d20097a2a6f00439aaec24d4",
+      "requires": ["linked-member-removal"],
+      "paths": [
+        "core/autolink.py", "core/indexer.py", "core/metadata.py", "ui/web.py",
+        "scripts/verify-workspace-archive-contract.py",
+        "tests/test_autolink.py", "tests/test_group_unlink_member.py",
+        "tests/test_session_recovery.py", "tests/test_web_terminal_performance.py",
+        "tests/test_work_project_metadata.py", "tests/test_workspace_catalog.py",
+        "tests/test_workspace_pending_catalog_api.py", "tests/test_workspace_chat_trash.py"
+      ]
     }
   ]
 }
