@@ -110,3 +110,19 @@ def test_uppercase_exec_originator_still_chains_and_inherits_title(index_env):
     gid = meta.get_group("uppercase-exec-child")
     assert gid and gid == meta.get_group("uppercase-plan-tui")
     assert meta.get_meta("uppercase-exec-child").get("custom_title") == "Uppercase Task"
+
+
+@pytest.mark.parametrize("unlinked", ["plan", "exec"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_explicit_unlink_prevents_plan_exec_regrouping(index_env, unlinked, dry_run):
+    now = datetime.now(timezone.utc)
+    _make_index(index_env, [
+        ("plan", "/home/x", "", _ts(now - timedelta(minutes=20)),
+         _ts(now - timedelta(minutes=2)), "Unified Changes", "auto", "codex-tui:cli"),
+        ("exec", "/home/x", "", _ts(now - timedelta(minutes=1)),
+         _ts(now), None, "Continuation", "codex_exec:exec"),
+    ])
+    autolink.meta.unlink_session(unlinked)
+    assert autolink.auto_link_codex_chains(dry_run=dry_run) == []
+    assert autolink.meta.get_group("exec") is None
+    assert not autolink.meta.get_meta("exec").get("custom_title")

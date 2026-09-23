@@ -32,6 +32,7 @@ def test_owned_delete_reports_conflict_and_bulk_keeps_other_results():
     client = app.test_client()
     response = client.delete("/api/session/owned")
     assert response.status_code == 409 and "Disconnect" in response.json["error"]
+    assert response.json["code"] == "session_owned"
     response = client.post("/api/sessions/bulk-delete", json={"ids": ["owned", "free"]})
     assert response.json["deleted"] == ["free"]
     assert response.json["errors"] == [{"id": "owned", "error": "Owned"}]

@@ -26,8 +26,9 @@ def test_project_binding_changes_only_the_named_session(monkeypatch, tmp_path) -
 
     _isolated_metadata(monkeypatch, tmp_path)
     repo = _git_repo(tmp_path / "serena")
-    metadata._save_one("selected", {"group": "linked", "custom_title": "Tightening Serena"})
-    metadata._save_one("sibling", {"group": "linked"})
+    metadata.set_group("selected", "linked")
+    metadata.set_custom_title("selected", "Tightening Serena")
+    metadata.set_group("sibling", "linked")
 
     canonical = metadata.set_work_project_root("selected", repo)
 

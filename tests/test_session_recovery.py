@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -116,6 +118,53 @@ def test_delete_retains_lock_through_archive_and_releases_on_failure(tmp_path, m
         indexer.delete_session("exact")
     lease = SessionLease("exact")
     lease.release()
+
+
+def test_stopped_exact_child_can_be_trashed_while_sibling_keeps_running(tmp_path, monkeypatch):
+    from core import metadata
+    from core.workspace_lease import SessionLease, SessionOwnedError
+
+    monkeypatch.setattr(metadata, "METADATA_DIR", tmp_path / "meta")
+    monkeypatch.setattr(metadata, "_ensure_migrated", lambda: None)
+    files = {sid: tmp_path / f"{sid}.jsonl" for sid in ("selected", "sibling", "third")}
+    for sid, file in files.items():
+        file.write_text(f"{sid} history\n")
+    group = metadata.link_sessions(list(files))
+    metadata.set_custom_title("selected", "Unified Changes")
+    metadata.unlink_session("selected")
+    monkeypatch.setattr(indexer, "get_session", lambda sid: {"session_id": sid, "file_path": str(files[sid])})
+    monkeypatch.setattr(indexer, "_get_db", lambda: _FakeConnection())
+    children, leases = [], []
+    try:
+        for sid in ("selected", "sibling"):
+            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+            children.append(child)
+            lease = SessionLease(sid)
+            leases.append(lease)
+            lease.bind(child.pid)
+            lease.release()
+        with pytest.raises(SessionOwnedError):
+            indexer.delete_session("selected")
+        assert files["selected"].exists()
+        children[0].terminate()
+        children[0].wait(timeout=10)
+        indexer.delete_session("selected", source="test-stop-trash")
+        recovered = indexer.DATA_DIR / "deleted-sessions" / "selected"
+        assert (recovered / "selected.jsonl").read_text() == "selected history\n"
+        assert json.loads((recovered / "recovery.json").read_text())["metadata"]["group_unlinked"]
+        assert not files["selected"].exists()
+        assert files["sibling"].read_text() == "sibling history\n"
+        assert metadata.get_group("sibling") == metadata.get_group("third") == group
+        assert children[1].poll() is None
+        with pytest.raises(SessionOwnedError):
+            indexer.delete_session("sibling")
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.terminate()
+            child.wait(timeout=10)
+        for lease in leases:
+            lease.release()
 
 
 @pytest.mark.parametrize("failure", ["manifest", "move", "database"])

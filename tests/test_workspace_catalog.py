@@ -59,8 +59,8 @@ def test_native_archive_index_preserves_custom_metadata_and_restores_exact_row(t
     path.write_text(json.dumps({'type': 'session_meta', 'payload': {'id': sid, 'cwd': str(tmp_path)}}) + '\n', encoding="utf-8")
     target = {'session_id': sid, 'provider': 'codex', 'cwd': str(tmp_path)}
     metadata._save_one(sid, {'custom_title': 'Keep my title', 'group': 'linked-group', 'starred': True,
-                             'done': True, 'done_at': '2099-01-01T00:00:00+00:00'})
-    metadata._save_one(sibling, {'custom_title': 'Sibling untouched', 'group': 'linked-group'})
+                             'done': True, 'done_at': '2099-01-01T00:00:00+00:00'}, group_change=True)
+    metadata._save_one(sibling, {'custom_title': 'Sibling untouched', 'group': 'linked-group'}, group_change=True)
     register_fork(target)
     before = metadata.get_meta(sid)
     sibling_before = metadata.get_meta(sibling)

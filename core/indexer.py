@@ -504,14 +504,16 @@ def _repair_custom_title_groups(conn: sqlite3.Connection) -> int:
     all_meta = meta_sync.get_all_meta()
     repaired = 0
     for members in buckets.values():
+        members = [row for row in members if not
+                   (all_meta.get(row["session_id"]) or {}).get("group_unlinked")]
         if len(members) < 2 or not any(row["custom_title"] for row in members):
             continue
         session_ids = [row["session_id"] for row in members]
         groups = [(all_meta.get(sid) or {}).get("group") for sid in session_ids]
         if groups[0] and all(group == groups[0] for group in groups):
             continue
-        meta_sync.link_sessions(session_ids)
-        repaired += 1
+        if meta_sync.link_sessions(session_ids, automatic=True):
+            repaired += 1
     return repaired
 
 

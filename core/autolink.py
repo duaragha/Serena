@@ -68,6 +68,7 @@ def auto_link_codex_chains(window_sec: int = _WINDOW_SEC, recent_hours: int = _R
     items.sort(key=lambda x: x["ft"])
 
     now = datetime.now(timezone.utc)
+    metadata = meta.get_all_meta()
     done: list[tuple[str, str, str]] = []
     for s in items:
         if (now - s["ft"]).total_seconds() > recent_hours * 3600:
@@ -79,12 +80,14 @@ def auto_link_codex_chains(window_sec: int = _WINDOW_SEC, recent_hours: int = _R
         # recurring wrong-group / renamed-chat bug).
         if "exec" not in s["originator"].lower():
             continue
-        if meta.get_group(s["sid"]):
+        if (metadata.get(s["sid"]) or {}).get("group_unlinked") or meta.get_group(s["sid"]):
             continue  # already linked
         # predecessor: same-cwd codex starting earlier, ending closest before S
         best = None
         for p in items:
             if p["sid"] == s["sid"] or p["cwd"] != s["cwd"] or p["ft"] >= s["ft"]:
+                continue
+            if (metadata.get(p["sid"]) or {}).get("group_unlinked"):
                 continue
             gap = (s["ft"] - p["lt"]).total_seconds()
             if -_OVERLAP_GRACE <= gap <= window_sec:
@@ -99,10 +102,9 @@ def auto_link_codex_chains(window_sec: int = _WINDOW_SEC, recent_hours: int = _R
         inherit = (meta.get_meta(best["sid"]).get("custom_title")
                    or best.get("custom_title") or best.get("title") or "").strip()
         if not dry_run:
+            gid = meta.link_sessions([best["sid"], s["sid"]], automatic=True)
             if not gid:
-                gid = meta._new_group_id()
-                meta.set_group(best["sid"], gid)
-            meta.set_group(s["sid"], gid)
+                continue
             if inherit and not meta.get_meta(s["sid"]).get("custom_title"):
                 meta.set_custom_title(s["sid"], inherit)
         done.append((s["sid"], best["sid"], gid or "(new)"))
