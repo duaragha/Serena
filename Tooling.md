@@ -158,6 +158,16 @@ When Raghav asks for an image, run `chats gen-image "<prompt>"`. Do NOT route it
 - `chats gen-image --reasoning medium "<prompt>"` — default `low`
 - Wait for it (timeout 600s; usually 20-60s), report saved path. Never batch multiple images into one prompt.
 
+## The app's own browser — `chats page`
+The Serena desktop app has browser tabs inside its window (Code pane → ◎, or the whole center column when no chat is open). Open dev servers, links and local files there instead of Chrome: Raghav sees the same tab you are driving, and pages run in the app's Chromium (hidden tabs sleep, idle ones unload), so nothing extra eats RAM.
+- `chats page open localhost:5173` (`--new` for another tab), a URL, or a file path
+- `chats page look` — title, URL, visible text and numbered elements (`e1`, `e2`…); look again after anything changes the page
+- `chats page click e12` / `chats page type e5 "text" --submit` / `chats page press Escape` — refs from `look`, a CSS selector, or `x,y`
+- `chats page logs` — console messages and failed requests: check this first when a page is broken
+- `chats page screenshot` (prints the PNG path; Read it to see it), `chats page eval "<js>"`, `back`/`forward`/`reload`/`tabs`/`close`, `wait "text"`
+- It drives Serena main when it is running, else Serena Dev; `SERENA_BROWSER_EDITION=dev` forces Dev. "not running" means neither app with the browser is open.
+- Never type his passwords, card numbers or one-time codes into it. Her voice has the same browser through its `browser_*` tools.
+
 ## Personal project delivery
 For authorized implementation work in personal projects, finishing includes autonomous delivery:
 1. Branch from `main` or use an isolated worktree.

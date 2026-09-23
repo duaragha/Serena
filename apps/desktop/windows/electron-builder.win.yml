@@ -21,6 +21,7 @@ files:
   - runtime.js
   - profile.js
   - folder-picker.js
+  - app-browser.js
   - menu.js
   - updates.js
   - update-feed.cjs

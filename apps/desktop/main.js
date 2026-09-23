@@ -1,6 +1,9 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const http = require('node:http');
 const path = require('node:path');
 const {
   app,
@@ -10,8 +13,10 @@ const {
   Menu,
   nativeImage,
   Notification,
+  session,
   shell,
   Tray,
+  WebContentsView,
 } = require('electron');
 const {
   LOOPBACK_HOST,
@@ -28,6 +33,7 @@ const logging = require('./logging');
 const backendControl = require('./backend-control');
 const { desktopProfile, backendEnvironment } = require('./profile');
 const folderPicker = require('./folder-picker');
+const { createAppBrowser } = require('./app-browser');
 
 const SMOKE_TEST = process.argv.includes('--smoke-test');
 const BACKEND_STABLE_MS = 30000;
@@ -64,6 +70,7 @@ let startingBackend = false;
 let tray = null;
 let quitting = false;
 let quitCleanupStarted = false;
+let appBrowser = null;
 
 if (!gotSingleInstanceLock) {
   console.error('[desktop] another Serena instance owns this profile; exiting');
@@ -367,6 +374,7 @@ app.on('before-quit', (event) => {
   if (quitCleanupStarted) return;
   event.preventDefault();
   quitCleanupStarted = true;
+  if (appBrowser) appBrowser.stop();
   stopBackend()
     .catch((error) => console.error('[desktop] backend shutdown failed:', error))
     .finally(() => app.quit());
@@ -383,6 +391,26 @@ if (gotSingleInstanceLock) {
     logging.note(`Serena ${app.getVersion()} starting on ${process.platform}`);
     registerDesktopIpc();
     registerUpdateIpc();
+    if (!SMOKE_TEST) {
+      // His and her browser: tabs inside this window, driven by agents over
+      // a token-guarded 127.0.0.1 control server (see app-browser.js).
+      appBrowser = createAppBrowser({
+        WebContentsView,
+        session,
+        getWindow: () => mainWindow,
+        userDataDir: app.getPath('userData'),
+        fs,
+        path,
+        http,
+        crypto,
+        profile,
+        log: (message) => logging.note(message),
+      });
+      appBrowser.registerIpc(ipcMain, senderIsTrusted);
+      appBrowser.start()
+        .then((port) => logging.note(`in-app browser control listening on 127.0.0.1:${port}`))
+        .catch((error) => logging.note(`in-app browser control failed: ${error.message}`));
+    }
     // The menu needs a live window reference, not the one that existed at
     // startup: the window is recreated when reopened from the tray.
     let openReleases = null;
