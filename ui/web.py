@@ -9575,8 +9575,24 @@ async function linkSessions(sids) {
   }
 }
 
+function _clearPendingThreadLinks(sids) {
+  const removed = new Set(sids);
+  for (const sid of removed) _pendingTermPartners.delete(sid);
+  for (const sid of _pendingTermPartners.keys()) {
+    _setPendingPartners(sid, _pendingPartnersOf(sid).filter(other => !removed.has(other)));
+  }
+}
+
+function _refreshUnlinkedThread(affected) {
+  if (!window.__nativeTerminalBridge && convMode === 'live' &&
+      affected.has(currentSessionId) && termSessions.has(currentSessionId)) {
+    _activateTermPane(currentSessionId);
+  }
+}
+
 async function unlinkSession(sid) {
   if (!sid) return;
+  const affected = new Set(_linkedGroupSids(sid, { liveOnly: false }));
   try {
     const response = await fetch('/api/group/unlink', {
       method: 'POST',
@@ -9585,7 +9601,9 @@ async function unlinkSession(sid) {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok || !result.ok) throw new Error(result.error || 'Unlink was not confirmed');
+    _clearPendingThreadLinks([sid]);
     await loadSessions(currentProject);
+    _refreshUnlinkedThread(affected);
   } catch(e) {
     showToast('Unlink failed: ' + e.message, { variant: 'error' });
   }
@@ -9600,6 +9618,8 @@ async function disbandGroup(gid) {
     danger: true,
   });
   if (!ok) return;
+  const affected = new Set((sessionSource.length ? sessionSource : sessions)
+    .filter(session => session.group === gid).map(session => session.session_id));
   try {
     const response = await fetch('/api/group/disband', {
       method: 'POST',
@@ -9608,7 +9628,9 @@ async function disbandGroup(gid) {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok || !result.ok) throw new Error(result.error || 'Disband was not confirmed');
+    _clearPendingThreadLinks(affected);
     await loadSessions(currentProject);
+    _refreshUnlinkedThread(affected);
   } catch(e) {
     showToast('Disband failed: ' + e.message, { variant: 'error' });
   }
