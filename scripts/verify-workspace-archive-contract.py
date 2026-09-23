@@ -284,7 +284,7 @@ async def main(browser_width=None, lose_ack=False, lose_receipt=False, fail_befo
             original = list((home / "sessions").rglob(f"*{sid}.jsonl"))
             assert len(original) == 1
             target = {'session_id': sid, 'provider': 'codex', 'cwd': str(project)}
-            metadata._save_one(sid, {'custom_title': 'Retained archive title', 'group': 'proof-group', 'done': False})
+            metadata._save_one(sid, {'custom_title': 'Retained archive title', 'group': 'proof-group', 'done': False}, group_change=True)
             register_fork(target)
             saved_meta = metadata.get_meta(sid)
             await owner.close()

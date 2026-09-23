@@ -313,7 +313,7 @@ def test_custom_title_repairs_same_project_duplicate_group(monkeypatch):
     )
     linked = []
     monkeypatch.setattr(indexer.meta_sync, "get_all_meta", lambda: {})
-    monkeypatch.setattr(indexer.meta_sync, "link_sessions", lambda sids: linked.append(sids))
+    monkeypatch.setattr(indexer.meta_sync, "link_sessions", lambda sids, **kw: linked.append(sids) or "group")
 
     assert indexer._repair_custom_title_groups(conn) == 1
     assert linked == [["custom", "restored"]]

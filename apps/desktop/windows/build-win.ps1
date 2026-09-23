@@ -64,6 +64,12 @@ Write-Host "[windows] testing Fleet database connection lifetime"
 & $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_connection_lifetime.py") (Join-Path $RepoRoot "tests\test_process_probe.py") -q
 Assert-LastExitCode "Fleet database lifetime tests"
 
+if (Test-Path (Join-Path $RepoRoot "tests\test_workspace_chat_trash.py")) {
+    Write-Host "[windows] testing durable chat unlink and recoverable deletion"
+    & $Python -m pytest (Join-Path $RepoRoot "tests\test_group_unlink_member.py") (Join-Path $RepoRoot "tests\test_autolink.py") (Join-Path $RepoRoot "tests\test_session_recovery.py") (Join-Path $RepoRoot "tests\test_external_runtime_metadata.py") (Join-Path $RepoRoot "tests\test_work_project_metadata.py") -q
+    Assert-LastExitCode "Chat unlink and recoverable deletion tests"
+}
+
 Write-Host "[windows] testing blocked-work notices and cross-process delivery ownership"
 & $Python -m pytest (Join-Path $RepoRoot "tests\test_notification_delivery_ownership.py") (Join-Path $RepoRoot "tests\test_fleet_attention.py") -q
 Assert-LastExitCode "Fleet notification delivery tests"

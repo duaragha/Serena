@@ -41,8 +41,10 @@ def test_killed_writer_resumes_with_its_patch_and_completed_research(fleet_env, 
     monkeypatch.setenv("SERENA_FLEET_ISOLATION", "on")
     killed = False
 
-    def command(request):
+    def command(request, *, session_id=None):
         nonlocal killed
+        if request.frozen_argv:
+            return list(request.frozen_argv)
         events = [
             {"type": "thread.started", "thread_id": "disposable-process-fixture"},
             {"type": "thread.settings", "model": request.model, "reasoning_effort": request.effort},

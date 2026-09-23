@@ -17,14 +17,48 @@ import os
 import socket
 import threading
 import time
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 from core.config import METADATA_DIR, METADATA_PATH
+from core.file_lock import exclusive_lock
 from core.process_probe import probe_process
 
 _MIGRATION_LOCK = threading.Lock()
 _migrated = False
+_WRITE_LOCK = threading.RLock()
+_WRITE_STATE = threading.local()
+
+
+@contextmanager
+def _metadata_write_lock():
+    _ensure_migrated()
+    with _WRITE_LOCK:
+        if getattr(_WRITE_STATE, "active", False):
+            yield
+            return
+        METADATA_DIR.mkdir(parents=True, exist_ok=True)
+        with (METADATA_DIR / ".write.lock").open("a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if not handle.tell():
+                handle.write(b"\0")
+                handle.flush()
+            with exclusive_lock(handle):
+                _WRITE_STATE.active = True
+                try:
+                    yield
+                finally:
+                    _WRITE_STATE.active = False
+
+
+def _effective_group(entry: dict) -> dict:
+    # Older app versions can still restore a group in our shared metadata.
+    # An explicit unlink remains authoritative until the user links again.
+    if entry.get("group_unlinked"):
+        entry.pop("group", None)
+    return entry
 
 
 def _ensure_migrated() -> None:
@@ -76,23 +110,32 @@ def _load_one(session_id: str) -> dict:
         return {}
     try:
         d = json.loads(p.read_text(encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
+        return _effective_group(d) if isinstance(d, dict) else {}
     except (json.JSONDecodeError, OSError):
         return {}
 
 
-def _save_one(session_id: str, entry: dict) -> None:
-    _ensure_migrated()
-    METADATA_DIR.mkdir(parents=True, exist_ok=True)
-    p = _session_path(session_id)
-    if not entry:
-        # Empty entry → remove the file rather than leaving an empty husk
+def _save_one(session_id: str, entry: dict, *, group_change: bool = False) -> None:
+    with _metadata_write_lock():
+        entry = dict(entry)
+        if not group_change:
+            # A rename/star write that began before an unlink must not undo it.
+            latest = _load_one(session_id)
+            for key in ("group", "group_unlinked"):
+                entry.pop(key, None)
+                if key in latest:
+                    entry[key] = latest[key]
+        p = _session_path(session_id)
+        if not entry:
+            p.unlink(missing_ok=True)
+            return
+        fd, name = tempfile.mkstemp(prefix=".meta-", suffix=".tmp", dir=METADATA_DIR)
         try:
-            p.unlink()
-        except FileNotFoundError:
-            pass
-        return
-    p.write_text(json.dumps(entry, indent=2, sort_keys=True), encoding="utf-8")
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(entry, handle, indent=2, sort_keys=True)
+            os.replace(name, p)
+        finally:
+            Path(name).unlink(missing_ok=True)
 
 
 def _load_all() -> dict:
@@ -107,7 +150,7 @@ def _load_all() -> dict:
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
             if isinstance(d, dict):
-                out[sid] = d
+                out[sid] = _effective_group(d)
         except (json.JSONDecodeError, OSError):
             continue
     return out
@@ -284,26 +327,28 @@ def surface_fleet_worker(
         marker["assignment"] = str(assignment)
     if origin_session_id:
         marker["origin_session_id"] = str(origin_session_id)
-    entry = _load_one(session_id)
-    before = json.dumps(entry, sort_keys=True, separators=(",", ":"))
-    entry["resident_work"] = True
-    entry["custom_title"] = str(title)
-    entry["fleet_worker"] = marker
-    entry["group"] = str(worker_group_id)
-    if pid is not None:
-        now = time.time()
-        entry["external_runtime"] = {
-            "kind": "fleet-worker",
-            "pid": int(pid),
-            "host": socket.gethostname(),
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "lease_expires_at": now + max(30.0, float(lease_seconds)),
-        }
-    after = json.dumps(entry, sort_keys=True, separators=(",", ":"))
-    if after == before:
-        return False
-    _save_one(session_id, entry)
-    return True
+    with _metadata_write_lock():
+        entry = _load_one(session_id)
+        before = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+        entry["resident_work"] = True
+        entry["custom_title"] = str(title)
+        entry["fleet_worker"] = marker
+        if not entry.get("group_unlinked"):
+            entry["group"] = str(worker_group_id)
+        if pid is not None:
+            now = time.time()
+            entry["external_runtime"] = {
+                "kind": "fleet-worker",
+                "pid": int(pid),
+                "host": socket.gethostname(),
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "lease_expires_at": now + max(30.0, float(lease_seconds)),
+            }
+        after = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+        if after == before:
+            return False
+        _save_one(session_id, entry, group_change=True)
+        return True
 
 
 def set_external_runtime(
@@ -413,11 +458,8 @@ def remove_tag_meta(session_id: str, tag: str) -> None:
 
 
 def delete_meta(session_id: str) -> None:
-    _ensure_migrated()
-    try:
-        _session_path(session_id).unlink()
-    except FileNotFoundError:
-        pass
+    with _metadata_write_lock():
+        _session_path(session_id).unlink(missing_ok=True)
 
 
 def get_all_meta() -> dict:
@@ -442,12 +484,15 @@ def get_group(session_id: str) -> str | None:
 
 
 def set_group(session_id: str, group_id: str | None) -> None:
-    entry = _load_one(session_id)
-    if group_id:
-        entry["group"] = group_id
-    else:
-        entry.pop("group", None)
-    _save_one(session_id, entry)
+    with _metadata_write_lock():
+        entry = _load_one(session_id)
+        if group_id:
+            entry["group"] = group_id
+            entry.pop("group_unlinked", None)
+        else:
+            entry.pop("group", None)
+            entry["group_unlinked"] = True
+        _save_one(session_id, entry, group_change=True)
 
 
 def list_group_members(group_id: str) -> list[str]:
@@ -456,14 +501,21 @@ def list_group_members(group_id: str) -> list[str]:
     return [sid for sid, m in _load_all().items() if isinstance(m, dict) and m.get("group") == group_id]
 
 
-def link_sessions(session_ids: list[str]) -> str:
+def link_sessions(session_ids: list[str], *, automatic: bool = False) -> str | None:
     """Link N sessions into the same group. If any of them already have a
     group, that group wins (and any others get merged into it). Returns the
     final group_id."""
-    session_ids = [s for s in session_ids if s]
+    session_ids = list(dict.fromkeys(s for s in session_ids if s))
     if len(session_ids) < 2:
         raise ValueError("link_sessions requires at least 2 session ids")
+    with _metadata_write_lock():
+        return _link_sessions_locked(session_ids, automatic=automatic)
+
+
+def _link_sessions_locked(session_ids: list[str], *, automatic: bool) -> str | None:
     data = _load_all()
+    if automatic and any((data.get(sid) or {}).get("group_unlinked") for sid in session_ids):
+        return None
     existing: list[str] = []
     for sid in session_ids:
         g = (data.get(sid) or {}).get("group")
@@ -476,12 +528,13 @@ def link_sessions(session_ids: list[str]) -> str:
         for sid, m in data.items():
             if isinstance(m, dict) and m.get("group") in merge_groups and m.get("group") != target_group:
                 m["group"] = target_group
-                _save_one(sid, m)
+                _save_one(sid, m, group_change=True)
     # Apply to incoming sids
     for sid in session_ids:
         entry = _load_one(sid)
         entry["group"] = target_group
-        _save_one(sid, entry)
+        entry.pop("group_unlinked", None)
+        _save_one(sid, entry, group_change=True)
     return target_group
 
 
@@ -489,25 +542,19 @@ def unlink_session(session_id: str) -> None:
     """Remove this session from its group. Other members keep the group.
     If only one member remains afterward, also clear that one (singletons
     aren't groups)."""
-    g = get_group(session_id)
-    if not g:
-        return
-    entry = _load_one(session_id)
-    entry.pop("group", None)
-    _save_one(session_id, entry)
-    remaining = list_group_members(g)
-    if len(remaining) == 1:
-        sole = _load_one(remaining[0])
-        sole.pop("group", None)
-        _save_one(remaining[0], sole)
+    with _metadata_write_lock():
+        g = get_group(session_id)
+        set_group(session_id, None)
+        remaining = list_group_members(g)
+        if len(remaining) == 1:
+            set_group(remaining[0], None)
 
 
 def unlink_group(group_id: str) -> None:
     """Disband the group entirely — clear it from every member."""
     if not group_id:
         return
-    for sid in list_group_members(group_id):
-        entry = _load_one(sid)
-        entry.pop("group", None)
-        _save_one(sid, entry)
+    with _metadata_write_lock():
+        for sid in list_group_members(group_id):
+            set_group(sid, None)
 # === GROUP FEATURE END ===

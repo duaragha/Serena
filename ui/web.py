@@ -5253,25 +5253,93 @@ async function bulkToggleStar() {
   } catch(e) {}
 }
 
+const _trashInFlight = new Set();
+
+async function _requestChatTrash(sid) {
+  const response = await fetch('/api/session/' + encodeURIComponent(sid), { method: 'DELETE' });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.ok) {
+    const error = new Error(result.error || 'Move to trash failed (HTTP ' + response.status + ')');
+    error.code = response.status === 409 ? result.code : null;
+    throw error;
+  }
+}
+
+async function _stopChatForTrash(sid, runtime) {
+  if (termSessions.get(sid) !== runtime || runtime.closing) {
+    throw new Error('The running pane changed. Try moving this chat to trash again.');
+  }
+  runtime.closing = true;
+  try {
+    let result;
+    if (runtime.structured) {
+      result = await runtime.close();
+    } else {
+      const response = await fetch('/api/kill-terminal/' + encodeURIComponent(runtime.tid), { method: 'POST' });
+      result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'Could not stop this terminal');
+    }
+    if (!result?.ok) throw new Error(result?.error || 'Session close is unconfirmed');
+    const current = termSessions.get(sid);
+    if (current && current !== runtime) throw new Error('This chat reopened while stopping. Try again.');
+    if (current === runtime) teardownLiveTerminal(sid, { stop: false });
+  } finally {
+    runtime.closing = false;
+  }
+}
+
+function _forgetTrashedChat(sid) {
+  teardownLiveTerminal(sid, { stop: false });
+  if (currentSessionId === sid) closeConv();
+  selectedIds.delete(sid);
+}
+
 async function deleteSession(sid) {
-  const target = sessions.find(s => s.session_id === sid);
+  if (_trashInFlight.has(sid)) return;
+  const target = _findClientSession(sid);
   if (_isSerenaVoiceSession(target || sid)) {
     showToast('Serena is permanent', { variant: 'error' });
     return;
   }
   const title = target && target.display_title ? target.display_title : sid.slice(0, 8);
-  const ok = await showConfirm({
-    title: 'Move conversation to trash?',
-    body: 'Move "' + title + '" to recoverable trash?',
-    confirm: 'Move to Trash',
-    danger: true,
-  });
-  if (!ok) return;
+  _trashInFlight.add(sid);
   try {
-    await fetch('/api/session/' + sid, { method: 'DELETE' });
-    if (currentSessionId === sid) closeConv();
+    const ok = await showConfirm({
+      title: 'Move conversation to trash?',
+      body: 'Move "' + title + '" to recoverable trash?',
+      confirm: 'Move to Trash',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await _requestChatTrash(sid);
+    } catch (error) {
+      if (error.code !== 'session_owned') throw error;
+      const runtime = termSessions.get(sid);
+      const canStop = runtime && !runtime.closing &&
+        (runtime.structured ? typeof runtime.close === 'function' : runtime.tid && !window.__nativeTerminalBridge);
+      if (!canStop) {
+        throw new Error('This chat is running in another window or its stop is unconfirmed. Close its terminal there, then try again.');
+      }
+      const stop = await showConfirm({
+        title: 'Stop this chat and move it to trash?',
+        body: 'Stop ' + _agentLabel(target?.agent || _agentOf(sid)) + ' in "' + title + '" and move this chat to recoverable trash? Other linked chats will keep running.',
+        confirm: 'Stop and move to trash',
+        danger: true,
+      });
+      if (!stop) return;
+      await _stopChatForTrash(sid, runtime);
+      // The backend lease check is still the authority, even after a stop receipt.
+      await _requestChatTrash(sid);
+    }
+    _forgetTrashedChat(sid);
+    updateSelectionInfo();
     await loadSessions(currentProject);
-  } catch(e) {}
+  } catch(e) {
+    showToast('Could not move chat to trash: ' + e.message, { variant: 'error' });
+  } finally {
+    _trashInFlight.delete(sid);
+  }
 }
 
 async function bulkDelete() {
@@ -5281,25 +5349,39 @@ async function bulkDelete() {
     showToast('Serena is permanent', { variant: 'error' });
     return;
   }
+  if (ids.some(sid => _trashInFlight.has(sid))) return;
   const n = ids.length;
   const ok = await showConfirm({
-    title: 'Delete ' + n + ' conversation' + (n === 1 ? '' : 's') + '?',
-    body: 'This cannot be undone.',
-    confirm: 'Delete',
+    title: 'Move ' + n + ' conversation' + (n === 1 ? '' : 's') + ' to trash?',
+    body: 'Chats go to recoverable trash. Running chats will be kept.',
+    confirm: 'Move to Trash',
     danger: true,
   });
   if (!ok) return;
+  if (ids.some(sid => _trashInFlight.has(sid))) return;
+  for (const sid of ids) _trashInFlight.add(sid);
   try {
-    await fetch('/api/sessions/bulk-delete', {
+    const response = await fetch('/api/sessions/bulk-delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids }),
     });
-    if (ids.includes(currentSessionId)) closeConv();
-    for (const sid of ids) selectedIds.delete(sid);
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !Array.isArray(result.deleted)) throw new Error(result.error || 'Move to trash failed');
+    const deleted = ids.filter(sid => result.deleted.includes(sid));
+    for (const sid of deleted) _forgetTrashedChat(sid);
     updateSelectionInfo();
     await loadSessions(currentProject);
-  } catch(e) {}
+    const failed = ids.filter(sid => !deleted.includes(sid));
+    if (failed.length) {
+      const reason = result.errors?.find(item => failed.includes(item.id))?.error || 'Deletion was not confirmed';
+      showToast(failed.length + ' chat(s) kept: ' + reason, { variant: 'error' });
+    }
+  } catch(e) {
+    showToast('Could not move chats to trash: ' + e.message, { variant: 'error' });
+  } finally {
+    for (const sid of ids) _trashInFlight.delete(sid);
+  }
 }
 
 async function renameSession(sid) {
@@ -8224,7 +8306,7 @@ function _restoreWebSplitAfterTerminalOpen(sid, background) {
   return focus;
 }
 
-function teardownLiveTerminal(sid) {
+function teardownLiveTerminal(sid, { stop = true } = {}) {
   // Drop the structured pane's last state report first. It outranks
   // _activeTerms in _sessionHasActiveRuntime, so unmarking the terminal below
   // cannot move the row out of Active on its own.
@@ -8256,7 +8338,7 @@ function teardownLiveTerminal(sid) {
   // it until GC, and Chromium caps live contexts per process.
   try { if (s.rendererAddon) s.rendererAddon.dispose(); } catch(e) {}
   try { if (s.term) s.term.dispose(); } catch(e) {}
-  if (s.tid) {
+  if (stop && s.tid) {
     fetch('/api/kill-terminal/' + s.tid, { method: 'POST' }).catch(() => {});
   }
   if (s.mount && s.mount.parentNode) s.mount.parentNode.removeChild(s.mount);
@@ -9496,11 +9578,13 @@ async function linkSessions(sids) {
 async function unlinkSession(sid) {
   if (!sid) return;
   try {
-    await fetch('/api/group/unlink', {
+    const response = await fetch('/api/group/unlink', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sid }),
     });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.ok) throw new Error(result.error || 'Unlink was not confirmed');
     await loadSessions(currentProject);
   } catch(e) {
     showToast('Unlink failed: ' + e.message, { variant: 'error' });
@@ -9517,11 +9601,13 @@ async function disbandGroup(gid) {
   });
   if (!ok) return;
   try {
-    await fetch('/api/group/disband', {
+    const response = await fetch('/api/group/disband', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ group_id: gid }),
     });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.ok) throw new Error(result.error || 'Disband was not confirmed');
     await loadSessions(currentProject);
   } catch(e) {
     showToast('Disband failed: ' + e.message, { variant: 'error' });
@@ -13282,7 +13368,7 @@ def api_delete_session(session_id):
         path = _delete_workspace_session(session_id, source="serena-web")
         return jsonify({"ok": True, "path": path})
     except SessionOwnedError:
-        return jsonify({"error": "Disconnect the session before deleting it; runtime ownership is still active or unconfirmed"}), 409
+        return jsonify({"code": "session_owned", "error": "Disconnect the session before deleting it; runtime ownership is still active or unconfirmed"}), 409
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
 

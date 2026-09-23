@@ -15,6 +15,10 @@ from test_fleet_integration_recovery import _failed
 
 
 def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, monkeypatch):
+    # Review freezes its argv before reaching no_model. CI has no provider
+    # CLIs; use a real, harmless executable for the version probe only.
+    for provider in ("codex", "claude", "muse", "agy"):
+        monkeypatch.setenv(f"SERENA_FLEET_{provider.upper()}_BIN", sys.executable)
     monkeypatch.setenv("SERENA_FLEET_NO_AUTOSTART", "1")
     monkeypatch.setenv("SERENA_FLEET_READ_MCP_SERVERS", "none")
     monkeypatch.setenv("SERENA_CONTROL_PLANE_DB_PATH", str(tmp_path / "control.sqlite3"))
@@ -121,7 +125,7 @@ def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, 
             assert not unexpected, unexpected
             time.sleep(.1)
         assert final["phases"][1]["legs"][0]["state"] == "completed", final
-        assert review_boundary.is_set(), "recovered Code did not make Review runnable"
+        assert review_boundary.is_set(), ("recovered Code did not make Review runnable", final, store.events(rid)[-10:])
         assert not_before is not None and time.time() >= not_before
         assert final["phases"][1]["legs"][0]["attempt_count"] == 3
         assert final["phases"][1]["legs"][0]["current_attempt"]["actual_model"] is None
