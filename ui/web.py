@@ -11533,6 +11533,7 @@ function showToast(message, opts) {
 
 </script>
 <script src="/static/operator_workspace.js"></script>
+<script src="/static/serena_work.js"></script>
 <script src="/static/workspace.js"></script>
 </body>
 </html>"""
@@ -12886,6 +12887,52 @@ def api_chat_finished():
     except Exception as error:
         print(f"[archive-sync] queue failed: {error}", flush=True)
     return jsonify({"ok": True})
+
+
+# === SERENA CODING === Her own coding sessions (core/serena_coding.py), so the
+# window he is looking at can show them: he could ask her to code and had no
+# way to see where it was happening.
+_SERENA_CODING_FIELDS = (
+    "id", "title", "project", "agent", "session_id", "state", "outcome", "where",
+    "opened_minutes_ago",
+)
+
+
+@app.route("/api/serena-coding", methods=["GET"])
+def api_serena_coding():
+    try:
+        from core.serena_coding import list_sessions as coding_sessions
+
+        # adopt=False: adopting makes HTTP calls into this app, from inside it.
+        sessions = coding_sessions(limit=8, adopt=False)
+    except Exception as error:
+        return jsonify({"sessions": [], "error": str(error)})
+    rows = []
+    unindexed = False
+    for session in sessions:
+        sid = session.get("session_id")
+        indexed_row = get_session(sid) if sid else None
+        indexed = indexed_row is not None
+        if sid and not indexed and session.get("state") in ("starting", "working", "waiting"):
+            unindexed = True
+        if indexed and not indexed_row.get("custom_title") and session.get("title"):
+            # Naming it when it opens fails: the index has not seen the chat
+            # yet. Otherwise the sidebar shows "[serena-task-...] You are...".
+            try:
+                set_title(sid, session["title"])
+            except Exception as error:
+                print(f"[serena-coding] could not title {sid[:8]}: {error}", flush=True)
+        row = {key: session.get(key) for key in _SERENA_CODING_FIELDS}
+        row["indexed"] = indexed
+        rows.append(row)
+    if unindexed:
+        # Watch opens the chat by id; a chat the index has not seen yet 404s.
+        try:
+            _schedule_index_refresh()
+        except Exception as error:
+            print(f"[serena-coding] index refresh failed: {error}", flush=True)
+    return jsonify({"sessions": rows})
+# === SERENA CODING END ===
 
 
 @app.route("/api/chat-attention/clear", methods=["POST"])
