@@ -184,6 +184,41 @@ WHEN YOU FINISH OR GET STUCK
 """
 
 
+def machine_brief(task: str, *, home: Path, tag: str) -> str:
+    """The first message for a job on the laptop itself, not in a project."""
+
+    return f"""[{tag}] You are running this task for Raghav as Serena's laptop session. Serena
+(his assistant) opened this terminal on his laptop and is keeping track of it;
+he may open it and watch.
+
+THE TASK
+{task.strip()}
+
+Working directory: {home} (his laptop, Linux)
+
+HOW TO RUN IT
+- This is work on the machine -- installing, configuring, running commands --
+  not a change to one of his projects. Do not edit, commit or push any repo
+  unless the task says to.
+- Check what is already there before installing anything, and prefer installs
+  that need no root: the distro's user-level options, pipx, npm or cargo into
+  his home, flatpak --user, an AppImage in ~/Applications.
+- sudo here needs his password, and you cannot type it. If root is truly the
+  only way, stop and hand him the exact command to paste into this terminal
+  after a `!` -- never try to get around the password.
+- Prove it worked: run the thing, print its version, show the result.
+- Do not stop to ask whether to continue.
+
+WHEN YOU FINISH OR GET STUCK
+- End your final message with exactly one line starting with one of:
+  DONE: <one sentence on what is now installed or changed, and how you checked>
+  BLOCKED: <what stopped you and what you need>
+  NEEDS YOU: <the exact command he has to run, or the one decision only he can make>
+- And text him that line:
+  cd "{SERENA_ROOT}" && "{sys.executable}" -m core.serena_coding notify "<that line>"
+"""
+
+
 # -- opening, finding, reading ---------------------------------------------
 
 def _claude_project_dir(cwd: Path) -> Path:
@@ -276,36 +311,49 @@ def _session_id(agent: str, path: Path) -> str:
 
 
 def open_session(task: str, *, project: str = "", agent: str = "claude",
-                 title: str = "") -> dict[str, Any]:
-    """Open a terminal in his app, briefed to run `task` to completion."""
+                 title: str = "", on_machine: bool = False) -> dict[str, Any]:
+    """Open a terminal in his app, briefed to run `task` to completion.
 
-    from core.coding_job_contract import RepositoryResolutionError, resolve_repository_root
+    on_machine: the job is on the laptop itself -- an install, a command, a
+    setting -- so it runs from his home folder instead of a project.
+    """
 
     agent = agent if agent in ("claude", "codex") else "claude"
-    try:
-        repo = resolve_repository_root(task, project_hint=project)
-    except RepositoryResolutionError as exc:
-        raise CodingSessionError(f"which project? {exc}") from exc
     tag = f"serena-task-{uuid.uuid4().hex[:10]}"
+    if on_machine:
+        repo = Path.home()
+        seed = machine_brief(task, home=repo, tag=tag)
+    else:
+        from core.coding_job_contract import (
+            RepositoryResolutionError,
+            resolve_repository_root,
+        )
+
+        try:
+            repo = resolve_repository_root(task, project_hint=project)
+        except RepositoryResolutionError as exc:
+            raise CodingSessionError(f"which project? {exc}") from exc
+        seed = brief(task, repo=repo, tag=tag)
     base = backend_url()
     started = time.time()
     # The tag stands in as the pane's session key until the real id exists,
     # so the app can hand the same pane back instead of starting a second
     # process on the chat when he opens it.
     spawned = _request("POST", "/api/spawn-terminal", {
-        "agent": agent, "cwd": str(repo), "seed": brief(task, repo=repo, tag=tag),
+        "agent": agent, "cwd": str(repo), "seed": seed,
         "client_session_id": tag, "rows": 40, "cols": 140,
     }, base=base)
     if not spawned.get("ok"):
         raise CodingSessionError(f"his app would not open a terminal: {spawned}")
     _keep_flowing(base, spawned["terminal_id"])
     record = {
-        "id": tag, "task": task.strip(), "project": repo.name, "cwd": str(repo),
+        "id": tag, "task": task.strip(), "project": "laptop" if on_machine else repo.name,
+        "cwd": str(repo),
         "agent": agent, "terminal_id": spawned.get("terminal_id"), "backend": base,
         "title": (title or f"Serena: {task.strip()}")[:80], "opened_at": started,
         "session_id": None, "transcript": None, "notified": False,
     }
-    record["where"] = (f"his Serena app, {repo.name} project, the chat titled "
+    record["where"] = (f"his Serena app, {record['project']} project, the chat titled "
                        f"\"{record['title']}\"")
     state = _load()
     state[tag] = record
@@ -313,7 +361,8 @@ def open_session(task: str, *, project: str = "", agent: str = "claude",
     # Proof it exists and where, before it has done anything worth reporting.
     with contextlib.suppress(Exception):
         notify(f"started: {record['title']}. watch it live in your Serena app: "
-               f"{repo.name} project, chat \"{record['title']}\". i'll text when it's done.")
+               f"{record['project']} project, chat \"{record['title']}\". "
+               "i'll text when it's done.")
     deadline = time.time() + FIND_SESSION_SECONDS
     while time.time() < deadline:
         if _transcript(record) is not None:

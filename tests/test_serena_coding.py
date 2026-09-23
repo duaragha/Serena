@@ -347,3 +347,32 @@ def test_tool_errors_come_back_as_errors(monkeypatch):
     result = asyncio.run(tools.open_coding_session.handler(
         {"task": "add a status label to the orb", "project": "serena"}))
     assert result["is_error"] and "could not reach" in result["content"][0]["text"]
+
+
+def test_a_laptop_job_runs_from_home_with_its_own_brief(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_request(method, path, body=None, *, timeout=30, base=None):
+        calls.append((path, body))
+        return {"ok": True, "terminal_id": "term-1"}
+
+    monkeypatch.setattr(sc, "_request", fake_request)
+    monkeypatch.setattr(sc, "backend_url", lambda: "http://127.0.0.1:1")
+    monkeypatch.setattr(sc, "_keep_flowing", lambda base, tid: None)
+    monkeypatch.setattr(sc, "_find_transcript", lambda *a: None)
+    monkeypatch.setattr(sc, "FIND_SESSION_SECONDS", 0)
+
+    def no_repo(*_a, **_k):
+        raise AssertionError("a laptop job must not look for a project")
+
+    monkeypatch.setitem(sys.modules, "core.coding_job_contract", types.SimpleNamespace(
+        RepositoryResolutionError=ValueError, resolve_repository_root=no_repo))
+    record = sc.open_session("install ffmpeg and show its version", title="Install ffmpeg",
+                             on_machine=True)
+
+    spawn = calls[0][1]
+    assert spawn["cwd"] == str(Path.home())
+    assert "laptop session" in spawn["seed"] and "sudo" in spawn["seed"]
+    assert "squash-merge" not in spawn["seed"]
+    assert record["project"] == "laptop"
+    assert "laptop project" in sys.modules["core.phone_line"].sent[0]

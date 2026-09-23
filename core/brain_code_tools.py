@@ -90,6 +90,29 @@ async def open_coding_session(args):
                       title=str(args.get("title") or ""))
 
 
+@tool("run_on_laptop",
+      "Get something done on Raghav's laptop itself -- install a program or package, run "
+      "commands, change a setting, clean something up, check what is installed -- by "
+      "opening a visible terminal session in his Serena app that does it and proves it "
+      "worked. Use this for anything on the machine that is not a change to one of his "
+      "projects (for those, open_coding_session). 'task' is the full brief: what to do "
+      "and what done looks like. sudo needs his password, which the session cannot "
+      "type: when root is unavoidable it hands him the exact command. It texts him where "
+      "to watch it and texts DONE/BLOCKED/NEEDS YOU when finished; tell him where too.",
+      {"task": str, "title": str}, annotations=_WRITES)
+async def run_on_laptop(args):
+    if (blocked := _needs_him()) is not None:
+        return blocked
+    from core.serena_coding import open_session
+
+    args = args or {}
+    task = str(args.get("task") or "").strip()
+    if len(task) < 8:
+        return _failed("say what to do on the laptop and what done looks like")
+    return await _run(open_session, task, title=str(args.get("title") or ""),
+                      on_machine=True)
+
+
 @tool("coding_sessions",
       "Your coding sessions, newest first: each one's task, project and state -- "
       "starting, working, waiting (quiet, likely waiting on input), done, blocked or stopped -- "
@@ -142,7 +165,7 @@ async def stop_coding_session(args):
     return await _run(stop_session, str((args or {}).get("session") or ""))
 
 
-CODE_TOOLS = (open_coding_session, coding_sessions, read_coding_session,
+CODE_TOOLS = (open_coding_session, run_on_laptop, coding_sessions, read_coding_session,
               steer_coding_session, stop_coding_session)
 CODE_TOOL_NAMES = [f"mcp__serena-code__{t.name}" for t in CODE_TOOLS]
 
