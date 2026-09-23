@@ -66,6 +66,14 @@
       "commit": "4db8879cc4752bfb0f6912512e46d68e79d9a2ef",
       "requires": [],
       "paths": ["ui/web.py", "tests/test_linked_thread_menu.py", "tests/test_group_unlink_member.py"]
+    },
+    {
+      "id": "serena-coding-visible",
+      "title": "See Serena's coding sessions and watch them live",
+      "devTag": "v0.3.10-dev.8",
+      "commit": "59af2d1d010b13946002a36153f89da3829c5aad",
+      "requires": [],
+      "paths": ["core/serena_coding.py", "ui/static/serena_work.js", "ui/web.py", "tests/test_serena_coding.py", "tests/test_serena_work_ui.py"]
     }
   ]
 }
