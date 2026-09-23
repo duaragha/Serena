@@ -1,6 +1,6 @@
 {
   "name": "serena-desktop",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Serena desktop shell",
   "main": "main.js",
   "author": "Raghav",
@@ -56,12 +56,17 @@
       {
         "from": "../../runtimes/claude-sdk",
         "to": "runtimes/claude-sdk",
-        "filter": ["package.json"]
+        "filter": [
+          "package.json"
+        ]
       },
       {
         "from": "../../runtimes/claude-sdk/node_modules",
         "to": "runtimes/claude-sdk/node_modules",
-        "filter": ["**/*", "!.bin/**/*"]
+        "filter": [
+          "**/*",
+          "!.bin/**/*"
+        ]
       }
     ],
     "linux": {

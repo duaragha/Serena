@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "version": "v0.3.5",
+  "baseTag": "v0.3.4",
+  "baseCommit": "c5cfe3af98cdabdef80b2fdc7de0d1b4d76fdb2f",
+  "source": "0b5bb2ada9e404ffa7d4a763e96bbb6dfb1dbb78",
+  "request": "a2777584fac6f669f1c78bab5f5bebc6",
+  "features": [
+    {
+      "id": "sidebar-order",
+      "commit": "f394389723452e869e45bf66a4ed4297d8dcb6c8",
+      "devTag": "v0.3.4-dev.2"
+    },
+    {
+      "id": "sidebar-performance",
+      "commit": "2da23bf6f6aa71f1d32fd6e4904e8ca4aa3b6dc2",
+      "devTag": "v0.3.7-dev.1"
+    },
+    {
+      "id": "sidebar-projects",
+      "commit": "83e6fb68059b29c53f11cf537f249aa8e8cca6a6",
+      "devTag": "v0.3.8-dev.1"
+    },
+    {
+      "id": "sidebar-compact",
+      "commit": "9e5d5d7697c2477a4642b3e286cdd8cfbd7d99b9",
+      "devTag": "v0.3.8-dev.2"
+    },
+    {
+      "id": "sidebar-utilities",
+      "commit": "dbe304a30c010878ed8e27c303f88b8b65ad66c3",
+      "devTag": "v0.3.8-dev.3"
+    },
+    {
+      "id": "fleet-report-visibility",
+      "commit": "0351f95e3fd52120f16073eeaa78c246ed924306",
+      "devTag": "v0.3.10-dev.2",
+      "base": "f5438e3940ee8d811e297de92d25b90f79e26da5"
+    },
+    {
+      "id": "terminal-status-line",
+      "commit": "75d5f6bcd26eb4fdd8ca4f509fd09fcfb9c573ca",
+      "devTag": "v0.3.10-dev.3"
+    },
+    {
+      "id": "linked-member-removal",
+      "commit": "4db8879cc4752bfb0f6912512e46d68e79d9a2ef",
+      "devTag": "v0.3.10-dev.5"
+    },
+    {
+      "id": "serena-coding-visible",
+      "commit": "59af2d1d010b13946002a36153f89da3829c5aad",
+      "devTag": "v0.3.10-dev.8"
+    }
+  ],
+  "patches": [
+    {
+      "id": "sidebar-order",
+      "sha256": "dd556b1b11f0c25b731bd3b82aee0ab7cdffbbafb7dab73c87be9e99a9fd1c90"
+    },
+    {
+      "id": "sidebar-performance",
+      "sha256": "5fdfdddc6afdefcd5c8f060ee4c59c454b8163620015b658d7c0567b1d27ed99"
+    },
+    {
+      "id": "sidebar-projects",
+      "sha256": "0420a0c345c9a3051c4834d742cff4e399cfdeae92df021eff7c7abd92bf90a8"
+    },
+    {
+      "id": "sidebar-compact",
+      "sha256": "1d53f01eac1b329fa67e3552478ca172fe02db6146e24ca46627436461eab6ac"
+    },
+    {
+      "id": "sidebar-utilities",
+      "sha256": "e6f9fb425660e140f062bff1968e838f740a4370d6817c4732f8b0d488117a29"
+    },
+    {
+      "id": "fleet-report-visibility",
+      "sha256": "5a5ba57dd785b497fa26d3d6eb2ae39df0e9e53374bd071298b5cb631d26f361"
+    },
+    {
+      "id": "terminal-status-line",
+      "sha256": "27c1117da182406d83298661cef8a699ca3343feee35a2d0cb37596bb00de8db"
+    },
+    {
+      "id": "linked-member-removal",
+      "sha256": "9d2295784cfcb3807e6f252137559bc0414bd04864de49b55decde3b2e21e7eb"
+    },
+    {
+      "id": "serena-coding-visible",
+      "sha256": "b61599368148f04f84e72a4bb814c3463f7dd7e4585ee012d24476d8ca999893"
+    }
+  ]
+}

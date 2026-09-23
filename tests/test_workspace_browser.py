@@ -134,6 +134,243 @@ def workspace():
         browser.close()
 
 
+@pytest.mark.parametrize("width", [1440, 390])
+def test_sidebar_pins_fleet_and_voice_above_active_terminals(workspace, width):
+    page, calls, errors, rows = workspace
+    page.set_viewport_size({"width": width, "height": 850})
+    rows[0]["workspace_runtime"] = {"ok": True}
+    rows.extend([
+        dict(session_id="serena-voice-main", agent="serena-voice", display_title="Serena"),
+        dict(session_id="fleet-worker", agent="codex", display_title="Fleet worker",
+             fleet_worker={"run_id": "run-1"}, workspace_runtime={"ok": True}),
+    ])
+    page.evaluate("rows => { allSessions = rows; sessionSource = rows; renderSessionList(); }", rows)
+    if width < 760:
+        page.locator("#workspaceChatsToggle").click()
+    headers = page.locator("#sessionList > .group-header")
+    assert headers.all_text_contents()[:4] == [
+        "Serena", "▸ Fleet Chats (1)", "▸ Voice Chats (0)", "● Active Terminals",
+    ]
+    fleet = page.get_by_test_id("fleet-chats-header")
+    voice = page.get_by_test_id("voice-chats-header")
+    worker = page.locator('#sessionList [data-sid="fleet-worker"]')
+    assert not worker.is_visible()
+    fleet.click()
+    playwright.expect(fleet).to_have_attribute("aria-expanded", "true")
+    playwright.expect(worker).to_be_visible()
+    assert page.locator("#sessionList .session-row").count() == 4
+    fleet.click()
+    voice.click()
+    playwright.expect(voice).to_have_attribute("aria-expanded", "true")
+    voice.click()
+    assert headers.all_text_contents()[:4] == [
+        "Serena", "▸ Fleet Chats (1)", "▸ Voice Chats (0)", "● Active Terminals",
+    ]
+    bounds = [headers.nth(i).bounding_box() for i in range(4)]
+    assert all(a["y"] + a["height"] <= b["y"] for a, b in zip(bounds, bounds[1:]))
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    if output := os.environ.get("SERENA_EVIDENCE_DIR"):
+        path = Path(output)
+        path.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(path / f"sidebar-order-{width}.png"))
+    assert not errors
+    assert not any(path == "/api/spawn-terminal" for path, _ in calls)
+
+
+def test_unchanged_sidebar_keeps_dom_and_refreshes_changed_rows(workspace):
+    page, _, errors, rows = workspace
+    result = page.evaluate('''() => {
+      renderSessionList();
+      const list = document.getElementById('sessionList');
+      const row = list.querySelector('.session-row');
+      const observer = new MutationObserver(() => {});
+      observer.observe(list, {childList:true, subtree:true});
+      for(let i=0;i<10;i++) renderSessionList();
+      const mutations = observer.takeRecords().length;
+      observer.disconnect();
+      window.retainedSidebarRow = row;
+      return {same: row === list.querySelector('.session-row'), mutations};
+    }''')
+    assert result == {"same": True, "mutations": 0}
+    page.evaluate('''() => {
+      setFocus(0, false);
+      renderSessionList();
+      renderSessionList();
+    }''')
+    assert page.locator('#sessionList .session-row.focused').count() == 1
+    page.evaluate('''() => {
+      sessionSource[0].display_title = 'Updated title';
+      renderSessionList();
+    }''')
+    playwright.expect(page.locator('#sessionList')).to_contain_text('Updated title')
+    page.evaluate('''() => { setSessionSource([]); renderSessionList(); }''')
+    playwright.expect(page.locator('#sessionList')).to_have_text('No conversations found')
+    page.evaluate('''rows => { setSessionSource(rows); renderSessionList(); }''', rows)
+    assert page.locator('#sessionList .session-row').count() > 0
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [1440, 390])
+def test_sidebar_utility_rows_keyboard_empty_states_and_counts(workspace, width):
+    page, calls, errors, rows = workspace
+    page.set_viewport_size({"width": width, "height": 850})
+    page.wait_for_function("_collapsedLoaded")
+    rows.insert(0, dict(session_id="serena-voice-main", agent="serena-voice", display_title="Serena"))
+    page.evaluate('rows => { setSessionSource(rows); renderSessionList(); }', rows)
+    if width < 760:
+        page.locator("#workspaceChatsToggle").click()
+    fleet = page.get_by_test_id("fleet-chats-header")
+    voice = page.get_by_test_id("voice-chats-header")
+    assert fleet.evaluate('el => el.tagName') == 'BUTTON'
+    assert fleet.bounding_box()['height'] == 30
+    assert voice.bounding_box()['height'] == 30
+    assert fleet.locator('.sidebar-utility-count').bounding_box()['x'] == voice.locator('.sidebar-utility-count').bounding_box()['x']
+    assert fleet.bounding_box()['y'] >= page.locator('.serena-voice').bounding_box()['y'] + 32
+    fleet.focus()
+    fleet.press('Enter')
+    playwright.expect(page.get_by_test_id('fleet-chats-section')).to_have_text('No fleet chats')
+    playwright.expect(fleet).to_be_focused()
+    fleet.press('Space')
+    playwright.expect(fleet).to_have_attribute('aria-expanded', 'false')
+    voice.focus()
+    voice.press('Enter')
+    playwright.expect(page.get_by_test_id('voice-chats-section')).to_be_visible()
+    playwright.expect(page.get_by_test_id('voice-chats-section')).to_have_text('No voice chats')
+    voice.press('Space')
+    assert not page.get_by_test_id('voice-chats-section').is_visible()
+    rows.extend(dict(session_id=f'fleet-{i}', agent='codex', display_title=f'Worker {i}',
+                     fleet_worker={'run_id':f'run-{i}'}) for i in range(115))
+    page.evaluate('rows => { setSessionSource(rows); renderSessionList(); }', rows)
+    playwright.expect(fleet.locator('.sidebar-utility-count')).to_have_text('(115)')
+    assert fleet.bounding_box()['height'] == 30
+    assert page.locator('#sessionList .session-row').count() == 118
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    if output := os.environ.get("SERENA_EVIDENCE_DIR"):
+        path = Path(output)
+        path.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(path / f"sidebar-utilities-{width}.png"))
+    assert not errors
+    assert not any(path == "/api/spawn-terminal" for path, _ in calls)
+
+
+def test_sidebar_date_groups_reuse_formatter_without_changing_labels(workspace):
+    page, _, errors, _ = workspace
+    assert page.evaluate('''() => {
+      const timestamp = '2020-01-15T12:00:00Z';
+      const expected = new Date(timestamp).toLocaleString('default', {month:'long',year:'numeric'});
+      return timeGroup(timestamp) === expected && timeGroup('') === 'Unknown'
+        && timeGroup('invalid') === 'Invalid Date' && timeGroup(new Date().toISOString()) === 'Today';
+    }''')
+    assert not errors
+
+
+@pytest.mark.parametrize("width", [1440, 390])
+def test_sidebar_date_then_project_groups_preserve_chats_and_collapse(workspace, width):
+    page, calls, errors, _ = workspace
+    page.set_viewport_size({"width": width, "height": 900})
+    page.wait_for_function("_collapsedLoaded")
+    page.evaluate('''() => {
+      const row = (id, cwd, date, extra={}) => ({session_id:id, agent:'codex',
+        cwd, project_short:'shared', display_title:id, last_timestamp:date, ...extra});
+      setSessionSource([
+        row('new-a', '/projects/a', '2020-02-04T12:00:00Z'),
+        row('new-b', '/projects/b', '2020-02-03T12:00:00Z'),
+        row('older-a', '/projects/a', '2020-02-02T12:00:00Z'),
+        row('previous-month', '/projects/a', '2020-01-02T12:00:00Z'),
+        row('active', '/projects/a', '2020-02-01T12:00:00Z', {workspace_runtime:{ok:true}}),
+        row('linked-head', '/projects/c', '2020-02-05T12:00:00Z', {group:'pair',agent:'claude'}),
+        row('linked-sibling', '/projects/c', '2020-02-06T12:00:00Z', {group:'pair'}),
+        row('starred', '/projects/a', '2020-02-07T12:00:00Z', {starred:true}),
+        row('quoted', '/projects/"<unsafe>&', '2020-01-01T12:00:00Z'),
+      ]);
+      renderSessionList();
+    }''')
+    if width < 760:
+        page.locator("#workspaceChatsToggle").click()
+    buckets = page.locator("#sessionList > .time-section")
+    assert buckets.count() == 2
+    assert buckets.nth(0).locator(".sidebar-project-header").count() == 3
+    assert buckets.nth(0).locator(".session-row").evaluate_all(
+        "els => els.map(el => el.dataset.sid)"
+    ) == ["linked-head", "new-a", "older-a", "new-b"]
+    assert page.locator('.starred-section .session-row').count() == 1
+    assert page.locator('[data-sid="active"]').locator('..').get_attribute("class") == "sidebar-project-section"
+    assert page.locator('[data-sid="linked-head"] .agent-icon').count() == 2
+    quoted = buckets.nth(1).locator('.sidebar-project-header').nth(1)
+    assert quoted.get_attribute("title") == '/projects/"<unsafe>&'
+    button = buckets.nth(0).locator('.sidebar-project-header').nth(1)
+    key = button.get_attribute("data-project-key")
+    with page.expect_request(lambda r: r.url.endswith('/api/ui-state') and r.method == 'POST') as request:
+        button.click()
+    saved = request.value.post_data_json["collapsed"]
+    assert key in saved["projectGroups"]
+    assert not page.locator('[data-sid="new-a"]').is_visible()
+    assert page.locator('[data-sid="previous-month"]').is_visible()
+    assert page.locator('[data-sid="new-b"]').is_visible()
+    page.evaluate('saved => { _applyCollapsedState(saved); renderSessionList(); }', saved)
+    assert not page.locator('[data-sid="new-a"]').is_visible()
+    assert page.evaluate('''() => {
+      focusedIndex = sessions.findIndex(s => s.session_id === 'linked-head');
+      return sessions[nextVisibleSessionIndex(1)].session_id;
+    }''') == "new-b"
+    page.evaluate("toggleAgentFilter('codex')")
+    assert page.locator('[data-sid="new-a"]').is_visible()
+    page.evaluate("toggleAgentFilter(null)")
+    assert not page.locator('[data-sid="new-a"]').is_visible()
+    page.evaluate("_searchQuery = 'new'; renderSessionList()")
+    assert page.locator('[data-sid="new-a"]').is_visible()
+    page.evaluate("_searchQuery = ''; renderSessionList()")
+    button.focus()
+    button.press("Enter")
+    assert page.locator('[data-sid="new-a"]').is_visible()
+    assert page.evaluate("document.activeElement.classList.contains('sidebar-project-header')")
+    assert page.locator('#sessionList .session-row').count() == 8
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    if output := os.environ.get("SERENA_EVIDENCE_DIR"):
+        path = Path(output)
+        path.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(path / f"sidebar-projects-{width}.png"))
+    assert not errors
+    assert not any(path == "/api/spawn-terminal" for path, _ in calls)
+
+
+@pytest.mark.parametrize("width", [1440, 390])
+def test_compact_sidebar_rows_keep_hover_details_and_search_matches(workspace, width):
+    page, calls, errors, rows = workspace
+    page.set_viewport_size({"width": width, "height": 850})
+    page.wait_for_function("_collapsedLoaded")
+    title = 'A very long title with "quotes" <markup> & more ' * 6
+    rows[0].update(display_title=title, cwd='/project/"quoted"/<path>', starred=True,
+                   workspace_runtime={"ok": True})
+    page.evaluate('rows => { setSessionSource(rows); renderSessionList(); }', rows)
+    if width < 760:
+        page.locator("#workspaceChatsToggle").click()
+    row = page.locator('#sessionList .session-row').first
+    assert row.get_attribute("title") == '\n'.join([title, 'serena', '/project/"quoted"/<path>', '2026-09-09T12:00:00Z'])
+    assert row.get_attribute("aria-label") == row.get_attribute("title")
+    assert row.locator('.workspace-row-project, .session-date').count() == 0
+    assert row.locator('.agent-icon').count() == 3
+    assert row.locator('.session-star.starred').count() == 1
+    assert row.locator('.term-close').get_attribute('title') == 'Close terminal (Alt+W)'
+    assert row.bounding_box()['height'] == 32
+    row.hover()
+    assert row.bounding_box()['height'] == 32
+    playwright.expect(row.locator('.term-close')).to_have_css('opacity', '1')
+    assert row.locator('.session-title-main').evaluate('el => el.scrollWidth > el.clientWidth')
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.evaluate('''() => {
+      sessionSource[0].search_snippet = 'Here is a >>>matching<<< message';
+      renderSessionList();
+    }''')
+    playwright.expect(row.locator('.session-snippet mark')).to_have_text('matching')
+    if output := os.environ.get("SERENA_EVIDENCE_DIR"):
+        path = Path(output)
+        path.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(path / f"sidebar-compact-{width}.png"))
+    assert not errors
+    assert not any(path == "/api/spawn-terminal" for path, _ in calls)
+
+
 def test_navigation_projects_and_drafts_do_not_spawn(workspace):
     page, calls, errors, _ = workspace
     page.get_by_role("button", name="Tooling", exact=True).first.click()
@@ -283,4 +520,27 @@ def test_muse_limits_show_native_windows_and_stale_snapshot(workspace, width):
     payload["muse"] = {"available": False, "loading": True}
     page.evaluate("loadLiveUsage()")
     playwright.expect(card.locator(".live-usage-empty")).to_have_text("loading")
+    assert not errors
+
+
+@pytest.mark.parametrize("split", [False, True])
+def test_fitted_terminal_rows_fit_inside_the_visible_pane(workspace, split):
+    """The last row is the agent's input bar and status line. Fitting against a
+    height that still includes the body's padding left it clipped off-screen."""
+    page, calls, errors, rows = workspace
+    page.evaluate("(sid)=>openConv(sid)", rows[0]["session_id"])
+    page.wait_for_function("_termStarting.size===0 && termSessions.size===3")
+    if not split:
+        page.get_by_role("button", name="Show Codex pane", exact=True).click()
+    page.wait_for_timeout(200)
+    fits = page.evaluate("""()=>[...termSessions.values()].filter(r=>r.term && !r.mount.classList.contains('hidden')).map(r=>{
+        r.fit.fit();
+        const body=r.term.element.parentElement, style=getComputedStyle(body);
+        const visible=body.clientHeight-parseFloat(style.paddingTop)-parseFloat(style.paddingBottom);
+        const cell=r.term._core._renderService.dimensions.css.cell.height;
+        return {rows:r.term.rows, needed:r.term.rows*cell, visible};
+    })""")
+    assert fits
+    for fit in fits:
+        assert fit["needed"] <= fit["visible"] + 0.5, fit
     assert not errors

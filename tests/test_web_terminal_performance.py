@@ -323,10 +323,10 @@ def test_internal_brain_rotations_are_hidden_from_chat_rows():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute(
-        "CREATE TABLE sessions (session_id TEXT, project_dir TEXT, is_teammate INTEGER)"
+        "CREATE TABLE sessions (session_id TEXT, project_dir TEXT, is_teammate INTEGER, first_message TEXT)"
     )
     conn.executemany(
-        "INSERT INTO sessions VALUES (?, ?, 0)",
+        "INSERT INTO sessions (session_id, project_dir, is_teammate) VALUES (?, ?, 0)",
         [
             ("brain", "-home-raghav--cache-serena-headless-brain"),
             ("test", "-tmp-serena-http-rotation-cwd"),
