@@ -93,6 +93,9 @@ jobs:
         working-directory: candidate
         run: |
           npm --prefix apps/desktop test
+          if [ -f tests/test_workspace_chat_trash.py ]; then
+            .venv/bin/python -m pytest -q --tb=short tests/test_group_unlink_member.py tests/test_autolink.py tests/test_session_recovery.py tests/test_external_runtime_metadata.py tests/test_work_project_metadata.py tests/test_workspace_chat_trash.py
+          fi
           if [ -f tests/test_fleet_report_visibility.py ]; then
             .venv/bin/python -m pytest -q --tb=short tests/test_fleet_report_visibility.py tests/test_web_terminal_performance.py
           fi
@@ -148,6 +151,10 @@ jobs:
           npm --prefix apps/desktop test
           if ($LASTEXITCODE -ne 0) { throw 'desktop tests failed' }
           ./apps/desktop/windows/build-win.ps1
+          if (Test-Path tests/test_workspace_chat_trash.py) {
+            ./.venv/Scripts/python.exe -m pytest -q --tb=short tests/test_group_unlink_member.py tests/test_autolink.py tests/test_session_recovery.py tests/test_external_runtime_metadata.py tests/test_work_project_metadata.py
+            if ($LASTEXITCODE -ne 0) { throw 'chat unlink and recoverable deletion tests failed' }
+          }
           if (Test-Path tests/test_fleet_report_visibility.py) {
             ./.venv/Scripts/python.exe -m pytest -q --tb=short tests/test_fleet_report_visibility.py
             if ($LASTEXITCODE -ne 0) { throw 'report visibility tests failed' }
