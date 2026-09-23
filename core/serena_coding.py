@@ -375,7 +375,15 @@ def _adopt(record: dict[str, Any], path: Path) -> None:
                  {"old_sid": record["id"], "new_sid": sid,
                   "terminal_id": record.get("terminal_id")},
                  base=record.get("backend"), timeout=10)
-    with contextlib.suppress(CodingSessionError):  # a missing title is cosmetic
+    # The app's rename 404s on a chat its index has not seen yet, which is
+    # every chat she has just opened; the sidebar then showed her raw brief.
+    # The title written to the chat's metadata is what indexing picks up.
+    with contextlib.suppress(Exception):
+        from core import metadata
+
+        if not metadata.get_meta(sid).get("custom_title"):
+            metadata.set_custom_title(sid, record["title"])
+    with contextlib.suppress(CodingSessionError):
         _request("POST", f"/api/rename/{sid}", {"title": record["title"]},
                  base=record.get("backend"), timeout=10)
     state = _load()

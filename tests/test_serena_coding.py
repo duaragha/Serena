@@ -235,7 +235,15 @@ def test_open_session_spawns_in_his_app_finds_and_titles_it(tmp_path, monkeypatc
         return _claude_transcript(cwd, "33333333-cccc", f"[{tag}] brief")
 
     monkeypatch.setattr(sc, "_find_transcript", fake_find)
+    titled = {}
+    fake_meta = types.SimpleNamespace(get_meta=lambda sid: {},
+                                      set_custom_title=lambda sid, title: titled.update({sid: title}))
+    monkeypatch.setitem(sys.modules, "core.metadata", fake_meta)
+    monkeypatch.setattr(sys.modules["core"], "metadata", fake_meta, raising=False)
     record = sc.open_session("Add a status label to the orb", project="serena")
+    # Titled in its metadata, which indexing picks up even before the app knows it.
+    assert titled == {"33333333-cccc": record["title"]}
+
 
     spawn = calls[0]
     assert spawn[:2] == ("POST", "/api/spawn-terminal")
