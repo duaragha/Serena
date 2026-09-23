@@ -41,7 +41,12 @@ def test_killed_writer_resumes_with_its_patch_and_completed_research(fleet_env, 
     monkeypatch.setenv("SERENA_FLEET_ISOLATION", "on")
     killed = False
 
-    def command(request):
+    def command(request, *, session_id=None):
+        # Same contract as fleet.workers.worker_command: freezing an attempt
+        # passes its session and records the argv, and launch runs exactly that
+        # frozen argv. Rebuilding here would flip `killed` twice per attempt.
+        if request.frozen_argv:
+            return list(request.frozen_argv)
         nonlocal killed
         events = [
             {"type": "thread.started", "thread_id": "disposable-process-fixture"},
