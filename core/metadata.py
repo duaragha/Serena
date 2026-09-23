@@ -327,26 +327,28 @@ def surface_fleet_worker(
         marker["assignment"] = str(assignment)
     if origin_session_id:
         marker["origin_session_id"] = str(origin_session_id)
-    entry = _load_one(session_id)
-    before = json.dumps(entry, sort_keys=True, separators=(",", ":"))
-    entry["resident_work"] = True
-    entry["custom_title"] = str(title)
-    entry["fleet_worker"] = marker
-    entry["group"] = str(worker_group_id)
-    if pid is not None:
-        now = time.time()
-        entry["external_runtime"] = {
-            "kind": "fleet-worker",
-            "pid": int(pid),
-            "host": socket.gethostname(),
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "lease_expires_at": now + max(30.0, float(lease_seconds)),
-        }
-    after = json.dumps(entry, sort_keys=True, separators=(",", ":"))
-    if after == before:
-        return False
-    _save_one(session_id, entry)
-    return True
+    with _metadata_write_lock():
+        entry = _load_one(session_id)
+        before = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+        entry["resident_work"] = True
+        entry["custom_title"] = str(title)
+        entry["fleet_worker"] = marker
+        if not entry.get("group_unlinked"):
+            entry["group"] = str(worker_group_id)
+        if pid is not None:
+            now = time.time()
+            entry["external_runtime"] = {
+                "kind": "fleet-worker",
+                "pid": int(pid),
+                "host": socket.gethostname(),
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "lease_expires_at": now + max(30.0, float(lease_seconds)),
+            }
+        after = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+        if after == before:
+            return False
+        _save_one(session_id, entry, group_change=True)
+        return True
 
 
 def set_external_runtime(

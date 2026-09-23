@@ -104,3 +104,13 @@ def test_atomic_metadata_write_failure_keeps_previous_file(monkeypatch, tmp_path
         metadata.unlink_session("gemini")
     assert metadata._session_path("gemini").read_bytes() == original
     assert not list(metadata.METADATA_DIR.glob("*.tmp"))
+
+
+def test_fleet_group_assignment_does_not_override_explicit_unlink(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    metadata.unlink_session("worker")
+    metadata.surface_fleet_worker("worker", run_id="run", leg_id="leg", phase="review",
+                                  provider="codex", model="model", effort="medium",
+                                  worker_key="worker", worker_group_id="fleet-group", title="Review")
+    assert metadata.get_group("worker") is None
+    assert metadata.get_meta("worker")["fleet_worker"]["worker_group_id"] == "fleet-group"
