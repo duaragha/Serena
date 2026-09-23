@@ -423,3 +423,34 @@ def test_a_requirement_he_states_is_work_not_chat(brief):
 ])
 def test_vague_or_chatty_text_still_gets_one_question(brief):
     assert store.classify_task(brief) == "needs_triage"
+
+
+def test_a_specific_brief_is_not_bounced_for_using_his_own_verbs(queue):
+    """#106 sat in triage for a day because 'allow' and 'swap' were not listed."""
+
+    brief = ("Locket workouts: allow swapping an exercise during an active workout "
+             "without ending the session or losing logged sets; search the existing "
+             "exercise database first, then offer AI-assisted lookup for missing "
+             "exercises, and save confirmed additions for future searches.")
+    assert store.classify_task(brief) == "ready"
+    # A long brief with no listed verb still counts on its own specificity.
+    assert store.classify_task(
+        "the workout timer on the Locket session screen resets itself to zero every "
+        "time the app returns from the background, so a logged set loses its elapsed "
+        "time and the summary at the end reports the wrong duration entirely") == "ready"
+    # Vagueness is still vagueness, however long he rambles.
+    assert store.classify_task("it is still broken") == "needs_triage"
+    assert store.classify_task(
+        "hey so anyway i was thinking about the thing we talked about the other day "
+        "and you know how it goes sometimes with these things when they happen") == "needs_triage"
+
+
+def test_his_answer_settles_triage_instead_of_being_graded_again(queue):
+    """He answered #106 three times; the classifier bounced every one."""
+
+    task = store.enqueue_task("locket is broken", source_id="imessage:x")
+    assert task["state"] == "needs_triage"
+    answered = store.answer_triage(task["id"], "the workouts tab, swapping exercises")
+    assert answered["state"] == "ready"
+    thin = store.enqueue_task("fix it", source_id="imessage:y")
+    assert store.answer_triage(thin["id"], "yeah")["state"] == "needs_triage"

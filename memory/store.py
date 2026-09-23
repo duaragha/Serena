@@ -195,7 +195,11 @@ def classify_task(text: str, project_hint: str | None = None) -> str:
                        r"investigate|diagnose|refactor|replace|resolve|enable|disable|"
                        r"research|change|make|migrate|integrate|connect|wire|rename|"
                        r"ship|support|redesign|improve|clean|polish|focus|show|hide|"
-                       r"move|drag|reorder|delete|restore)\b", text, re.I)
+                       r"move|drag|reorder|delete|restore|allow|let|permit|prevent|"
+                       r"stop|keep|swap|search|offer|save|render|display|sort|filter|"
+                       r"upload|sync|handle|track|log|import|export|parse|cache|bump|"
+                       r"publish|deploy|persist|restore|surface|group|split|merge)\b",
+                       text, re.I)
     # And more often he states the requirement rather than the verb: "it
     # should open the keyboard", "I should be able to drag it", "get rid of
     # these buttons". That is a spec, not chat -- the verb list alone read
@@ -204,7 +208,15 @@ def classify_task(text: str, project_hint: str | None = None) -> str:
         r"\b(should(?:n'?t)?(?: be able to)?|needs? to|has to|must|get rid of|"
         r"i want|i'?d like|there should(?:n'?t)? be)\b", text, re.I)
     substantive = {word for word in words if len(word) > 2 and word not in _TASK_PADDING}
-    return "ready" if action and len(words) >= 8 and len(substantive) >= 4 else "needs_triage"
+    if action and len(words) >= 8 and len(substantive) >= 4:
+        return "ready"
+    # No verb list survives contact with how he actually writes: task #106
+    # ("allow swapping an exercise during an active workout without ending the
+    # session or losing logged sets, search the existing database first...")
+    # bounced because "allow", "swap" and "search" were not on it, while "fix
+    # it" sailed through. Nobody types twenty-five specific words into a work
+    # queue as small talk, so length and substance stand in for the verb.
+    return "ready" if len(words) >= 25 and len(substantive) >= 12 else "needs_triage"
 
 
 def _task_rows() -> list[dict]:
@@ -415,9 +427,12 @@ def mark_task_asked(task_id: int, now=None) -> bool:
 def answer_triage(task_id: int, answer: str) -> dict | None:
     """Fold his answer into the brief and triage it again.
 
-    The combined brief goes through the same classifier as a fresh one, so an
-    answer that still says nothing actionable leaves the task waiting instead
-    of opening a run. A second question is not sent automatically.
+    His answer is authority, not another guess to be graded. Re-running the
+    classifier over the combined brief meant a task whose brief was already
+    complete could never be unstuck: #106 asked him a question it did not need,
+    then refused every answer he gave, because the classifier bounced the brief
+    on its wording, not its content. A real answer (three words or more) makes
+    it ready; a shrug still waits.
     """
     answer = _task_text(_flatten(str(answer)) if isinstance(answer, str) else answer,
                         "answer", 2000)
@@ -426,7 +441,9 @@ def answer_triage(task_id: int, answer: str) -> dict | None:
     if not row or row["type"] != "task" or row["state"] != "needs_triage":
         return None
     brief = _task_text(f"{row['content']}\n\nClarification: {answer}", "text", 6000)
-    state = classify_task(brief[:4000], row.get("project_hint") or None)
+    substantial = len(re.findall(r"\b\w+\b", answer)) >= 3
+    state = "ready" if substantial else classify_task(brief[:4000],
+                                                     row.get("project_hint") or None)
     new_path = _write_file(task_id, "task", brief, created=row["created_at"], snooze=row["snooze_until"],
                 locket_id=row["locket_id"], source_session_id=row["source_session_id"],
                 source_agent=row["source_agent"], source_title=row["source_title"],
