@@ -210,6 +210,7 @@ def build_serena_codex_brain_tools() -> CodexBrainToolRegistry:
     """Build the exact brokered tool surface used by the resident brain."""
 
     from core.brain_capability_tools import CAPABILITY_TOOLS
+    from core.brain_code_tools import CODE_TOOLS
     from core.brain_document_tools import DOCUMENT_TOOLS
     from core.brain_fleet_tools import FLEET_TOOLS
     from core.brain_gideon_tools import GIDEON_TOOLS
@@ -223,6 +224,10 @@ def build_serena_codex_brain_tools() -> CodexBrainToolRegistry:
             "serena_ro": ("Read Serena's local recall and repository state.", BRAIN_TOOLS),
             "serena_laptop": ("Use Serena's brokered laptop controls.", LAPTOP_TOOLS),
             "serena_work": ("Start, inspect, and control Serena coding jobs.", WORK_TOOLS),
+            "serena_code": (
+                "Open, watch, steer and stop Serena's own coding terminals.",
+                CODE_TOOLS,
+            ),
             "serena_memory": (
                 "Write Serena memories and knowledge when authorized.",
                 MEMORY_TOOLS,

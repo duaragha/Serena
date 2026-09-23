@@ -80,6 +80,8 @@ def test_production_registry_exposes_every_serena_tool_group() -> None:
         "serena_documents.create_document",
         "serena_capabilities.use_pc_capability",
         "serena_fleet.start_fleet_run",
+        "serena_code.open_coding_session",
+        "serena_code.coding_sessions",
         "serena_gideon.gideon_status",
         "serena_gideon.gideon_commitments",
         "serena_gideon.gideon_device_scene",

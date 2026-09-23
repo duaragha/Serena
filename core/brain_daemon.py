@@ -317,8 +317,10 @@ def _persona_context() -> str:
         "you could not run it, the answer is that you could not look. "
         "\"I could not check\" is never worse than a confident wrong answer, "
         "and he finds out which one it was. "
-        "Do not promise work you have no tool to do. You cannot edit code, "
-        "restart services or chase a bug down later; saying you will is a "
+        "Do not promise work you have no tool to do. You do not edit code "
+        "yourself -- code gets written through your coding tools below -- and "
+        "you cannot restart services or chase a bug down later on your own; "
+        "saying you will is a "
         "promise he then waits on and nothing happens. Say what you can see "
         "and what you cannot change, and leave the doing to him or to the "
         "terminal. Noticing something is wrong is worth saying on its own. "
@@ -392,10 +394,27 @@ def _persona_context() -> str:
         "as not done. Beeper is primarily a source of chat knowledge here; never "
         "send, edit, delete, react, or change chat state unless his current turn "
         "directly asks for that exact action. "
+        "Coding is yours to run end to end. You have three ways to get code "
+        "written and you pick. Your default for building, fixing or changing "
+        "something real is your own coding session: "
+        "mcp__serena-code__open_coding_session opens a terminal in his Serena "
+        "app where a Claude (or Codex) session runs the task as your "
+        "orchestrator -- it plans, spreads work over its own subagents, asks the "
+        "linked Codex for a second opinion, starts a Fleet run itself when the "
+        "change splits into workstreams, ships through a PR, and texts him "
+        "DONE or BLOCKED when it is finished. It starts cold, so its task must "
+        "carry everything: what to change, why, what done looks like, and the "
+        "files you already know are involved. He can open it and watch. After "
+        "that it stays yours: coding_sessions and read_coding_session tell you "
+        "what each session is actually doing, steer_coding_session types his "
+        "correction or answer into it, and stop_coding_session closes it. When "
+        "he asks how the coding is going, read them; never guess. Several can "
+        "run at once, one per task. For a small contained fix he asks for out "
+        "loud, mcp__serena-work__start_coding_work is the quieter option. "
         "When he asks you on a spoken turn to build, fix, change, investigate, "
-        "or continue something in his code, that is yours to start: call "
-        "mcp__serena-work__start_coding_work and say plainly that you have "
-        "started it. Judge it like a person would, not by keywords. If it is "
+        "or continue something in his code, that is yours to start: open a "
+        "coding session or call mcp__serena-work__start_coding_work, and say "
+        "plainly that you have started it. Judge it like a person would, not by keywords. If it is "
         "clear, start it, do not ask permission he already gave. If you "
         "genuinely do not know which project or which of two things he means, "
         "read the ledger or your memory first, and only then ask him one short "
@@ -443,8 +462,9 @@ def _persona_context() -> str:
         "current spoken turn explicitly asks to cancel, retry, or steer a Fleet run, "
         "call mcp__serena-fleet__control_fleet_run. Start Fleet only when he names "
         "Fleet and directly asks to run or start it; then call "
-        "mcp__serena-fleet__start_fleet_run. Ordinary build or fix requests still "
-        "use start_coding_work. Fleet completion and failure alerts are delivered "
+        "mcp__serena-fleet__start_fleet_run. Ordinary build or fix requests "
+        "go to a coding session or start_coding_work; a coding session may "
+        "still start Fleet itself when the work calls for it. Fleet completion and failure alerts are delivered "
         "by the supervisor, so never invent an alert or a terminal result. "
         "Typing, "
         "clicking, messaging, deletion, purchases, deployment, and account changes "
@@ -2183,6 +2203,8 @@ def _build_agent_options(
     walmart_tool_names: list[str] | None = None,
     journal_tools=None,
     journal_tool_names: list[str] | None = None,
+    code_tools=None,
+    code_tool_names: list[str] | None = None,
     session_id: str | None = None,
 ):
     """Build the narrow, unattended options used by every daemon session."""
@@ -2207,6 +2229,7 @@ def _build_agent_options(
         *(vm_tool_names or []),
         *(walmart_tool_names or []),
         *(journal_tool_names or []),
+        *(code_tool_names or []),
     ]
     if laptop_tools is not None:
         mcp_servers["serena-laptop"] = laptop_tools
@@ -2228,6 +2251,8 @@ def _build_agent_options(
         mcp_servers["serena-walmart"] = walmart_tools
     if journal_tools is not None:
         mcp_servers["serena-journal"] = journal_tools
+    if code_tools is not None:
+        mcp_servers["serena-code"] = code_tools
     remote_servers, remote_allow = _remote_mcp_servers()
     mcp_servers.update(remote_servers)
     print(f"[brain] {len(mcp_servers)} mcp servers, "
@@ -2346,6 +2371,8 @@ class ResidentClientManager:
         walmart_tool_names: list[str] | None = None,
         journal_tools_factory=None,
         journal_tool_names: list[str] | None = None,
+        code_tools_factory=None,
+        code_tool_names: list[str] | None = None,
         journal: RecentThreadJournal | None = None,
         lifetime: LifetimeLedger | None = None,
         voice_transcripts: VoiceTranscriptStore | None = None,
@@ -2381,6 +2408,8 @@ class ResidentClientManager:
         self.walmart_tool_names = list(walmart_tool_names or [])
         self.journal_tools_factory = journal_tools_factory
         self.journal_tool_names = list(journal_tool_names or [])
+        self.code_tools_factory = code_tools_factory
+        self.code_tool_names = list(code_tool_names or [])
         self.journal = journal or RecentThreadJournal()
         self.lifetime = lifetime or LifetimeLedger()
         self.voice_transcripts = voice_transcripts or VoiceTranscriptStore()
@@ -3016,6 +3045,12 @@ class ResidentClientManager:
                 else None
             ),
             journal_tool_names=self.journal_tool_names,
+            code_tools=(
+                self.code_tools_factory()
+                if self.code_tools_factory is not None
+                else None
+            ),
+            code_tool_names=self.code_tool_names,
             session_id=requested_session_id,
         )
         secure_directory(Path(options.cwd))
@@ -3589,6 +3624,7 @@ async def _run_daemon() -> None:
         CAPABILITY_TOOL_NAMES,
         capability_tools_server,
     )
+    from core.brain_code_tools import CODE_TOOL_NAMES, code_tools_server
     from core.brain_document_tools import DOCUMENT_TOOL_NAMES, document_tools_server
     from core.brain_fleet_tools import FLEET_TOOL_NAMES, fleet_tools_server
     from core.brain_gideon_tools import GIDEON_TOOL_NAMES, gideon_tools_server
@@ -3633,6 +3669,8 @@ async def _run_daemon() -> None:
         walmart_tool_names=WALMART_TOOL_NAMES,
         journal_tools_factory=journal_tools_server,
         journal_tool_names=JOURNAL_TOOL_NAMES,
+        code_tools_factory=code_tools_server,
+        code_tool_names=CODE_TOOL_NAMES,
         codex_brain_factory=lambda: CodexBrainClient(
             cwd=BRAIN_CWD,
             developer_instructions=_persona_context(),
