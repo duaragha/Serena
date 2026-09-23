@@ -60,6 +60,11 @@ from fleet.workers import WorkerRequest, WorkerResult, run_worker, runtime_docto
 POLL_SECONDS = 0.5
 WAIT_POLL_SECONDS = 0.5
 CAPACITY_POLL_SECONDS = 30.0
+# While legs run, the scheduler loop wakes every POLL_SECONDS. Refreshing the
+# chat index on every wake re-parsed each growing transcript in full and kept
+# `chats fleet serve` at a full core for whole runs. Phase changes and
+# completion still refresh immediately.
+INDEX_REFRESH_SECONDS = 30.0
 CAPACITY_RETRY_COOLDOWN_SECONDS = 300.0
 OVERLOAD_RETRY_COOLDOWN_SECONDS = 60.0
 CONTROL_PLANE_FLUSH_SECONDS = 2.0
@@ -71,6 +76,7 @@ OVERLAY_EVENT_SOCKET = Path.home() / ".local" / "state" / "serena" / "brain-even
 PARALLELIZE_CONTROL_MESSAGE = "[fleet-control] parallelize-current-run-v1"
 _METADATA_LOCK = threading.Lock()
 _INDEX_LOCK = threading.Lock()
+_last_index_refresh = 0.0
 _STORE_LOCK = threading.Lock()
 _INTEGRATION_LOCK = threading.Lock()
 _PENDING_INTEGRATIONS_LOCK = threading.Lock()
@@ -1372,7 +1378,7 @@ def _run_work_unit_scheduler(
                 refreshed = store.get_run(run_id)
                 if refreshed is not None:
                     _reconcile_run_sessions(store, refreshed)
-                _refresh_index()
+                _refresh_index_throttled()
                 continue
 
             snapshot = store.get_run(run_id)
@@ -4251,10 +4257,18 @@ def _combine_worker_outputs(outputs: list[dict[str, str]]) -> str:
 
 
 def _refresh_index() -> None:
+    global _last_index_refresh
     with _INDEX_LOCK, suppress(Exception):
         from core.indexer import update_index
 
+        _last_index_refresh = time.monotonic()
         update_index()
+
+
+def _refresh_index_throttled() -> None:
+    if time.monotonic() - _last_index_refresh < INDEX_REFRESH_SECONDS:
+        return
+    _refresh_index()
 
 
 @contextmanager
