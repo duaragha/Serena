@@ -103,7 +103,12 @@ def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, 
         # Observe only: no retry/resume calls, altered clock or shortened poll.
         not_before = None
         final = None
-        deadline = started + 110
+        # Recovery is slow on purpose: the killed attempt waits out the
+        # 30 * 2**retries backoff (60s here) behind a 20s gate. 110s left ~30s
+        # of slack, and a loaded Windows runner used it up, failing every
+        # master Windows build while the recovery itself was correct. The
+        # budget bounds the test; it is not what the test is about.
+        deadline = started + 240
         while time.monotonic() < deadline:
             final = store.get_run(rid)
             with store._connect() as db:
@@ -144,7 +149,8 @@ def test_resident_timer_recovers_killed_helper_without_operator_retry(tmp_path, 
                 except psutil.NoSuchProcess:
                     pass
         service.join(timeout=10)
-        deadline = time.monotonic() + 15
+        # Winding the run thread down after cancel took over 25s on the PC.
+        deadline = time.monotonic() + 60
         while any(t.name == f"fleet-{rid[:8]}" and t.is_alive() for t in threading.enumerate()) and time.monotonic() < deadline:
             time.sleep(.1)
         assert not service.is_alive()
