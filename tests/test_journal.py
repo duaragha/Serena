@@ -730,3 +730,11 @@ def test_a_redraft_never_forgets_someone_the_day_already_knew(monkeypatch):
     facts = store.load_day("2026-09-23")["facts"]
     assert {p["name"] for p in facts["people"]} == {"Sarim", "Kamakshi"}
     assert facts["visits"][0]["place"] == "School"
+
+
+def test_the_entry_has_no_timeline_of_every_short_stop():
+    facts = {"day": "2026-09-23", "people": [], "visits": [
+        {"place": "McDonald's", "arrived": "8:02pm", "departed": "8:05pm", "arrived_ts": 1,
+         "lat": 0.0, "lng": 0.0, "minutes": 3}]}
+    html = draft.render_html("2026-09-23", facts, "You went home.", [], [])
+    assert "Timeline" not in html and "stopped" not in html
