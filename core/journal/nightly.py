@@ -153,5 +153,15 @@ def record_answer(day: str, answer: str, *, question_id: str = "",
     store.save_day(day, facts=facts, answers=answers, summary=text_summary, entry_id=entry_id,
                    entry_base=written["base"], entry_written=written["written"])
     remaining = store.unanswered(store.load_day(day) or {})
-    return {"day": day, "saved": True, "entry_id": entry_id,
-            "still_open": [q["text"] for q in remaining]}
+    result = {"day": day, "saved": True, "entry_id": entry_id,
+              "written_to_locket": not written.get("skipped"),
+              "still_open": [q["text"] for q in remaining]}
+    if written.get("skipped"):
+        # His words are kept, but the entry in Locket was NOT changed. Saying
+        # "saved" here is how she once told him a correction was in his
+        # journal when the entry still carried the mistake.
+        result["tell_him"] = (
+            "your words are saved, but I did NOT change the entry in Locket: its "
+            "text has changed since I last wrote it, so I left your edits alone. "
+            "fix it there, or tell me to overwrite it.")
+    return result

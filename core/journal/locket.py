@@ -8,6 +8,9 @@ deliberately does not go there (see core.journal.location).
 
 from __future__ import annotations
 
+import html as html_lib
+import re
+
 import json
 import urllib.error
 import urllib.parse
@@ -81,8 +84,23 @@ def entries_on(day: str) -> list[dict[str, Any]]:
 LEGACY_MARKER = "<p><em>Drafted by Serena"
 
 
+_TAG = re.compile(r"<[^>]+>")
+
+
+def _visible(markup: str) -> str:
+    return " ".join(html_lib.unescape(_TAG.sub(" ", markup or "")).split())
+
+
 def _same(a: str, b: str) -> bool:
-    return " ".join((a or "").split()) == " ".join((b or "").split())
+    """Same words on the page, however the markup around them was serialized.
+
+    Locket's editor re-serializes an entry when it is opened -- it wraps every
+    list item in a <p> -- so the raw HTML stopped matching what she wrote and
+    she read that as his edit. On 2026-09-24 that silently blocked his
+    correction to the 23rd ("I never said Rushil was who I drove to school").
+    Only a change in the words he can see counts as his.
+    """
+    return _visible(a) == _visible(b)
 
 
 def _content(entry_id: int) -> str:

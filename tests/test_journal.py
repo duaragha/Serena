@@ -6,7 +6,7 @@ from datetime import datetime
 
 import pytest
 
-from core.journal import draft, nightly, store
+from core.journal import draft, locket, nightly, store
 from core.journal.people import Evidence, Person, verify
 from core.journal.unified_source import ChatMessage
 
@@ -668,3 +668,32 @@ def test_journal_model_calls_never_become_chats_in_his_sidebar(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda args, **kw: seen.update(args=args) or Done())
     model._codex("p", "s")
     assert "--ephemeral" in seen["args"]
+
+
+def test_the_editor_reformatting_an_entry_is_not_his_edit():
+    """Locket wraps list items in <p> when an entry is opened; the words are unchanged."""
+
+    ours = "<p>You drove someone.</p><ul><li>Kamakshi · 6:40pm</li><li>Rushil</li></ul>"
+    editor = "<p>You drove someone.</p><ul><li>\n<p>Kamakshi &middot; 6:40pm</p>\n</li><li><p>Rushil</p></li></ul>"
+    assert locket._same(editor, ours)
+    assert not locket._same(editor.replace("Rushil", "Rushil and Saad"), ours)
+
+
+def test_a_skipped_locket_write_is_never_reported_as_in_his_journal(monkeypatch):
+    """She told him a correction was in the entry when the write had been skipped."""
+
+    monkeypatch.setattr(nightly.locket, "write_entry",
+                        lambda **kw: {"id": 9, "base": "", "written": "<p>old</p>", "skipped": True})
+    monkeypatch.setattr(draft, "_ask", lambda _p: "")
+    result = nightly.record_answer("2026-09-23", "i never said rushil was who i drove")
+    assert result["written_to_locket"] is False
+    assert "did NOT change the entry" in result["tell_him"]
+    # His words are still kept locally.
+    assert store.load_day("2026-09-23")["answers"][0]["answer"].startswith("i never said")
+
+
+def test_the_summary_prompt_forbids_turning_a_pronoun_into_a_name(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(draft, "_ask", lambda prompt: seen.setdefault("p", prompt) and "")
+    draft.summary({"day": "2026-09-23"}, [{"answer": "i drove him to school. rushil got chinese"}])
+    assert "Never turn a pronoun" in seen["p"]

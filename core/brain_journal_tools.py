@@ -51,7 +51,8 @@ async def journal_day(args):
       "to add something to a day's journal (no `question_id`; `day` is YYYY-MM-DD, "
       "today if he does not say). For a `where` question, also pass `place_name`: just "
       "the place, short (\"MOTW Cafe\"), so the spot is remembered next time. `people` "
-      "is first names he says he was with.",
+      "is first names he says he was with. If the result has `tell_him`, say that to him "
+      "instead of telling him it is in his journal: it means the Locket entry was not changed.",
       {"day": str, "answer": str, "question_id": str, "place_name": str, "people": list},
       annotations=_WRITES)
 async def journal_answer(args):
