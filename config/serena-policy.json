@@ -180,6 +180,10 @@
           "rank": 0,
           "execute": [
             {
+              "model": "gpt-6-astra",
+              "effort": "high"
+            },
+            {
               "model": "claude-haiku-4-5",
               "effort": "high"
             },
@@ -197,12 +201,12 @@
           "rank": 1,
           "execute": [
             {
-              "model": "claude-sonnet-5",
+              "model": "gpt-6-astra",
               "effort": "high"
             },
             {
-              "model": "gpt-6-astra",
-              "effort": "medium"
+              "model": "claude-sonnet-5",
+              "effort": "high"
             },
             {
               "model": "gpt-5.6-terra",
