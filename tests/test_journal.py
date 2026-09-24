@@ -697,3 +697,36 @@ def test_the_summary_prompt_forbids_turning_a_pronoun_into_a_name(monkeypatch):
     monkeypatch.setattr(draft, "_ask", lambda prompt: seen.setdefault("p", prompt) and "")
     draft.summary({"day": "2026-09-23"}, [{"answer": "i drove him to school. rushil got chinese"}])
     assert "Never turn a pronoun" in seen["p"]
+
+
+def test_a_redraft_never_forgets_someone_the_day_already_knew(monkeypatch):
+    """A morning redraft of the 23rd dropped Sarim, so 'him' became Rushil."""
+
+    runs = iter([
+        {"day": "2026-09-23", "people": [{"name": "Sarim", "confidence": "medium"}],
+         "visits": [{"place": "", "arrived": "7:24am", "departed": "7:40am", "arrived_ts": 100, "lat": 43.59, "lng": -79.64, "minutes": 16}], "excluded": []},
+        {"day": "2026-09-23", "people": [{"name": "Kamakshi", "confidence": "high"}],
+         "visits": [{"place": "", "arrived": "7:24am", "departed": "7:40am", "arrived_ts": 100, "lat": 43.59, "lng": -79.64, "minutes": 16}], "excluded": []},
+    ])
+
+    class Gathered:
+        def __init__(self, data):
+            self.data = data
+
+        def to_dict(self):
+            return self.data
+
+    monkeypatch.setattr(nightly.facts_mod, "gather", lambda day: Gathered(next(runs)))
+    monkeypatch.setattr(nightly.locket, "write_entry",
+                        lambda **kw: {"id": 3, "base": "", "written": kw["html"], "skipped": False})
+    monkeypatch.setattr(draft, "_ask", lambda _p: "")
+    from datetime import date
+
+    nightly.build(date(2026, 9, 23))
+    day = store.load_day("2026-09-23")
+    day["facts"]["visits"][0]["place"] = "School"
+    store.save_day("2026-09-23", facts=day["facts"])
+    nightly.build(date(2026, 9, 23))
+    facts = store.load_day("2026-09-23")["facts"]
+    assert {p["name"] for p in facts["people"]} == {"Sarim", "Kamakshi"}
+    assert facts["visits"][0]["place"] == "School"
