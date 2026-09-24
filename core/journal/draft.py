@@ -174,10 +174,12 @@ def summary(facts: dict[str, Any], answers: list[dict[str, Any]] | None = None) 
         "Do not add feelings, reasons, food, or any person or place that is not written "
         "there. Do not mention commits by message; a count and project names are enough. "
         "If something is marked low confidence, say \"probably\". "
-        "Never turn a pronoun (him, her, them, someone) into a name: a name only goes "
-        "with the thing he says that named person did, in the same sentence. \"i drove "
-        "him to school ... rushil got chinese\" means you drove someone to school and "
-        "Rushil got Chinese food. No markdown.\n\n"
+        "A pronoun (him, her, them) means the person FACTS put with him at that time -- "
+        "if FACTS has Sarim around 7:30am, \"i was driving him to school\" that morning "
+        "means you drove Sarim. Never give a pronoun a name he only used for something "
+        "else: in \"i drove him to school ... rushil got chinese\", Rushil got the food, "
+        "he is not who was driven. If FACTS names no one for that time, say someone. "
+        "No markdown.\n\n"
         f"FACTS: {json.dumps(trimmed, ensure_ascii=False)}\n\nHIS ANSWERS: {json.dumps(said, ensure_ascii=False)}"
     )
     try:

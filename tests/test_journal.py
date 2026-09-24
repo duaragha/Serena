@@ -696,7 +696,7 @@ def test_the_summary_prompt_forbids_turning_a_pronoun_into_a_name(monkeypatch):
     seen = {}
     monkeypatch.setattr(draft, "_ask", lambda prompt: seen.setdefault("p", prompt) and "")
     draft.summary({"day": "2026-09-23"}, [{"answer": "i drove him to school. rushil got chinese"}])
-    assert "Never turn a pronoun" in seen["p"]
+    assert "A pronoun (him, her, them) means the person FACTS put with him" in seen["p"]
 
 
 def test_a_redraft_never_forgets_someone_the_day_already_knew(monkeypatch):
