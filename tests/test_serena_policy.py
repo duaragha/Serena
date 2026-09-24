@@ -62,10 +62,10 @@ def test_brain_casual_streams_first_and_capacity_falls_back_truthfully() -> None
     assert (typed.provider, typed.model, typed.effort) == ("codex", "gpt-6-astra", "high")
     assert (spoken.provider, spoken.model, spoken.effort) == (
         "claude",
-        "claude-sonnet-5",
+        "claude-opus-5-5",
         "high",
     )
-    assert (fallback.provider, fallback.model) == ("claude", "claude-sonnet-5")
+    assert (fallback.provider, fallback.model) == ("claude", "claude-opus-5-5")
     assert fallback.fallback_reason
 
 
@@ -79,9 +79,9 @@ def test_brain_voice_chat_prefers_haiku_but_respects_model_health() -> None:
     )
     capacity = _capacity()
     capacity["models"] = {
-        "claude-haiku-4-5": {
+        "claude-opus-5-5": {
             "usable": False,
-            "reason": "Haiku is unavailable",
+            "reason": "Opus 5.5 is unavailable",
         }
     }
     fallback = resolve_policy(
@@ -90,13 +90,14 @@ def test_brain_voice_chat_prefers_haiku_but_respects_model_health() -> None:
         capacity=capacity,
     )
 
+    # Raghav moved voice to Opus 5.5 on 2026-09-24; Haiku is the fallback.
     assert (automatic.lane, automatic.model, automatic.effort) == (
         "fast",
-        "claude-haiku-4-5",
+        "claude-opus-5-5",
         "high",
     )
-    assert (fallback.model, fallback.effort) == ("gpt-5.6-terra", "high")
-    assert "Haiku is unavailable" in fallback.fallback_reason
+    assert (fallback.model, fallback.effort) == ("claude-haiku-4-5", "high")
+    assert "Opus 5.5 is unavailable" in fallback.fallback_reason
 
 
 def test_coding_lanes_apply_routine_normal_and_hard_floors() -> None:

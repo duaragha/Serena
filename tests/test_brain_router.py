@@ -65,8 +65,8 @@ def test_how_are_you_uses_haiku_without_weakening_work_turns() -> None:
     )
     assert (casual.activity, casual.model, casual.runtime_model, casual.effort) == (
         "voice_chat",
-        "claude-haiku-4-5",
-        "haiku",
+        "claude-opus-5-5",
+        "claude-opus-5-5",
         "high",
     )
     assert casual.lane == "fast"
@@ -77,26 +77,26 @@ def test_how_are_you_uses_haiku_without_weakening_work_turns() -> None:
     expected = {
         "research the latest turn detection work": (
             "research",
-            "claude-sonnet-5",
+            "claude-opus-5-5",
             "high",
         ),
-        "implement the fix in the serena repo": ("coding", "claude-sonnet-5", "high"),
+        "implement the fix in the serena repo": ("coding", "claude-opus-5-5", "high"),
         "review the implementation and check the diff": (
             "review",
-            "claude-sonnet-5",
+            "claude-opus-5-5",
             "high",
         ),
         "design the architecture for this system": (
             "planning",
-            "claude-sonnet-5",
+            "claude-opus-5-5",
             "high",
         ),
         "make a polished proposal document": (
             "documents",
-            "claude-sonnet-5",
+            "claude-opus-5-5",
             "high",
         ),
-        "start Serena Fleet for this change": ("fleet", "claude-sonnet-5", "high"),
+        "start Serena Fleet for this change": ("fleet", "claude-opus-5-5", "high"),
     }
     for text, wanted in expected.items():
         decision = route_turn({"protocol": "voice", "text": text}, capacity=capacity)
@@ -126,14 +126,14 @@ def test_substantive_and_explicit_conversation_stay_on_the_strong_model() -> Non
         assert (decision.activity, decision.lane, decision.model, decision.effort) == (
             "chat",
             "casual",
-            "claude-sonnet-5",
+            "claude-opus-5-5",
             "high",
         )
         assert decision.fallback_reason == ""
 
 
 def test_fast_voice_model_unavailability_restores_the_previous_route() -> None:
-    """A missing Haiku entitlement must not cost Raghav the spoken turn."""
+    """A missing Opus 5.5 entitlement must not cost Raghav the spoken turn."""
 
     decision = route_turn(
         {"protocol": "voice", "text": "how are you"},
@@ -141,7 +141,7 @@ def test_fast_voice_model_unavailability_restores_the_previous_route() -> None:
             "codex": {"usable": True, "reason": "available"},
             "claude": {"usable": True, "reason": "available"},
             "models": {
-                "claude-haiku-4-5": {
+                "claude-opus-5-5": {
                     "usable": False,
                     "reason": "model is not available on this subscription",
                 }
@@ -149,12 +149,11 @@ def test_fast_voice_model_unavailability_restores_the_previous_route() -> None:
         },
     )
 
-    # Terra sits next in the lane but cannot stream, so the spoken turn takes
-    # the streaming model of the same strength instead.
+    # Haiku is next in the fast lane and streams, so the spoken turn takes it.
     assert (decision.provider, decision.model, decision.runtime_model) == (
-        "muse",
-        "muse-spark",
-        "muse-spark",
+        "claude",
+        "claude-haiku-4-5",
+        "haiku",
     )
     assert "not available on this subscription" in decision.fallback_reason
 
@@ -173,7 +172,7 @@ def test_fast_voice_model_unavailability_restores_the_previous_route() -> None:
         runtime_fallback.lane,
         runtime_fallback.model,
         runtime_fallback.effort,
-    ) == ("casual", "claude-sonnet-5", "high")
+    ) == ("casual", "claude-opus-5-5", "high")
     assert "restored the standard chat lane" in runtime_fallback.fallback_reason
 
 
@@ -210,7 +209,7 @@ def test_a_spoken_work_question_takes_a_model_that_streams() -> None:
     typed = route_turn({"protocol": "frontdoor", "text": question}, capacity=capacity)
 
     assert spoken.provider == "claude"
-    assert spoken.model == "claude-sonnet-5"
+    assert spoken.model == "claude-opus-5-5"
     # Typed surfaces keep the stronger model: nobody is waiting on a sentence.
     assert typed.provider == "codex"
     assert typed.model == "gpt-6-astra"
