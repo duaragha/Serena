@@ -173,7 +173,11 @@ def summary(facts: dict[str, Any], answers: list[dict[str, Any]] | None = None) 
         "person (\"you\"), plain and factual. Use ONLY what is in FACTS and in HIS ANSWERS. "
         "Do not add feelings, reasons, food, or any person or place that is not written "
         "there. Do not mention commits by message; a count and project names are enough. "
-        "If something is marked low confidence, say \"probably\". No markdown.\n\n"
+        "If something is marked low confidence, say \"probably\". "
+        "Never turn a pronoun (him, her, them, someone) into a name: a name only goes "
+        "with the thing he says that named person did, in the same sentence. \"i drove "
+        "him to school ... rushil got chinese\" means you drove someone to school and "
+        "Rushil got Chinese food. No markdown.\n\n"
         f"FACTS: {json.dumps(trimmed, ensure_ascii=False)}\n\nHIS ANSWERS: {json.dumps(said, ensure_ascii=False)}"
     )
     try:
