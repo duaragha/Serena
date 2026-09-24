@@ -218,9 +218,8 @@ def render_html(day: str, facts: dict[str, Any], text: str,
             f"<li>{_e(p['name'])}{' (probably)' if p.get('confidence') in ('medium', 'low') else ''}"
             f"{' · ' + _e(p['when']) if p.get('when') else ''}</li>" for p in people)
         parts.append(f"<h3>People</h3><ul>{items}</ul>")
-    timeline = _timeline(facts)
-    if timeline:
-        parts.append("<h3>Timeline</h3><ul>" + "".join(f"<li>{_e(line)}</li>" for _, line in timeline) + "</ul>")
+    # No timeline: he found a list of every short stop ("8:47am · stopped 2 min")
+    # noise in his journal (2026-09-24). The summary already says where he went.
     if facts.get("commits"):
         items = "".join(f"<li>{_e(c['repo'])}: {c['count']} commit{'s' if c['count'] != 1 else ''}</li>"
                         for c in facts["commits"])
