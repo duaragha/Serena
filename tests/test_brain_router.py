@@ -191,7 +191,7 @@ def test_non_voice_chat_keeps_the_previous_casual_route() -> None:
     assert (decision.activity, decision.lane, decision.model, decision.effort) == (
         "chat",
         "casual",
-        "claude-sonnet-5",
+        "gpt-6-astra",
         "high",
     )
 
@@ -231,3 +231,18 @@ def test_a_non_streaming_model_still_answers_when_it_is_all_that_is_left() -> No
 
     assert decision.provider == "codex"
     assert "Claude usage exhausted" in decision.fallback_reason
+
+
+
+def test_a_spoken_casual_turn_still_streams_on_claude() -> None:
+    """Typed chat moved to GPT-6 Astra; a voice turn must not go silent for it."""
+
+    decision = route_turn(
+        {"protocol": "voice", "text": "can you walk me through what the fleet did today"},
+        capacity={
+            "codex": {"usable": True, "reason": "available"},
+            "claude": {"usable": True, "reason": "available"},
+        },
+    )
+
+    assert decision.provider == "claude"
