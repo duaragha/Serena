@@ -28,6 +28,7 @@ import base64
 import contextlib
 import io
 import json
+import re
 import sys
 import threading
 import urllib.parse
@@ -97,9 +98,20 @@ SILENT = "SILENT"
 FOLLOW_UP_NOTE = (
     "[Heard in the few seconds after you answered him. If it could be meant for "
     "you -- a question, a request, a reply to what you just said -- answer "
-    "normally. Only if it is clearly him talking to someone else, reply with "
+    "normally. A hesitation or an unfinished thought is him still talking to "
+    "you. Only if it is clearly him talking to someone else, reply with "
     f"exactly {SILENT} and nothing else.]\n"
 )
+
+# A hesitation on its own is him finding his words, not a turn. Sent to her as
+# a follow-up, a lone "Um..." came back SILENT and closed the orb on him in the
+# middle of telling her something (2026-09-23). It is held back and put in
+# front of whatever he says next.
+FILLER = frozenset({"um", "umm", "uhm", "uh", "uhh", "er", "erm", "ah", "hm", "hmm", "mm"})
+
+
+def _is_filler(text: str) -> bool:
+    return all(word in FILLER for word in re.findall(r"[a-z']+", text.lower()))
 
 
 def _is_silent(reply: str) -> bool:
@@ -187,7 +199,9 @@ async def _answer(send, text: str, turn: int, *, follow_up: bool = False) -> Non
         send({"type": "error", "message": f"brain: {exc}"})
     finally:
         publish_state("idle")
-        send({"type": "speech_end"})
+        # Only her SILENT closes a summoned orb. An empty reply for any other
+        # reason -- an error, a dropped stream -- is not her saying "not me".
+        send({"type": "speech_end", "silent": silent})
 
 
 class UtteranceSessions:
@@ -331,6 +345,7 @@ def ws_mic(ws) -> None:
     url = scribe_url()
     headers = [f"xi-api-key: {key}"]
     turns = {"n": 0}
+    hesitation = ""
     send_lock = threading.Lock()
     stop = threading.Event()
 
@@ -399,6 +414,13 @@ def ws_mic(ws) -> None:
             # End of utterance. Committing closes this session; the next one
             # is not opened until he speaks again.
             text = sessions.commit(COMMIT_TIMEOUT_SECONDS)
+            if text.strip() and _is_filler(text):
+                hesitation = f"{hesitation} {text.strip()}".strip()
+                with send_lock:
+                    ws.send(json.dumps({"type": "hold", "text": hesitation}))
+                continue
+            if text.strip() and hesitation:
+                text, hesitation = f"{hesitation} {text.strip()}", ""
             with send_lock:
                 ws.send(json.dumps({"type": "final", "text": text}))
 

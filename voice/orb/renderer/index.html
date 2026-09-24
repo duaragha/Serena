@@ -398,7 +398,7 @@ void main(){
   let micAnalyser = null, playAnalyser = null, playGain = null;
   // Her half of the turn: queued audio, and whether the floor is hers.
   let herSpeaking = false, pending = 0, ended = true, cursor = 0;
-  // What the conversation just did: 'words', 'answered', 'empty'. Set by the
+  // What the conversation just did: 'words', 'hold', 'answered', 'empty'. Set by the
   // wake block below; a no-op otherwise.
   let onActivity = () => {};
   // True once she has answered in a summoned orb: what he says next might be
@@ -496,9 +496,15 @@ void main(){
           replyEl.textContent = m.text || '';
         } else if (m.type === 'audio') {
           playClip(m.wav);
+        } else if (m.type === 'hold') {
+          // A lone "um": he is still finding the words. Not a turn.
+          committedEl.textContent = m.text || '';
+          partialEl.textContent = '';
+          onActivity('hold');
         } else if (m.type === 'speech_end') {
-          // Nothing to say is her way of telling him that was not for her.
-          if (!replyEl.textContent.trim()) onActivity('empty');
+          // Her SILENT is her telling him that was not for her. An empty
+          // reply for any other reason (an error) must not close her on him.
+          if (m.silent) onActivity('empty');
           ended = true;
           if (pending === 0) handBack();
         } else if (m.type === 'error') say('scribe: ' + m.message);
@@ -781,6 +787,7 @@ void main(){
         answeredOnce = true;
         deadline = performance.now() + WAKE_FOLLOW_UP_MS;
       }
+      else if (kind === 'hold') deadline = performance.now() + WAKE_FIRST_WORDS_MS;
       else if (kind === 'empty') close('nothing for her');
     };
     setInterval(() => {
