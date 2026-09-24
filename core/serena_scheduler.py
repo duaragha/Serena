@@ -36,6 +36,27 @@ MAX_INTERVAL_SECONDS = 30 * 86_400
 MAX_ACTIONS_PER_TICK = 25
 MAX_CONSECUTIVE_FAILURES = 5
 ACTION_LEASE_SECONDS = 15 * 60
+
+
+def _claim_owner() -> str:
+    """This process, as pid plus start time, so a recycled pid is not mistaken for it."""
+
+    from core.work_jobs import process_start_token
+
+    pid = os.getpid()
+    return f"{pid}:{process_start_token(pid) or ''}"
+
+
+def _owner_alive(owner: str) -> bool:
+    from core.work_jobs import process_start_token
+
+    pid_text, _, started = owner.partition(":")
+    try:
+        pid = int(pid_text)
+    except ValueError:
+        return True  # unknown format: keep honouring the lease
+    current = process_start_token(pid)
+    return current is not None and (not started or current == started)
 SCHEDULE_STATES = (
     "pending_approval",
     "active",
@@ -407,6 +428,19 @@ class SerenaScheduler:
 
     def due(self, *, now: float | None = None, limit: int = MAX_ACTIONS_PER_TICK) -> list[dict[str, Any]]:
         moment = float(time.time() if now is None else now)
+        # A lease whose owner died (a redeploy, a crash) is freed before choosing work.
+        held: list[str] = []
+        with suppress(Exception), self._connect() as connection:
+            held = [
+                str(row["schedule_id"])
+                for row in connection.execute(
+                    "SELECT schedule_id FROM schedules WHERE state = 'active' "
+                    "AND claim_owner IS NOT NULL AND claim_expires_at > ?",
+                    (moment,),
+                ).fetchall()
+            ]
+        for schedule_id in held:
+            self._release_dead_claim(schedule_id)
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM schedules WHERE state = 'active' AND next_run_at <= ? "
@@ -710,15 +744,19 @@ class SerenaScheduler:
     ) -> tuple[dict[str, Any], str] | None:
         """Atomically fence one execution before its handler can cause effects."""
 
+        self._release_dead_claim(schedule_id)
         token = str(uuid.uuid4())
         due_clause = " AND next_run_at <= ?" if require_due else ""
-        params: list[object] = [token, moment + ACTION_LEASE_SECONDS, moment, schedule_id, moment]
+        params: list[object] = [
+            token, moment + ACTION_LEASE_SECONDS, moment, _claim_owner(), schedule_id, moment,
+        ]
         if require_due:
             params.append(moment)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
-                "UPDATE schedules SET claim_token = ?, claim_expires_at = ?, updated_at = ? "
+                "UPDATE schedules SET claim_token = ?, claim_expires_at = ?, updated_at = ?, "
+                "claim_owner = ? "
                 "WHERE schedule_id = ? AND state = 'active' "
                 "AND (claim_expires_at IS NULL OR claim_expires_at <= ?)" + due_clause,
                 tuple(params),
@@ -732,6 +770,32 @@ class SerenaScheduler:
             if row is None:
                 raise SchedulerError("scheduler execution lease could not be read back")
             return _schedule_dict(row), token
+
+    def _release_dead_claim(self, schedule_id: str) -> None:
+        """Free a lease whose holder process no longer exists.
+
+        The lease is 15 minutes so a slow action is never run twice, but a
+        process killed mid-run (every PC redeploy, since the phone poll is
+        almost always inside its 45s long-poll) left its lease behind, and his
+        texts went unread until it expired: 16-minute gaps at 11:22 and 11:49
+        on 2026-09-24. A lease is only honoured while its owner is alive.
+        """
+
+        with suppress(Exception), self._connect() as connection:
+            row = connection.execute(
+                "SELECT claim_token, claim_owner FROM schedules WHERE schedule_id = ?",
+                (schedule_id,),
+            ).fetchone()
+            if row is None or not row["claim_token"] or not row["claim_owner"]:
+                return
+            if _owner_alive(str(row["claim_owner"])):
+                return
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE schedules SET claim_token = NULL, claim_expires_at = NULL, "
+                "claim_owner = NULL WHERE schedule_id = ? AND claim_token = ?",
+                (schedule_id, row["claim_token"]),
+            )
 
     def _notify(self, schedule_id: str, action: str, notify: dict[str, Any]) -> None:
         """Hand a scheduled notice to the one notification authority."""
@@ -857,6 +921,7 @@ class SerenaScheduler:
             for name, definition in (
                 ("claim_token", "TEXT"),
                 ("claim_expires_at", "REAL"),
+                ("claim_owner", "TEXT"),
                 ("one_shot", "INTEGER NOT NULL DEFAULT 0"),
                 ("workdir", "TEXT"),
                 ("chain_to_json", "TEXT NOT NULL DEFAULT '[]'"),
