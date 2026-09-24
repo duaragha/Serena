@@ -66,3 +66,71 @@ def test_a_real_answer_is_spoken_and_not_flagged(monkeypatch):
         type="delta", delta="take your time, i'm listening.", say=None))
     assert any(event["type"] == "audio" for event in sent)
     assert sent[-1] == {"type": "speech_end", "silent": False}
+
+
+def test_the_mic_socket_holds_a_hesitation_and_sends_it_with_his_next_words(monkeypatch):
+    """Drives the real /ws/mic handler: the first cut of the hold crashed it
+    on his first sentence and the orb showed "bridge closed" mid-speech."""
+
+    import json
+    import threading
+
+    heard = iter(["Um...", "it's my birthday"])
+
+    class Session:
+        partial = committed = ""
+
+        def feed(self, pcm):
+            pass
+
+    class Sessions:
+        failing = False
+        current = None
+
+        def __init__(self, factory):
+            pass
+
+        def for_audio(self):
+            self.current = Session()
+            return self.current
+
+        def commit(self, timeout):
+            self.current = None
+            return next(heard)
+
+        def close(self):
+            pass
+
+    class Socket:
+        def __init__(self, messages):
+            self.messages = list(messages)
+            self.sent = []
+
+        def receive(self):
+            return self.messages.pop(0) if self.messages else None
+
+        def send(self, raw):
+            self.sent.append(json.loads(raw))
+
+    answered = []
+    done = threading.Event()
+
+    async def answer(send, text, turn, *, follow_up=False):
+        answered.append((text, follow_up))
+        done.set()
+
+    monkeypatch.setattr(bridge, "load_elevenlabs_key", lambda: "key")
+    monkeypatch.setattr(bridge, "load_keyterms", lambda: [])
+    monkeypatch.setattr(bridge, "publish_state", lambda state: None)
+    monkeypatch.setattr(bridge, "UtteranceSessions", Sessions)
+    monkeypatch.setattr(bridge, "_answer", answer)
+    commit = json.dumps({"type": "commit", "follow_up": True})
+    ws = Socket([b"\0\0", commit, b"\0\0", commit])
+
+    bridge.app.view_functions["ws_mic"].__wrapped__(ws)
+
+    assert done.wait(2)
+    kinds = [event["type"] for event in ws.sent if event["type"] != "transcript"]
+    assert kinds == ["ready", "hold", "final", "thinking"]
+    assert ws.sent[kinds.index("hold")]["text"] == "Um..."
+    assert answered == [("Um... it's my birthday", True)]
