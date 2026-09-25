@@ -33,6 +33,15 @@ chats computer desktop launch terminal
 chats computer desktop close      # browser logins survive in its own profile
 ```
 
+Her desktop is a separate X server with its own clipboard, so the helper
+bridges CLIPBOARD text between the two while her desktop is open. Everything you
+copy reaches her desktop, including what was on your clipboard when it opened,
+so Ctrl+V works in the viewer. Her copies reach your clipboard only while the
+viewer is your focused window, meaning you copied inside it; Astra pressing
+Ctrl+C while you work elsewhere never replaces your clipboard. When your
+clipboard empties (a password manager's timeout, or its owner quitting), hers
+empties too. Text up to 200 KB is bridged; images and larger transfers are not.
+
 Her browser uses its own persistent profile under
 `~/.config/serena/computer/isolated/browser-profile`. It cannot share your
 running browser's profile, so sign in there once, in the viewer, for each site

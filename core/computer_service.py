@@ -43,6 +43,12 @@ def _isolated_x11(env):
     return X11Desktop(env, role="isolated")
 
 
+def _clipboard_bridge(host, nested, viewer):
+    from core.computer_clipboard import ClipboardBridge
+
+    return ClipboardBridge(host, nested, viewer=viewer).start()
+
+
 class ComputerServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 16
@@ -55,6 +61,7 @@ class ComputerServer(ThreadingHTTPServer):
         conversations=None,
         isolated=None,
         isolated_desktop=_isolated_x11,
+        clipboard=_clipboard_bridge,
     ):
         self.controller = controller
         self.directory = directory or state_dir()
@@ -73,6 +80,9 @@ class ComputerServer(ThreadingHTTPServer):
         self.isolated_indicator_process = None
         self.isolated_indicator_seen = 0.0
         self.isolated_visible_session = ""
+        # His clipboard reaches her desktop; hers reaches his only from the viewer.
+        self.clipboard_bridge = clipboard
+        self.clipboard = None
         self.client_slots = threading.BoundedSemaphore(16)
         super().__init__(("127.0.0.1", 0), Handler)
 
@@ -298,9 +308,28 @@ class ComputerServer(ThreadingHTTPServer):
                     desktop.close()
                 raise
             self.isolated = c
+            self._start_clipboard(runtime, info)
             return c
 
+    def _start_clipboard(self, runtime, info):
+        if self.clipboard_bridge is None:
+            return
+        try:
+            self.clipboard = self.clipboard_bridge(
+                self.controller.desktop.env["DISPLAY"],
+                info["display"],
+                runtime.viewer_window,
+            )
+        except Exception as exc:
+            # Pasting is a convenience; her desktop still works without it.
+            self.clipboard = None
+            self.controller.event("clipboard_unavailable", error=str(exc)[:200])
+
     def _drop_isolated(self, reason):
+        bridge, self.clipboard = self.clipboard, None
+        if bridge is not None:
+            with contextlib.suppress(Exception):
+                bridge.stop()
         c, self.isolated = self.isolated, None
         process, self.isolated_indicator_process = self.isolated_indicator_process, None
         if c is not None:
