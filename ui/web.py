@@ -6263,6 +6263,13 @@ const _activeTerms = new Set();   // sids with a running terminal — cleared on
 const _gtkReadyTerms = new Set(); // sids whose GTK VTE has been built server-side
 const _activeMeta = new Map();    // sid -> { cwd, activatedAt } for /clear migration
 const _pseudoSessions = [];       // synthetic rows for brand-new chats (temp ids)
+// Who a pending handoff links with once it resolves. An empty list means its
+// thread was unlinked or disbanded meanwhile, so it links with nobody.
+function _pendingLinkMembers(pseudo) {
+  const members = Array.isArray(pseudo.pending_group_member_sids)
+    ? pseudo.pending_group_member_sids : [pseudo.pending_group_link_with];
+  return members.filter(Boolean);
+}
 const _resolvedPseudoSids = new Map(); // stale UI events can still resolve after migration
 // === ATTENTION === (sids of chats that finished a turn since user last
 // looked at them — visual glow on sidebar entry + split-view VTE)
@@ -6508,10 +6515,10 @@ async function _reconcilePseudos(fresh, opts) {
       } catch(e) {}
     }
     // === GROUP FEATURE === (handoff auto-link: pair the new chat with its source)
-    if (pseudo.pending_group_link_with) {
+    if (pseudo.pending_group_link_with && _pendingLinkMembers(pseudo).length) {
       try {
         const linkSids = Array.from(new Set([
-          ...((pseudo.pending_group_member_sids || [pseudo.pending_group_link_with]).filter(Boolean)),
+          ..._pendingLinkMembers(pseudo),
           match.session_id,
         ]));
         const lr = await fetch('/api/group/link', {
@@ -7511,9 +7518,8 @@ function _adoptStructuredIdentity(sid, target) {
     if (!bucket.includes(target)) bucket.push(target);
     if (bucket.length >= 2) _fdLinkPair([...bucket], 0);
   }
-  if (pseudo.pending_group_link_with) {
-    const members = pseudo.pending_group_member_sids || [pseudo.pending_group_link_with];
-    _fdLinkPair(Array.from(new Set([...members.filter(Boolean), target])), 0);
+  if (pseudo.pending_group_link_with && _pendingLinkMembers(pseudo).length) {
+    _fdLinkPair(Array.from(new Set([..._pendingLinkMembers(pseudo), target])), 0);
   }
   _pseudoSessions.splice(_pseudoSessions.indexOf(pseudo), 1);
   const existing = _findClientSession(target);
@@ -9713,6 +9719,22 @@ function _clearPendingThreadLinks(sids) {
   for (const sid of removed) _pendingTermPartners.delete(sid);
   for (const sid of _pendingTermPartners.keys()) {
     _setPendingPartners(sid, _pendingPartnersOf(sid).filter(other => !removed.has(other)));
+  }
+  // A handoff that has not resolved yet links its recorded members the moment
+  // it does, and that explicit link would pull a chat he just removed straight
+  // back in. Its pending_group_link_with stays: it still finds the new chat.
+  for (const pseudo of _pseudoSessions) {
+    if (!pseudo) continue;
+    // A front-door pair links whichever members resolve, so a removed pseudo
+    // leaves its pair rather than joining it later.
+    if (removed.has(pseudo.session_id)) delete pseudo.fd_pair_id;
+    if (!pseudo.pending_group_link_with) continue;
+    pseudo.pending_group_member_sids = removed.has(pseudo.session_id)
+      ? []
+      : _pendingLinkMembers(pseudo).filter(member => !removed.has(member));
+  }
+  for (const [pair, members] of Object.entries(_fdPairResolved)) {
+    _fdPairResolved[pair] = members.filter(member => !removed.has(member));
   }
 }
 
