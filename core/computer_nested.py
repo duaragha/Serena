@@ -137,7 +137,7 @@ class IsolatedDesktop:
             "display": info["display"],
             "size": info["size"],
             "started_at": info["started_at"],
-            "viewer_window": self._viewer(),
+            "viewer_window": self.viewer_window(),
             "browser_profile": str(self.profile),
         }
 
@@ -377,7 +377,7 @@ class IsolatedDesktop:
                     return
             time.sleep(0.1)
 
-    def _viewer(self):
+    def viewer_window(self):
         with contextlib.suppress(ComputerError, subprocess.SubprocessError):
             found = self._run("xdotool", "search", "--name", f"^{TITLE}$", timeout=2)
             return found.splitlines()[-1] if found else None
@@ -395,7 +395,7 @@ class IsolatedDesktop:
             window = None
             deadline = time.monotonic() + 2
             while not window and time.monotonic() < deadline:
-                window = self._viewer()
+                window = self.viewer_window()
                 time.sleep(0.05)
             if window:
                 x = rect["x"] + max(0, (rect["width"] - width) // 2)
@@ -403,14 +403,14 @@ class IsolatedDesktop:
                 self._run("xdotool", "windowmove", window, str(x), str(y), timeout=2)
 
     def show(self):
-        window = self._viewer()
+        window = self.viewer_window()
         if not window:
             raise ComputerError("serena's desktop viewer is not open")
         self._run("xdotool", "windowactivate", window, timeout=2)
         return self.status()
 
     def hide(self):
-        window = self._viewer()
+        window = self.viewer_window()
         if not window:
             raise ComputerError("serena's desktop viewer is not open")
         self._run("xdotool", "windowminimize", window, timeout=2)

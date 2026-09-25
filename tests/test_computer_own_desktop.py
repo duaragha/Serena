@@ -23,6 +23,7 @@ def controller(tmp_path, monkeypatch):
     c = ComputerController(
         Desktop(), authority=ActionAuthority(tmp_path / "authority.sqlite", publish_events=False)
     )
+    c.desktop.env = {"DISPLAY": ":0"}
     yield c
     c.close()
 
@@ -148,6 +149,9 @@ class Runtime:
         self.alive = False
         self.launched = []
 
+    def viewer_window(self):
+        return "4242"
+
     def running(self):
         return {"display": ":70"} if self.alive else None
 
@@ -172,6 +176,7 @@ class Runtime:
 
 class IsolatedDesktop(Desktop):
     name = "x11"
+    env = {"DISPLAY": ":70"}
 
     def __init__(self):
         super().__init__()
@@ -199,9 +204,19 @@ def server(controller):
         desktops.append(IsolatedDesktop())
         return desktops[-1]
 
-    server = ComputerServer(controller, isolated=runtime, isolated_desktop=make)
+    bridges = []
+
+    class Bridge:
+        def __init__(self, host, nested, viewer):
+            self.args, self.stopped = (host, nested, viewer), False
+            bridges.append(self)
+
+        def stop(self):
+            self.stopped = True
+
+    server = ComputerServer(controller, isolated=runtime, isolated_desktop=make, clipboard=Bridge)
     server.start_isolated_indicator = lambda c: None
-    server.runtime, server.desktops = runtime, desktops
+    server.runtime, server.desktops, server.bridges = runtime, desktops, bridges
     yield server
     server.close_isolated()
     server.server_close()
@@ -272,6 +287,10 @@ def test_closing_her_viewer_stops_her_task_and_close_releases_it(server, control
     assert server.isolated is not None and server.runtime.alive
     assert server.dispatch("desktop", {"action": "close"}, operator=True) == {"running": False}
     assert server.isolated is None
+    # A clipboard bridge lives exactly as long as her controller.
+    assert len(server.bridges) == 2 and all(bridge.stopped for bridge in server.bridges)
+    host, nested, viewer = server.bridges[-1].args
+    assert nested == ":70" and viewer() == "4242"
 
 
 def test_mcp_control_defaults_to_her_own_desktop(controller, monkeypatch):
@@ -350,3 +369,31 @@ def test_control_worker_continues_the_same_task_after_takeover(controller, monke
     finally:
         controller.stop()
         agent.thread.join(timeout=3)
+
+
+def test_clipboard_bridge_only_takes_her_copies_from_the_viewer():
+    from core.computer_clipboard import ClipboardBridge
+
+    class Side:
+        def __init__(self):
+            self.offers, self.cleared = [], 0
+
+        def offer(self, data):
+            self.offers.append(data)
+
+        def clear(self):
+            self.cleared += 1
+
+    bridge = ClipboardBridge(":0", ":70", viewer=lambda: "7")
+    bridge.host, bridge.nested = Side(), Side()
+    focused = {"value": False}
+    bridge._viewer_focused = lambda: focused["value"]
+    bridge._host_copied(b"his password")
+    assert bridge.nested.offers == [b"his password"]
+    bridge._nested_copied(b"astra pressed ctrl+c")
+    assert bridge.host.offers == []  # never clobbers what he copied
+    focused["value"] = True
+    bridge._nested_copied(b"he copied in the viewer")
+    assert bridge.host.offers == [b"he copied in the viewer"]
+    bridge._host_cleared()
+    assert bridge.nested.cleared == 1  # a manager's timeout clears hers too
