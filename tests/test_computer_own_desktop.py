@@ -178,8 +178,9 @@ class IsolatedDesktop(Desktop):
         self.monitor_callbacks = None
         self.closed = False
 
-    def start_input_monitor(self, on_input, on_stop, *, motion=True):
+    def start_input_monitor(self, on_input, on_stop, *, motion=True, shortcut=True):
         assert motion is False  # his pointer crossing the viewer is not a takeover
+        assert shortcut is False  # the host grab covers her desktop
         self.monitor_callbacks = (on_input, on_stop)
 
     def close(self):

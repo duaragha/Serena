@@ -289,7 +289,9 @@ class ComputerServer(ThreadingHTTPServer):
             )
             c.conversations = self.conversations
             try:
-                desktop.start_input_monitor(c.physical_input, c.stop, motion=False)
+                # Metacity there takes his GNOME keybindings, including this
+                # stop chord; the host grab stops her sessions too.
+                desktop.start_input_monitor(c.physical_input, c.stop, motion=False, shortcut=False)
                 self.start_isolated_indicator(c)
             except Exception:
                 with contextlib.suppress(Exception):
@@ -547,7 +549,12 @@ def serve():
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, stopping)
     try:
-        desktop.start_input_monitor(controller.physical_input, controller.stop)
+        desktop.start_input_monitor(
+            controller.physical_input,
+            controller.stop,
+            # The stop chord is global: it also ends a task on her own desktop.
+            on_shortcut=lambda reason: [item.stop(reason) for item in server.controllers()],
+        )
         server.start_indicator()
         threading.Thread(target=server.supervise, daemon=True).start()
         print(f"computer service ready: {desktop.name}, pid={os.getpid()}", flush=True)

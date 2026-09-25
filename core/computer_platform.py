@@ -93,9 +93,11 @@ def desktop_environment():
 
 class X11Desktop:
     name = "x11"
-    # Short enough that 500 characters take about a second, long enough that
-    # Chromium and GTK never coalesce or drop a key.
-    TYPE_DELAY_SECONDS = 0.002
+    # Measured 2026-09-25 on her nested desktop: 198 characters in 134 ms into a
+    # Chromium textarea (the xdotool path took 197 ms). No delay at all was also
+    # lossless there, at 26 ms; the half millisecond is headroom for web inputs
+    # that do heavy work on every key.
+    TYPE_DELAY_SECONDS = 0.0005
 
     def __init__(self, env=None, *, role="host"):
         """role="isolated" drives Serena's own nested display, never his screen."""
@@ -452,11 +454,13 @@ class X11Desktop:
             self.held_buttons.clear()
             self.display.sync()
 
-    def start_input_monitor(self, on_input, on_stop, *, motion=True):
+    def start_input_monitor(self, on_input, on_stop, *, motion=True, on_shortcut=None, shortcut=True):
         """XI2 identifies XTEST separately, so our input never counts as takeover.
 
         motion=False counts only clicks and key presses: his pointer merely
         crossing her desktop's viewer on the way elsewhere is not a takeover.
+        shortcut=False skips the stop-key grab: on her nested display his
+        keyboard reaches the host first, so the host grab already covers it.
         """
         takeover = ("RawKeyPress", "RawButtonPress") + (("RawMotion",) if motion else ())
 
@@ -506,8 +510,13 @@ class X11Desktop:
         self.monitor_ready.wait(3)
         if self.monitor_error or not self.monitor_ready.is_set():
             raise ComputerError(self.monitor_error or "input monitor did not start")
+        if not shortcut:
+            return
         threading.Thread(
-            target=self._stop_shortcut, args=(on_stop,), name="computer-stop-key", daemon=True
+            target=self._stop_shortcut,
+            args=(on_shortcut or on_stop,),
+            name="computer-stop-key",
+            daemon=True,
         ).start()
         if not self.shortcut_ready.wait(3) or self.shortcut_error:
             raise ComputerError(self.shortcut_error or "stop shortcut did not register")

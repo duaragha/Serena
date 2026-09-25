@@ -227,7 +227,6 @@ class ComputerIndicator:
             font=("sans", 8),
             anchor="w",
         )
-        self.meta_label.pack(side="left", fill="x", expand=True)
         self.copy_button = self._small_button(self.footer, "copy", self.copy_text, width=5)
         self.copy_button.pack(side="right", padx=(6, 0))
         self.stop_button = tk.Button(
@@ -265,6 +264,8 @@ class ComputerIndicator:
         if desk == "isolated":
             self.view_button = self._small_button(self.footer, "view", self.view, width=5)
             self.view_button.pack(side="right", padx=(6, 0))
+        # Packed after the buttons so a long timing line shrinks, never a button.
+        self.meta_label.pack(side="left", fill="x", expand=True)
 
         self._bind_drag(self.header_frame)
         for widget in (self.status_dot, self.brand, self.state_badge, self.header_hint):
@@ -412,9 +413,6 @@ class ComputerIndicator:
                 "starting": "warming the visual worker…",
                 "thinking": f"astra is reading your screen… {elapsed}s",
                 "screen_changed": "screen changed · checking the current view…",
-                "paused": (session.get("paused_reason") or "you took over")
-                + " · press resume when your hands are off",
-                "resuming": "resuming · keep your hands off for a moment…",
             }.get(state, "watching for the next useful change…")
         else:
             elapsed = 0
@@ -422,8 +420,12 @@ class ComputerIndicator:
         observation = session.get("observation") or waiting
         if session.get("observation_preview"):
             observation = "draft · " + session["observation_preview"]
-        if state in {"paused", "resuming"}:
-            observation = waiting
+        if state == "paused":
+            observation = (
+                session.get("paused_reason") or "you took over"
+            ) + " · press resume when your hands are off"
+        elif state == "resuming":
+            observation = "resuming · keep your hands off for a moment…"
         last_ms = session.get("last_model_ms")
         timing_detail = session.get("last_timing") or {}
         if timing_detail.get("decision_ms") is not None:
@@ -480,7 +482,7 @@ class ComputerIndicator:
         self.status_dot.itemconfigure(1, fill=accent)
         self.state_badge.configure(text=badge, fg=accent)
         self.context_label.configure(text=f"{focus}  ·  scope {target}")
-        self.meta_label.configure(text=f"{model}   ·   {timing}   ·   drag header to move")
+        self.meta_label.configure(text=f"{model}   ·   {timing}")
         self.stop_button.configure(text="stop")
         if state == "paused":
             self.resume_button.configure(text="resume")

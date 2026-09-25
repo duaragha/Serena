@@ -48,3 +48,19 @@ def test_state_details_surfaces_draft_and_model_timing() -> None:
     assert details[1:5] == ("watching", "thinking", "THINKING", "#ffc56d")
     assert details[5] == "draft · click Add user"
     assert details[6] == "last check 2.4s"
+
+
+def test_state_details_shows_why_a_session_is_paused() -> None:
+    indicator = ComputerIndicator.__new__(ComputerIndicator)
+    for driver in ("astra", "connected_chat"):
+        details = indicator._state_details(
+            {
+                "driver": driver,
+                "mode": "control",
+                "state": "paused",
+                "paused_reason": "serena needs you: type your okta password",
+                "observation": "old advice",
+            }
+        )
+        assert details[3] == "PAUSED"
+        assert details[5] == "serena needs you: type your okta password · press resume when your hands are off"

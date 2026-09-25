@@ -260,7 +260,7 @@ class IsolatedDesktop:
         name = next((item for item in WINDOW_MANAGERS if shutil.which(item)), None)
         if not name:
             raise ComputerError("serena's desktop needs a window manager: sudo apt install metacity")
-        args = [name, "--replace", "--sm-disable", "--no-composite"] if name == "metacity" else [name]
+        args = [name, "--replace", "--sm-disable", "--compositor=none"] if name == "metacity" else [name]
         process = self._spawn(args, env)
         connection = self._connect(env["DISPLAY"], 3)
         try:
