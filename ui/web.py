@@ -1723,6 +1723,23 @@ body.pane-dragging * {
   overflow: hidden;
 }
 .term-pane.hidden { display: none; }
+/* A pane asleep in a merged view still shows its last frame; the label says
+   why it is not moving and that a click brings it back. */
+.term-pane.runtime-asleep .xterm { opacity: 0.55; transition: opacity 0.2s ease; }
+.term-pane.runtime-asleep::before {
+  content: 'asleep \00b7 click to wake';
+  position: absolute;
+  top: 6px;
+  right: 18px;
+  z-index: 6;
+  padding: 2px 8px;
+  font: 11px var(--mono, monospace);
+  color: var(--text-dim, #9a9aa3);
+  background: rgba(23, 23, 27, 0.85);
+  border: 1px solid var(--border, #2a2a31);
+  border-radius: 4px;
+  pointer-events: none;
+}
 .term-pane .xterm,
 .term-pane .xterm-viewport,
 .term-pane .xterm-screen {
@@ -6062,6 +6079,9 @@ function _setPendingPartners(sid, partners) {
 const _termStarting = new Set();  // prevent duplicate PTYs from fast repeated opens
 let _webRuntimePollTimer = null;
 let _webRuntimeFocusSid = null;
+// Panes he has focused since they opened. A merged view's other panes are only
+// on screen, never used, so the server may put them to sleep once loaded.
+const _engagedTermSids = new Set();
 
 async function _pasteTerminalClipboard(sid, ws) {
   let images = [];
@@ -7301,6 +7321,7 @@ async function _syncWebRuntimePolicy() {
     .map(item => { const runtime = termSessions.get(item); return runtime && runtime.tid; })
     .filter(Boolean);
   const pinned = Boolean(_gtkCurrentGroup && _gtkPinnedGroups.has(_gtkCurrentGroup));
+  const syncStartedAt = performance.now();
   _webRuntimeSyncing = true;
   try {
     const r = await fetch('/api/terminal-runtime/sync', {
@@ -7312,6 +7333,9 @@ async function _syncWebRuntimePolicy() {
         standby_tids: sibling && sibling.tid ? [sibling.tid] : [],
         all_open_tids: standbyTids,
         protected_tids: protectedTids,
+        engaged_tids: [..._engagedTermSids]
+          .map(item => { const runtime = termSessions.get(item); return runtime && runtime.tid; })
+          .filter(Boolean),
         pin_both: pinned,
       }),
     });
@@ -7321,13 +7345,31 @@ async function _syncWebRuntimePolicy() {
       const info = data.states && data.states[runtime.tid];
       if (!info) continue;
       runtime.busy = !!info.busy;
+      // A click that woke this pane while the sweep was in flight wins over
+      // the sweep's stale answer.
+      if (runtime.wokeAt && runtime.wokeAt > syncStartedAt && info.state === 'paused') continue;
       _gtkRuntimeStates.set(runtimeSid, info.state || 'live');
+      runtime.mount.classList.toggle('runtime-asleep', info.state === 'paused');
     }
     _refreshGtkRuntimeStatus();
   } catch(e) {
   } finally {
     _webRuntimeSyncing = false;
   }
+}
+
+// Clicking a sleeping pane wakes it now, not on the next sweep: the frame
+// comes back to life under his cursor instead of two seconds later.
+function _wakeWebTerminal(sid) {
+  _engagedTermSids.add(sid);
+  const runtime = termSessions.get(sid);
+  if (!runtime || runtime.structured || !runtime.tid) return;
+  runtime.mount.classList.remove('runtime-asleep');
+  if (_gtkRuntimeStates.get(sid) !== 'paused') return;
+  runtime.wokeAt = performance.now();
+  _gtkRuntimeStates.set(sid, 'live');
+  _refreshGtkRuntimeStatus();
+  fetch('/api/terminal-runtime/wake/' + encodeURIComponent(runtime.tid), { method: 'POST' }).catch(() => {});
 }
 
 function _scheduleWebRuntimePolicy() {
@@ -7524,6 +7566,7 @@ function _activateTermPane(sid) {
   }
   activeTermSid = sid;
   _webRuntimeFocusSid = sid;
+  _wakeWebTerminal(sid);
   _setWebTerminalFocus(sid);
   const local = _findClientSession(sid);
   _gtkSplitActive = split;
@@ -8341,6 +8384,7 @@ async function startLiveTerminal(sid, opts) {
 
   mount.addEventListener('pointerdown', () => {
     _clearAttention(state.sid);
+    _wakeWebTerminal(state.sid);
     _setWebTerminalFocus(state.sid);
     if (activeTermSid !== state.sid) {
       activeTermSid = state.sid;
@@ -8466,6 +8510,7 @@ function _migrateLiveTerminalSid(oldSid, newSid) {
   termSessions.set(newSid, runtime);
   if (activeTermSid === oldSid) activeTermSid = newSid;
   if (_webRuntimeFocusSid === oldSid) _webRuntimeFocusSid = newSid;
+  if (_engagedTermSids.delete(oldSid)) _engagedTermSids.add(newSid);
   if (window.__termDrafts && window.__termDrafts.has(oldSid)) {
     window.__termDrafts.set(newSid, window.__termDrafts.get(oldSid));
     window.__termDrafts.delete(oldSid);
@@ -8551,6 +8596,7 @@ function teardownLiveTerminal(sid, { stop = true } = {}) {
     _setPendingPartners(other, _pendingPartnersOf(other).filter(x => x !== sid));
   }
   if (window.__termDrafts) window.__termDrafts.delete(sid);
+  _engagedTermSids.delete(sid);
   _unmarkActive(sid);
   if (s.cancelOutput) s.cancelOutput();
   // Deliberate teardown: stop the reconnect machinery before closing, or the
@@ -14365,6 +14411,15 @@ def _watch_codex_turn(tid: str) -> None:
         print(f"[runtime] codex completion watch failed for {sid[:8]}: {error}", flush=True)
 
 
+@app.route("/api/terminal-runtime/wake/<tid>", methods=["POST"])
+def api_terminal_runtime_wake(tid):
+    """Thaw a sleeping pane the moment he clicks it, ahead of the next sweep."""
+    if not pty_terminal.get(tid):
+        return jsonify({"ok": False, "error": "Terminal not found"}), 404
+    woke = pty_terminal.resume(tid)
+    return jsonify({"ok": woke, "state": pty_terminal.get_runtime_state(tid)})
+
+
 @app.route("/api/terminal-runtime/migrate", methods=["POST"])
 def api_terminal_runtime_migrate():
     data = request.get_json(silent=True) or {}
@@ -14392,6 +14447,15 @@ def api_terminal_runtime_migrate():
 _RUNTIME_IDLE_SECONDS = max(
     30, int(os.environ.get("SERENA_RUNTIME_IDLE_SECONDS", "600"))
 )
+# A merged view puts several panes on screen and only the focused one is being
+# used. The others sleep the way Serena Dev's native panes do: a peer he has
+# worked in sleeps after it has been quiet this long...
+_PEER_IDLE_SECONDS = 20.0
+# ...one he has not touched since the chat opened sleeps as soon as it has
+# loaded and settled, and stays asleep until he clicks it...
+_OPEN_SETTLE_SECONDS = 5.0
+# ...and a peer quiet for this long gives its memory back.
+_PEER_RECLAIM_SECONDS = 60.0
 
 
 @app.route("/api/terminal-runtime/sync", methods=["POST"])
@@ -14411,8 +14475,14 @@ def api_terminal_runtime_sync():
     visible_tids = {
         str(tid).strip() for tid in (data.get("visible_tids") or []) if str(tid).strip()
     }
+    # Panes he has focused since the chat opened. The rest have only been
+    # looked at, never used, so they may sleep the moment they have loaded.
+    engaged_tids = {
+        str(tid).strip() for tid in (data.get("engaged_tids") or []) if str(tid).strip()
+    }
     if focus_tid:
         visible_tids.add(focus_tid)
+        engaged_tids.add(focus_tid)
     pin_both = bool(data.get("pin_both"))
     # Sweep every runtime the server owns, not just the panes the client named.
     # The client used to send the focused pane and its linked sibling only, so
@@ -14431,8 +14501,23 @@ def api_terminal_runtime_sync():
         active, version = _terminal_file_snapshot(tid)
         busy = pty_terminal.refresh_turn_state(tid, active, version)
         working = busy or active is True or tid in protected_tids
-        if tid in visible_tids or pin_both:
+        if tid == focus_tid or pin_both:
             pty_terminal.resume(tid)
+        elif tid in visible_tids:
+            # A peer on screen. It keeps its last frame while asleep and wakes
+            # the instant he clicks or types into it, so it only has to be
+            # loaded (the start-up guard in pause()) and quiet. A turn still
+            # running, an unsent draft or Serena's work keeps it awake, which
+            # is also why a peer sleeps once its code run has finished.
+            if pty_terminal.pause(
+                tid,
+                protected=working,
+                min_idle_seconds=(
+                    _PEER_IDLE_SECONDS if tid in engaged_tids else _OPEN_SETTLE_SECONDS
+                ),
+            ) or pty_terminal.get_runtime_state(tid) == "paused":
+                if pty_terminal.idle_seconds(tid) >= _PEER_RECLAIM_SECONDS:
+                    reclaimed_mb += pty_terminal.reclaim_memory(tid)
         else:
             # EVERY unfocused pane has to prove it has been quiet, the linked
             # sibling included. The sibling used to sleep the instant focus left

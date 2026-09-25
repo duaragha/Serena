@@ -716,6 +716,10 @@ def write(tid: str, data: bytes) -> bool:
     with term.state_lock:
         if term.work_item_id:
             return False
+        # Typing into a sleeping pane is the same as clicking it: it wakes.
+        # A stopped child would buffer the keys and answer nothing.
+        if term.runtime_state == "paused":
+            _resume_locked(term)
     return _write_unchecked(term, data)
 
 
@@ -1192,6 +1196,7 @@ def pause(
             protected
             or term.runtime_busy
             or term.work_item_id is not None
+            or term.input_draft.strip()
             or term.runtime_state == "paused"
             or time.monotonic() - term.started_at < prewarm_seconds
             or (
@@ -1276,6 +1281,15 @@ def live_terminal_ids() -> list[str]:
         return list(_terminals.keys())
 
 
+def idle_seconds(tid: str) -> float:
+    """Seconds since this runtime last saw traffic in either direction."""
+    term = get(tid)
+    if not term:
+        return 0.0
+    with term.state_lock:
+        return max(0.0, time.monotonic() - term.last_activity)
+
+
 def get_runtime_state(tid: str) -> str:
     term = get(tid)
     if not term:
@@ -1292,10 +1306,19 @@ def resize(tid: str, rows: int, cols: int) -> bool:
         rows = max(MIN_ROWS, int(rows))
         cols = max(MIN_COLS, int(cols))
         term.proc.setwinsize(rows, cols)
+        changed = (term.rows, term.cols) != (rows, cols)
         term.rows, term.cols = rows, cols
-        return True
     except OSError:
         return False
+    if changed:
+        # A sleeping pane on screen keeps its last frame, but only at the size
+        # it was drawn. Stopped, it cannot answer the SIGWINCH, so a layout
+        # change would leave it garbled. Wake it to redraw; the sweep puts it
+        # back to sleep once it has settled again.
+        with term.state_lock:
+            if term.runtime_state == "paused":
+                _resume_locked(term)
+    return True
 
 
 # ── why did that pane die a second after it opened? ─────────────────────────
