@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -197,7 +198,47 @@ def test_ambiguous_targets_name_their_matches_and_lists_navigate_by_link(chromiu
         cancelled=lambda: False,
     )
     assert direct["ok"] and [s["detail"] for s in direct["steps"][1::2]] == ["Item 2", "Item 1"]
-    assert direct["_recipe_steps"][0]["goto"] == f"{base}/item?id=2"  # replays start elsewhere
+
+
+def test_batches_that_follow_page_links_are_never_learned(chromium, tmp_path):
+    """A list's links are data: replaying yesterday's top five is wrong today."""
+    from core.computer_recipes import RecipeStore
+
+    web, base = chromium
+    c = ComputerController(
+        Desktop(), desk="isolated",
+        authority=ActionAuthority(tmp_path / "authority.sqlite", publish_events=False),
+    )
+    c.recipes = RecipeStore(tmp_path / "recipes")
+    c.web = web
+    try:
+        sid, _ = begin(c)
+        listed = c.browser(sid, [{"goto": f"{base}/list"}], request_id="list-front-01", intent="open list")
+        assert listed["ok"] and c.session.browser_batches == [[{"goto": f"{base}/list"}]]
+        items = c.browser(
+            sid,
+            [{"goto": "/item?id=2"}, {"read": {"role": "heading"}}, {"goto": "/item?id=1"}, {"read": {"role": "heading"}}],
+            request_id="list-items-01",
+            intent="read each item",
+        )
+        assert items["ok"] and [s["detail"] for s in items["steps"][1::2]] == ["Item 2", "Item 1"]
+        c.stop("visual task finished")
+        assert not list(c.recipes.directory.glob("*.json"))
+        # URLs she typed herself are a flow, and still learned.
+        sid, _ = begin(c)
+        flow = [
+            {"goto": f"{base}/"},
+            {"fill": {"label": "Project name"}, "value": "Locket Push"},
+            {"click": {"role": "button", "name": "Continue"}},
+            {"wait_for": {"text": "is ready"}},
+        ]
+        done = c.browser(sid, flow, request_id="form-flow-01", intent="create project")
+        assert done["ok"], done["steps"]
+        c.stop("visual task finished")
+        (recipe,) = [json.loads(p.read_text()) for p in c.recipes.directory.glob("*.json")]
+        assert recipe["batches"] == [flow] and not recipe["partial"]
+    finally:
+        c.close()
 
 
 @pytest.mark.parametrize(

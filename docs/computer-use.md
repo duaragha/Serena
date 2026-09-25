@@ -67,7 +67,9 @@ On her desktop the worker has two tools that skip screenshots:
   CDP, never XTest, so it never touches your pointer or trips takeover.
   Links show their target on a `/url:` line and `goto` accepts that path, so a
   list page (search results, Hacker News) becomes one batch of goto+read pairs
-  rather than a click, read and back per item. A target that matches several
+  rather than a click, read and back per item. Those URLs are data that changes,
+  so a task that followed a link path is never saved as a replayable flow;
+  URLs she types herself still are. A target that matches several
   elements fails with `matches` (each one's `nth`, ref, role, name and url) so
   one retry picks the right one; `back` waits only for the history navigation
   to commit, not for the page's images.

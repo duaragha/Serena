@@ -257,6 +257,9 @@ class HerBrowser:
         starting_url = page.url
         recorded = []
         recordable = True
+        # A link path was read off the page (a feed, a list of results): the
+        # URLs are data that changes, so the batch is not a flow to replay.
+        followed_link = False
         results = []
         ok = True
         for index, step in enumerate(steps):
@@ -270,8 +273,8 @@ class HerBrowser:
             self.opened.clear()
             try:
                 saved = copy.deepcopy(step)
-                if kind == "goto":
-                    # Replays start elsewhere: record where the link led.
+                if kind == "goto" and not URL.fullmatch(step["goto"]):
+                    followed_link = True
                     saved["goto"] = self._absolute(page, step["goto"])
                 target = saved[kind]
                 if kind == "wait_for":
@@ -320,8 +323,9 @@ class HerBrowser:
                 break
         state = await self._state(page, RESULT_SNAPSHOT_CHARS)
         return {"ok": ok, "steps": results, **state,
-                "_recipe_steps": recorded if ok else [],
-                "_recipe_partial": ok and not recordable, "_starting_url": starting_url}
+                "_recipe_steps": recorded if ok and not followed_link else [],
+                "_recipe_partial": ok and not recordable and not followed_link,
+                "_starting_url": starting_url}
 
     async def _recipe_target(self, page, target, timeout):
         """Keep semantic identity, never snapshot-local refs or DOM positions."""
