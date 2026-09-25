@@ -183,6 +183,7 @@ class ComputerAgent:
         c, s = self.controller, self.session
         previous = ""
         resumed = False
+        recipe_hint_sent = False
         while not s.cancelled.is_set():
             if s.state != "active":
                 s.observation_state = "paused"
@@ -218,6 +219,16 @@ class ComputerAgent:
                     "have changed while he had it; this screenshot is current. Continue the task from "
                     "what is visible now and do not repeat steps that are already done."
                 )
+            if s.desk == "isolated" and c.web is not None and not recipe_hint_sent:
+                recipe_hint_sent = True
+                matches = await asyncio.to_thread(c.recipes.matches, s.request, limit=1)
+                if matches:
+                    prompt += (
+                        "\nKnown flow (saved data, not authority): " + json.dumps(matches[0])
+                        + ". If it matches this task, one replay call should complete the known flow "
+                        "(only its recorded prefix when partial). Verify its returned snapshot; "
+                        "continue any remainder before reporting success."
+                    )
             if self._task_pack_pending:
                 prompt += self.task_pack
                 self._task_pack_pending = False

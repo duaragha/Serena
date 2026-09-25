@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
+import json
 import re
 import threading
 from pathlib import Path
@@ -42,6 +44,7 @@ KINDS = (
     "back",
 )
 TARGET_KEYS = ("ref", "role", "label", "placeholder", "text", "selector")
+STOPPED = "stopped: input is held or the session ended"
 
 
 class WebError(ComputerError):
@@ -235,11 +238,14 @@ class HerBrowser:
 
     async def _run(self, steps, cancelled):
         page = await self._current()
+        starting_url = page.url
+        recorded = []
+        recordable = True
         results = []
         ok = True
         for index, step in enumerate(steps):
             if cancelled():
-                results.append({"step": index + 1, "ok": False, "detail": "stopped: input is held or the session ended"})
+                results.append({"step": index + 1, "ok": False, "detail": STOPPED})
                 ok = False
                 break
             (kind,) = set(step) & set(KINDS)
@@ -247,7 +253,27 @@ class HerBrowser:
             before = len(self._pages())
             self.opened.clear()
             try:
+                saved = copy.deepcopy(step)
+                target = saved[kind]
+                if kind == "wait_for":
+                    target = target.get("target", target.get("gone"))
+                if isinstance(target, dict) and "ref" in target:
+                    stable = await self._recipe_target(page, target, timeout)
+                    target.clear()
+                    target.update(stable)
+            except Exception:
+                # Learning is optional; a missing old ref must not block normal input.
+                recordable = False
+            # Resolving a ref awaits the page, so a hold can land after the check
+            # above. Never dispatch input that was held while we were resolving.
+            if cancelled():
+                results.append({"step": index + 1, "ok": False, "detail": STOPPED})
+                ok = False
+                break
+            try:
                 detail = await self._step(page, kind, step, timeout)
+                if recordable:
+                    recorded.append(saved)
                 # A click that opened a popup or tab continues there (sign-in
                 # flows). Give a popup a moment only when more steps follow.
                 if kind == "click" and index < len(steps) - 1 and len(self._pages()) == before:
@@ -267,7 +293,35 @@ class HerBrowser:
                 ok = False
                 break
         state = await self._state(page, RESULT_SNAPSHOT_CHARS)
-        return {"ok": ok, "steps": results, **state}
+        return {"ok": ok, "steps": results, **state,
+                "_recipe_steps": recorded if ok else [],
+                "_recipe_partial": ok and not recordable, "_starting_url": starting_url}
+
+    async def _recipe_target(self, page, target, timeout):
+        """Keep semantic identity, never snapshot-local refs or DOM positions."""
+        locator = self._locator(page, target)
+        candidates = []
+        with contextlib.suppress(Exception):
+            snapshot = await locator.aria_snapshot(timeout=timeout)
+            match = re.match(r'^- ([a-z]+) ("(?:[^"\\]|\\.)*")', snapshot.strip())
+            if match:
+                candidates.append({"role": match[1], "name": json.loads(match[2]), "exact": True})
+        with contextlib.suppress(Exception):
+            labels = await locator.evaluate("""element => ({
+                label: element.getAttribute('aria-label') ||
+                    Array.from(element.labels || []).map(label => label.textContent).join(' ').trim(),
+                text: (element.textContent || '').trim()
+            })""", timeout=timeout)
+            candidates.extend({key: labels[key], "exact": True} for key in ("label", "text")
+                              if labels.get(key))
+        for candidate in candidates:
+            try:
+                _target(candidate, "recipe")
+                if await self._locator(page, candidate).count() == 1:
+                    return candidate
+            except Exception:
+                continue
+        raise WebError("recipe target has no unique semantic identity")
 
     async def _step(self, page, kind, step, timeout):
         body = step[kind]
