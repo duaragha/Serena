@@ -31,6 +31,7 @@ RESUME_QUIET_SECONDS = 0.8
 POST_ACTION_SETTLE_SECONDS = 1.0
 POST_ACTION_QUIET_SECONDS = 0.45
 LIVE_STATES = frozenset({"active", "paused", "resuming"})
+RELEASE_WAIT_SECONDS = 5.0
 
 
 class EventBus:
@@ -248,12 +249,17 @@ class ComputerController:
                 raise ComputerError("no active window; choose a display explicitly")
             target = "window:" + window_id
         self.geometry(target)
+        # A task that just finished may still be closing its model client (about
+        # half a second for Claude); a back-to-back task waits instead of failing.
+        deadline = time.monotonic() + RELEASE_WAIT_SECONDS
+        while self._releasing() and time.monotonic() < deadline:
+            if self.session and self.session.state in LIVE_STATES:
+                break
+            time.sleep(0.05)
         with self.lock:
             if self.session and self.session.state in LIVE_STATES:
                 raise ComputerError("a computer session already owns this desktop; stop it first")
-            if self.action_lock.locked() or (
-                self.agent and self.agent.thread and self.agent.thread.is_alive()
-            ):
+            if self._releasing():
                 raise ComputerError("the previous session is still releasing input; retry shortly")
             grant = None
             if mode == "control":
@@ -303,6 +309,11 @@ class ComputerController:
             expires_at=s.expires_at,
         )
         return self.status()
+
+    def _releasing(self):
+        return self.action_lock.locked() or bool(
+            self.agent and self.agent.thread and self.agent.thread.is_alive()
+        )
 
     def current(self, session_id):
         s = self.session

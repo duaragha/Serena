@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -458,3 +459,20 @@ def test_on_her_desktop_a_click_that_raises_its_window_keeps_the_batch(controlle
     stopped = act(c, sid, fresh, batch, request_id="popup-steals-1")
     assert stopped["status"] == "partial" and "foreground changed" in stopped["error"]
     assert not any(item[0] == "type" for item in c.desktop.inputs)
+
+
+def test_a_back_to_back_task_waits_for_the_last_worker_to_finish_closing(controller, monkeypatch):
+    c = controller
+    finishing = threading.Thread(target=time.sleep, args=(0.4,))
+    finishing.start()
+    c.agent = SimpleNamespace(thread=finishing, cancel=lambda: None)
+    started = time.monotonic()
+    begin(c)  # used to fail at once with "still releasing input"
+    assert time.monotonic() - started >= 0.3 and c.session.state == "active"
+    c.stop()
+    stuck = threading.Thread(target=time.sleep, args=(2,))
+    stuck.start()
+    c.agent = SimpleNamespace(thread=stuck, cancel=lambda: None)
+    monkeypatch.setattr(computer_use, "RELEASE_WAIT_SECONDS", 0.2)
+    with pytest.raises(ComputerError, match="still releasing"):
+        begin(c)
