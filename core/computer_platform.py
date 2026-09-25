@@ -135,6 +135,52 @@ class X11Desktop:
         self.shortcut_error = ""
         self.monitor_cache = None
         self.monitor_cached_at = 0.0
+        # Releases modifiers his keyboard left held on her nested display; set
+        # by the service for the isolated desk (see _release_stray_modifiers).
+        self.unstick = None
+
+    STRAY_MODIFIERS = frozenset({
+        "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R", "Meta_L", "Meta_R",
+        "Super_L", "Super_R", "Hyper_L", "ISO_Level3_Shift", "Num_Lock",
+    })
+
+    def _release_stray_modifiers(self):
+        """Clear modifiers held by a keyboard that is no longer there.
+
+        Alt-Tab out of her viewer delivers Alt's press to the nested server but
+        never its release, so every later keystroke there became an Alt chord
+        and typing opened the browser menu. Keys our own XTest holds are ours.
+        """
+        if self.unstick is None:
+            return
+        from Xlib import XK
+
+        # python-xlib maps names to keysyms but not always back again.
+        names = {XK.string_to_keysym(name): name for name in self.STRAY_MODIFIERS}
+
+        def stray():
+            keymap = self.display.query_keymap()
+            found = {}
+            for index, byte in enumerate(keymap):
+                for bit in range(8):
+                    code = index * 8 + bit
+                    if byte & (1 << bit) and code not in self.held_keys:
+                        name = names.get(self.display.keycode_to_keysym(code, 0))
+                        if name:
+                            found[code] = name
+            return found
+
+        with self.lock:
+            held = stray()
+        if not held:
+            return
+        self.unstick(sorted(set(held.values())))
+        deadline = time.monotonic() + 0.3
+        while time.monotonic() < deadline:
+            with self.lock:
+                if not stray():
+                    return
+            time.sleep(0.02)
 
     def _run(self, *args, timeout=3, input=None):
         result = subprocess.run(
@@ -304,6 +350,8 @@ class X11Desktop:
         from Xlib import X
         from Xlib.ext import xtest
 
+        if down:
+            self._release_stray_modifiers()
         with self.lock:
             xtest.fake_input(
                 self.display, X.ButtonPress if down else X.ButtonRelease, detail=button
@@ -339,6 +387,8 @@ class X11Desktop:
             "PAGEUP": "Prior",
             "PAGEDOWN": "Next",
         }
+        if down and not self.held_keys:
+            self._release_stray_modifiers()
         keysym = XK.string_to_keysym(aliases.get(name.upper(), name))
         with self.lock:
             code = self.display.keysym_to_keycode(keysym)
@@ -385,6 +435,7 @@ class X11Desktop:
         is noticed within one character instead of one eight-character chunk.
         Starting an xdotool process per chunk cost more than the typing itself.
         """
+        self._release_stray_modifiers()
         from Xlib import XK, X
         from Xlib.ext import xtest
 

@@ -485,6 +485,19 @@ class IsolatedDesktop:
                 y = rect["y"] + max(0, (rect["height"] - height) // 2)
                 self._run("xdotool", "windowmove", window, str(x), str(y), timeout=2)
 
+    def release_keys(self, names):
+        """Release keys the nested server still thinks his keyboard holds.
+
+        Sent to the viewer window as synthetic key-ups, which Xephyr forwards.
+        Only called before her own input, and his real typing in the viewer
+        pauses her first, so a key he is actually holding is never released.
+        """
+        window = self.viewer_window()
+        if not window:
+            return
+        with contextlib.suppress(ComputerError, subprocess.SubprocessError):
+            self._run("xdotool", "keyup", "--window", window, *names, timeout=2)
+
     def show(self):
         window = self.viewer_window()
         if not window:

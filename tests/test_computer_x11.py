@@ -155,3 +155,41 @@ def test_monitors_caches_between_frames(monkeypatch):
     for _ in range(5):
         desktop.monitors()
     assert len(calls) == 1
+
+
+def test_stray_modifiers_from_his_keyboard_are_released_before_her_input():
+    import threading
+
+    from Xlib import XK
+
+    alt = XK.string_to_keysym("Alt_L")
+    shift = XK.string_to_keysym("Shift_L")
+
+    class Display:
+        def __init__(self):
+            self.down = {64, 50}  # Alt_L left by Alt-Tab; Shift_L is ours
+
+        def query_keymap(self):
+            keymap = [0] * 32
+            for code in self.down:
+                keymap[code // 8] |= 1 << (code % 8)
+            return keymap
+
+        def keycode_to_keysym(self, code, index):
+            return {64: alt, 50: shift}.get(code, 0)
+
+    desktop = object.__new__(X11Desktop)
+    desktop.display = Display()
+    desktop.lock = threading.RLock()
+    desktop.held_keys = {50}
+    released = []
+
+    def unstick(names):
+        released.append(names)
+        desktop.display.down.discard(64)
+
+    desktop.unstick = unstick
+    desktop._release_stray_modifiers()
+    assert released == [["Alt_L"]]  # never the Shift our own chord holds
+    desktop._release_stray_modifiers()
+    assert released == [["Alt_L"]]  # nothing stray left, nothing sent

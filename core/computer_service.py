@@ -300,6 +300,8 @@ class ComputerServer(ThreadingHTTPServer):
             self._drop_isolated("serena's desktop restarted")
             info = runtime.start()
             desktop = self.isolated_desktop(runtime.env(info))
+            if hasattr(runtime, "release_keys"):
+                desktop.unstick = runtime.release_keys
             c = ComputerController(
                 desktop,
                 authority=self.controller.authority,
