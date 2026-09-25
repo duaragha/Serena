@@ -1105,6 +1105,32 @@ body.pane-dragging * {
 }
 .group-header.voice-chats-header:hover { color: #f3a6c9; }
 .voice-chats-section.collapsed { display: none; }
+.session-row.trashing { display: none; }
+.group-header.trash-header { cursor: pointer; user-select: none; }
+.trash-section.collapsed { display: none; }
+.trash-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 9px 5px 24px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.trash-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.trash-row-title { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trash-row-meta { font-size: 11px; opacity: 0.75; }
+.trash-restore {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-bright);
+  background: transparent;
+  border: 1px solid var(--border-bright);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.trash-restore:hover, .trash-restore:focus-visible { border-color: var(--accent); color: var(--accent); }
+.trash-restore:disabled { opacity: 0.4; cursor: default; }
 
 /* Agent badges (Claude / Codex / Serena) use inline SVG and currentColor. */
 .agent-icon {
@@ -1844,6 +1870,18 @@ body.pane-dragging * {
   flex-shrink: 0;
 }
 @keyframes toast-spin { to { transform: rotate(360deg); } }
+.toast-action {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 2px 10px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  cursor: pointer;
+}
 
 /* ── Context Menu ── */
 .ctx-menu {
@@ -4503,6 +4541,7 @@ function renderSessionList() {
     + '<span class="sidebar-utility-count">(' + voiceChats.length + ')</span></button>';
   html += '<div class="voice-chats-section' + (_collapsedState.voiceChats ? ' collapsed' : '')
     + '" id="voiceChatsSection" data-testid="voice-chats-section"><div class="sidebar-section-empty">No voice chats</div></div>';
+  html += _renderTrashSection();
 
   if (active.length) {
     html += '<div class="group-header active-header">\u25CF Active Terminals</div>';
@@ -4585,7 +4624,7 @@ function renderSessionList() {
 // localStorage: the desktop shell binds a fresh port each launch, so a
 // localStorage key lives on a throwaway origin and the state would silently
 // reset on every restart and never be shared with a browser tab.
-let _collapsedState = { fleetChats: true, voiceChats: true, starred: false, done: true, timeGroups: [] };
+let _collapsedState = { fleetChats: true, voiceChats: true, trash: true, starred: false, done: true, timeGroups: [] };
 let _collapsedLoaded = false;
 let _timeGroupsCollapsed = new Set();
 // Filtering starts with the matching history visible, without overwriting the
@@ -4613,6 +4652,7 @@ function _applyCollapsedState(raw) {
   const c = (raw && typeof raw === 'object') ? raw : {};
   if (typeof c.fleetChats === 'boolean') _collapsedState.fleetChats = c.fleetChats;
   if (typeof c.voiceChats === 'boolean') _collapsedState.voiceChats = c.voiceChats;
+  if (typeof c.trash === 'boolean') _collapsedState.trash = c.trash;
   if (typeof c.starred === 'boolean') _collapsedState.starred = c.starred;
   if (typeof c.done === 'boolean') _collapsedState.done = c.done;
   _collapsedState.timeGroups = Array.isArray(c.timeGroups) ? c.timeGroups.map(String) : [];
@@ -4656,6 +4696,14 @@ function toggleVoiceChatsCollapsed() {
   _saveCollapsedState();
   renderSessionList();
   document.querySelector('[data-testid="voice-chats-header"]')?.focus({preventScroll:true});
+}
+
+function toggleTrashCollapsed() {
+  _collapsedState.trash = !_collapsedState.trash;
+  _saveCollapsedState();
+  if (!_collapsedState.trash) refreshTrash();
+  renderSessionList();
+  document.querySelector('[data-testid="trash-header"]')?.focus({preventScroll:true});
 }
 
 function toggleStarredCollapsed() {
@@ -4795,6 +4843,7 @@ function renderSessionRow(s, idx, opts) {
   if (needsAttention) cls += ' needs-attention';
   if (opts.isChild) cls += ' child-session';
   if (_isSerenaVoiceSession(s)) cls += ' serena-voice';
+  if (_trashInFlight && _trashInFlight.has(s.session_id)) cls += ' trashing';
   // === GROUP FEATURE === (color stripe + link glyph + thread sibling cluster)
   const groupId = s.group || null;
   const groupColor = groupId ? _groupColor(groupId) : null;
@@ -5253,10 +5302,13 @@ async function bulkToggleStar() {
   } catch(e) {}
 }
 
-const _trashInFlight = new Set();
+// var, not const: renderSessionRow reads it, and a render that ran before this
+// line would otherwise hit the temporal dead zone.
+var _trashInFlight = new Set();
 
-async function _requestChatTrash(sid) {
-  const response = await fetch('/api/session/' + encodeURIComponent(sid), { method: 'DELETE' });
+async function _requestChatTrash(sid, opts) {
+  const force = opts && opts.force ? '?force=1' : '';
+  const response = await fetch('/api/session/' + encodeURIComponent(sid) + force, { method: 'DELETE' });
   const result = await response.json().catch(() => ({}));
   if (!response.ok || !result.ok) {
     const error = new Error(result.error || 'Move to trash failed (HTTP ' + response.status + ')');
@@ -5294,6 +5346,40 @@ function _forgetTrashedChat(sid) {
   selectedIds.delete(sid);
 }
 
+// Alt+Delete nukes a chat: no confirmation, and a running chat is stopped
+// rather than kept. The transcript still lands in the trash, so the undo
+// toast and the Trash section are the safety net. A plain delete is tried
+// first, so a chat that fails to delete for any other reason is never
+// stopped; the backend's lease check stays the authority on "stopped".
+async function _nukeChat(sid) {
+  try {
+    await _requestChatTrash(sid);
+  } catch (error) {
+    if (error.code !== 'session_owned') throw error;
+    const runtime = termSessions.get(sid);
+    if (runtime && !runtime.closing
+        && (runtime.structured ? typeof runtime.close === 'function' : runtime.tid && !window.__nativeTerminalBridge)) {
+      // A failed close is not fatal: the forced delete ends whatever is left.
+      await _stopChatForTrash(sid, runtime).catch(() => {});
+    }
+    await _requestChatTrash(sid, { force: true });
+  }
+  _forgetTrashedChat(sid);
+}
+
+function _hideTrashingRows() {
+  for (const row of document.querySelectorAll('.session-row[data-sid]')) {
+    if (_trashInFlight.has(row.dataset.sid)) row.classList.add('trashing');
+  }
+}
+
+function _undoTrashToast(sids, message) {
+  showToast(message, {
+    duration: 8000,
+    action: { label: 'Undo', run: () => restoreTrashed({ session_ids: sids }) },
+  });
+}
+
 async function deleteSession(sid) {
   if (_trashInFlight.has(sid)) return;
   const target = _findClientSession(sid);
@@ -5303,42 +5389,23 @@ async function deleteSession(sid) {
   }
   const title = target && target.display_title ? target.display_title : sid.slice(0, 8);
   _trashInFlight.add(sid);
+  _hideTrashingRows();
+  let trashed = false;
   try {
-    const ok = await showConfirm({
-      title: 'Move conversation to trash?',
-      body: 'Move "' + title + '" to recoverable trash?',
-      confirm: 'Move to Trash',
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await _requestChatTrash(sid);
-    } catch (error) {
-      if (error.code !== 'session_owned') throw error;
-      const runtime = termSessions.get(sid);
-      const canStop = runtime && !runtime.closing &&
-        (runtime.structured ? typeof runtime.close === 'function' : runtime.tid && !window.__nativeTerminalBridge);
-      if (!canStop) {
-        throw new Error('This chat is running in another window or its stop is unconfirmed. Close its terminal there, then try again.');
-      }
-      const stop = await showConfirm({
-        title: 'Stop this chat and move it to trash?',
-        body: 'Stop ' + _agentLabel(target?.agent || _agentOf(sid)) + ' in "' + title + '" and move this chat to recoverable trash? Other linked chats will keep running.',
-        confirm: 'Stop and move to trash',
-        danger: true,
-      });
-      if (!stop) return;
-      await _stopChatForTrash(sid, runtime);
-      // The backend lease check is still the authority, even after a stop receipt.
-      await _requestChatTrash(sid);
-    }
-    _forgetTrashedChat(sid);
+    await _nukeChat(sid);
+    trashed = true;
     updateSelectionInfo();
-    await loadSessions(currentProject);
   } catch(e) {
     showToast('Could not move chat to trash: ' + e.message, { variant: 'error' });
   } finally {
     _trashInFlight.delete(sid);
+  }
+  if (trashed) {
+    _undoTrashToast([sid], 'Moved "' + title + '" to trash');
+    refreshTrash();
+    await loadSessions(currentProject);
+  } else {
+    renderSessionList();
   }
 }
 
@@ -5350,39 +5417,98 @@ async function bulkDelete() {
     return;
   }
   if (ids.some(sid => _trashInFlight.has(sid))) return;
-  const n = ids.length;
-  const ok = await showConfirm({
-    title: 'Move ' + n + ' conversation' + (n === 1 ? '' : 's') + ' to trash?',
-    body: 'Chats go to recoverable trash. Running chats will be kept.',
-    confirm: 'Move to Trash',
-    danger: true,
-  });
-  if (!ok) return;
-  if (ids.some(sid => _trashInFlight.has(sid))) return;
   for (const sid of ids) _trashInFlight.add(sid);
+  _hideTrashingRows();
+  let trashed = [];
   try {
-    const response = await fetch('/api/sessions/bulk-delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids }),
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok || !Array.isArray(result.deleted)) throw new Error(result.error || 'Move to trash failed');
-    const deleted = ids.filter(sid => result.deleted.includes(sid));
-    for (const sid of deleted) _forgetTrashedChat(sid);
+    const results = await Promise.allSettled(ids.map(sid => _nukeChat(sid)));
+    trashed = ids.filter((_, i) => results[i].status === 'fulfilled');
+    const failed = results.filter(result => result.status === 'rejected');
     updateSelectionInfo();
-    await loadSessions(currentProject);
-    const failed = ids.filter(sid => !deleted.includes(sid));
     if (failed.length) {
-      const reason = result.errors?.find(item => failed.includes(item.id))?.error || 'Deletion was not confirmed';
-      showToast(failed.length + ' chat(s) kept: ' + reason, { variant: 'error' });
+      showToast(failed.length + ' chat(s) kept: ' + (failed[0].reason?.message || 'Deletion was not confirmed'), { variant: 'error' });
     }
-  } catch(e) {
-    showToast('Could not move chats to trash: ' + e.message, { variant: 'error' });
   } finally {
     for (const sid of ids) _trashInFlight.delete(sid);
   }
+  if (trashed.length) {
+    _undoTrashToast(trashed, 'Moved ' + trashed.length + ' chat' + (trashed.length === 1 ? '' : 's') + ' to trash');
+    refreshTrash();
+    await loadSessions(currentProject);
+  } else {
+    renderSessionList();
+  }
 }
+
+// === TRASH === Deleted chats, newest first, each restorable where it lived.
+let _trashState = { total: null, items: [] };
+let _trashRequest = null;
+
+function refreshTrash() {
+  if (_trashRequest) return _trashRequest;
+  _trashRequest = (async () => {
+    try {
+      const response = await fetch('/api/trash?limit=100');
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && Array.isArray(data.items)) {
+        _trashState = { total: typeof data.total === 'number' ? data.total : data.items.length, items: data.items };
+        renderSessionList();
+      }
+    } catch(e) {
+    } finally {
+      _trashRequest = null;
+    }
+  })();
+  return _trashRequest;
+}
+
+function _renderTrashSection() {
+  const collapsed = _collapsedState.trash;
+  const count = _trashState.total === null ? '' : ' <span class="sidebar-utility-count">(' + _trashState.total + ')</span>';
+  let html = '<button type="button" class="group-header trash-header sidebar-utility-header" data-testid="trash-header" aria-expanded="'
+    + (!collapsed) + '" aria-controls="trashSection" onclick="toggleTrashCollapsed()"'
+    + ' onkeydown="if(event.key === \'Enter\' || event.key === \' \') event.stopPropagation()">'
+    + '<span aria-hidden="true">' + (collapsed ? '▸' : '▾') + '</span> <span class="sidebar-utility-label">Trash</span>'
+    + count + '</button>';
+  html += '<div class="trash-section' + (collapsed ? ' collapsed' : '') + '" id="trashSection" data-testid="trash-section">';
+  if (!_trashState.items.length) html += '<div class="sidebar-section-empty">Trash is empty</div>';
+  for (const item of _trashState.items) {
+    const when = item.deleted_at ? usageUpdatedLabel(Date.parse(item.deleted_at) / 1000) : '';
+    html += '<div class="trash-row" data-testid="trash-row">'
+      + '<span class="trash-row-text"><span class="trash-row-title" title="' + escAttr(esc(item.title || '')) + '">' + esc(item.title || 'Untitled chat') + '</span>'
+      + '<span class="trash-row-meta">' + esc(_agentLabel(item.agent || '')) + (when ? ' · deleted ' + esc(when) : '') + '</span></span>'
+      + '<button type="button" class="trash-restore" data-trash-id="' + escAttr(esc(item.id)) + '"'
+      + (item.restorable === false ? ' disabled title="Its original location is taken or the transcript is missing"' : '')
+      + ' onclick="restoreTrashed({ids:[this.dataset.trashId]})">Restore</button></div>';
+  }
+  if (_trashState.total > _trashState.items.length) {
+    html += '<div class="sidebar-section-empty">Showing the newest ' + _trashState.items.length + '</div>';
+  }
+  return html + '</div>';
+}
+
+async function restoreTrashed(body) {
+  try {
+    const response = await fetch('/api/trash/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!Array.isArray(result.restored)) throw new Error(result.error || 'Restore failed (HTTP ' + response.status + ')');
+    if (result.errors?.length) {
+      showToast('Could not restore: ' + result.errors[0].error, { variant: 'error' });
+    }
+    if (result.restored.length) {
+      showToast('Restored ' + result.restored.length + ' chat' + (result.restored.length === 1 ? '' : 's'), { variant: 'success' });
+    }
+  } catch(e) {
+    showToast('Could not restore: ' + e.message, { variant: 'error' });
+  }
+  refreshTrash();
+  await loadSessions(currentProject);
+}
+// === TRASH END ===
 
 async function renameSession(sid) {
   const s = sessions.find(s => s.session_id === sid);
@@ -8770,7 +8896,14 @@ window.__gtkShortcut = function(action, sourceSid) {
     }
     case 'delete': {
       if (typeof selectedIds !== 'undefined' && selectedIds.size > 0) { bulkDelete(); return; }
-      const sid = focusedSid();
+      // Alt+Delete deletes without asking, so "that chat" must be exact: the
+      // pane he is typing in, else the row he arrowed to in the sidebar.
+      const active = document.activeElement;
+      const inPane = !!active && active !== document.body && !active.closest('#sessionList');
+      const row = typeof focusedIndex !== 'undefined' && focusedIndex >= 0 && sessions[focusedIndex]
+        ? sessions[focusedIndex].session_id : null;
+      const sid = sourceSid
+        || (inPane ? (activeTermSid || currentSessionId || row) : (row || currentSessionId));
       if (sid) deleteSession(sid);
       return;
     }
@@ -11285,6 +11418,7 @@ loadSessions();
 loadProjects();
 _startAttentionPoll();
 loadCollapsedState();
+refreshTrash();
 startLiveUsagePoll();
 setupLiveUsagePopover();
 // Pre-fetch counts for tabs
@@ -11623,6 +11757,18 @@ function showToast(message, opts) {
   const text = document.createElement('span');
   text.textContent = message;
   el.appendChild(text);
+  if (opts.action) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'toast-action';
+    button.textContent = opts.action.label;
+    button.addEventListener('click', () => {
+      button.disabled = true;
+      api.dismiss();
+      opts.action.run();
+    });
+    el.appendChild(button);
+  }
   stack.appendChild(el);
   requestAnimationFrame(() => el.classList.add('visible'));
 
@@ -13386,13 +13532,76 @@ def api_delete_session(session_id):
         return jsonify({"error": "Serena's permanent conversation cannot be deleted"}), 403
     if _fleet_worker_marker(session_id):
         return jsonify({"error": "Fleet worker chats are durable run history and cannot be deleted"}), 409
+    # ?force=1 is Alt+Delete: whatever still runs this chat is stopped first,
+    # here or in another window. The transcript still goes to the trash.
+    force = request.args.get("force") == "1"
+    if force:
+        _stop_session_runtimes(session_id)
+    deadline = time.monotonic() + (6.0 if force else 0.0)
+    while True:
+        try:
+            path = _delete_workspace_session(session_id, source="serena-web")
+            return jsonify({"ok": True, "path": path})
+        except SessionOwnedError:
+            if time.monotonic() >= deadline:
+                if force:
+                    return jsonify({"code": "session_owned", "error": "Another Serena window still holds this chat after it was stopped"}), 409
+                return jsonify({"code": "session_owned", "error": "Disconnect the session before deleting it; runtime ownership is still active or unconfirmed"}), 409
+            # The owner notices its agent exited and lets go of the lease.
+            time.sleep(0.25)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 404
+
+
+def _stop_session_runtimes(session_id):
+    """End every runtime this chat has, for a forced delete."""
+    tids = pty_terminal.tids_for_session(session_id)
+    if tids:
+        try:
+            from core.voice_inbox import get_default_voice_inbox
+
+            get_default_voice_inbox().finish_work_target(session_id, error="chat was deleted")
+        except Exception:
+            pass
+    for tid in tids:
+        pty_terminal.kill(tid)
     try:
-        path = _delete_workspace_session(session_id, source="serena-web")
-        return jsonify({"ok": True, "path": path})
-    except SessionOwnedError:
-        return jsonify({"code": "session_owned", "error": "Disconnect the session before deleting it; runtime ownership is still active or unconfirmed"}), 409
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 404
+        from core.workspace_lease import terminate_recorded_runtime
+
+        terminate_recorded_runtime(session_id)
+    except Exception as error:
+        print(f"[trash] could not stop {session_id[:8]}: {error}", flush=True)
+
+
+@app.route("/api/trash", methods=["GET"])
+def api_trash():
+    from core import chat_trash
+
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100)), 500))
+    except ValueError:
+        limit = 100
+    return jsonify(chat_trash.list_trash(limit))
+
+
+@app.route("/api/trash/restore", methods=["POST"])
+def api_trash_restore():
+    """Restore trash entries by id, or undo deletes by session id."""
+    from core import chat_trash
+
+    data = request.get_json(silent=True) or {}
+    restored, errors = [], []
+    requests = [("id", value) for value in data.get("ids") or []]
+    requests += [("session_id", value) for value in data.get("session_ids") or []]
+    for kind, value in requests:
+        try:
+            if not isinstance(value, str):
+                raise chat_trash.TrashError("Unknown trash entry")
+            result = chat_trash.restore(value) if kind == "id" else chat_trash.restore_latest(value)
+            restored.append(result["session_id"])
+        except (chat_trash.TrashError, OSError) as error:
+            errors.append({kind: value, "error": str(error)})
+    return jsonify({"ok": not errors, "restored": restored, "errors": errors}), (200 if restored or not errors else 409)
 
 
 @app.route("/api/sessions/bulk-delete", methods=["POST"])

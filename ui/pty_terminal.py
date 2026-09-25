@@ -694,6 +694,20 @@ def tid_for_session(sid: str) -> str | None:
     return None
 
 
+def tids_for_session(sid: str) -> list[str]:
+    """Every terminal running this chat, whether or not it was registered.
+
+    A forced delete must not miss one: the mapping above is filled by the
+    spawn route, but the terminal's own session_id is what its lease binds.
+    """
+    with _registry_lock:
+        tids = {tid for tid, term in _terminals.items() if term.session_id == sid}
+        mapped = _session_tids.get(sid)
+        if mapped in _terminals:
+            tids.add(mapped)
+    return sorted(tids)
+
+
 def write(tid: str, data: bytes) -> bool:
     """Write manual or generic bridge input unless a work turn owns the PTY."""
     term = get(tid)
