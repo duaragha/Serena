@@ -366,3 +366,63 @@ def test_native_mcp_config_writer_redacts_subscription_token(monkeypatch) -> Non
 
     assert ok is False
     assert message == "[REDACTED]"
+
+
+def test_windows_npm_shim_gets_the_node_its_path_resolved(monkeypatch, tmp_path) -> None:
+    node = tmp_path / "nodejs" / "node.exe"
+    monkeypatch.setattr(mcp_writers.shutil, "which", lambda name: str(node) if name == "node" else None)
+    shim = tmp_path / "npm" / "codex.CMD"
+
+    assert mcp_writers._shim_search_path(str(shim), windows=True) == [
+        str(shim.parent),
+        str(node.parent),
+    ]
+    assert mcp_writers._shim_search_path(str(shim), windows=False) == []
+    assert mcp_writers._shim_search_path(str(tmp_path / "claude.exe"), windows=True) == []
+
+
+def test_native_mcp_config_writer_extends_path_for_shims(monkeypatch) -> None:
+    observed = {}
+
+    def run(argv, **kwargs):
+        observed.update(kwargs["env"])
+
+        class Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Completed()
+
+    monkeypatch.setattr(mcp_writers.subprocess, "run", run)
+    monkeypatch.setattr(mcp_writers, "_shim_search_path", lambda executable: ["/opt/node/bin"])
+
+    ok, _message = mcp_writers._run(["codex.CMD", "mcp", "list"])
+
+    assert ok is True
+    assert observed["PATH"].split(os.pathsep)[0] == "/opt/node/bin"
+
+
+def test_codex_render_omits_env_for_http_servers(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(mcp_writers, "_bin", lambda name: name)
+    monkeypatch.setattr(mcp_writers, "_run", lambda argv: calls.append(argv) or (True, ""))
+
+    mcp_writers.render_to_codex(
+        {
+            "name": "shop",
+            "transport": "http",
+            "url": "https://pc.example.ts.net/mcp/shop",
+            "env": {"BROWSER_CHANNEL": "msedge"},
+            "secrets": ["SHOP_TOKEN"],
+        }
+    )
+    mcp_writers.render_to_codex(
+        {"name": "local", "transport": "stdio", "command": "tool", "args": ["serve"], "env": {"MODE": "1"}}
+    )
+
+    http_add, stdio_add = calls[1], calls[3]
+    assert "--env" not in http_add
+    assert http_add[-3:] == ["shop", "--url", "https://pc.example.ts.net/mcp/shop"]
+    assert stdio_add[3:5] == ["--env", "MODE=1"]
+    assert stdio_add[-4:] == ["local", "--", "tool", "serve"]
