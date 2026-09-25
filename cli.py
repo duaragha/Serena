@@ -1286,31 +1286,57 @@ def reindex(force):
 
 @main.command(name="mark-done")
 @click.argument("sid", required=False)
-@click.option("--port", help="Serena Flask port. Auto-detected if omitted.")
+@click.option("--port", help="Serena Flask port. Every running Serena is notified if omitted.")
 def mark_done(sid, port):
     """Notify Serena that a chat finished a turn. Called from claude's Stop
-    hook so the sidebar entry highlights. Reads `CLAUDE_CODE_SESSION_ID` env
-    var if no sid is passed."""
+    hook so the sidebar entry highlights and the app says which chat is done.
+    Reads `CLAUDE_CODE_SESSION_ID` env var if no sid is passed."""
     import json
     import os
-    import socket
+    import threading
     import urllib.request
     sid = (sid or os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
     if not sid:
         return  # silently no-op; the hook fires in many contexts where there's no sid
-    p = port or _detect_serena_port()
-    if not p:
+    if not _stop_hook_is_a_chat(os.environ):
         return
-    try:
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{p}/api/chat-finished",
-            data=json.dumps({"session_id": sid}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=3).read()
-    except (Exception,):
-        pass  # best-effort; never block claude's Stop hook on this
+    ports = [int(port)] if port else _detect_serena_ports()
+    body = json.dumps({"session_id": sid}).encode("utf-8")
+
+    def notify(p):
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{p}/api/chat-finished",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=2).read()
+        except Exception:
+            pass  # best-effort; never block claude's Stop hook on this
+
+    # Stable, Serena Dev and the phone host each keep their own attention
+    # state, so each one is told; in parallel, so one wedged backend cannot
+    # eat the others' share of the hook's timeout.
+    threads = [threading.Thread(target=notify, args=(p,), daemon=True) for p in ports]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(3)
+
+
+def _stop_hook_is_a_chat(env) -> bool:
+    """Whether the Claude run that fired the Stop hook is a chat he is in.
+
+    `claude -p` jobs (titles, journal summaries, Fleet workers) fire the same
+    hook. Claude marks those unattended, and SDK-hosted panes report their own
+    turns through the workspace host, so neither may announce itself here.
+    """
+    if env.get("SERENA_FLEET_WORKER", "").strip().lower() in {"1", "true", "on"}:
+        return False
+    if env.get("CLAUDE_CODE_SESSION_ATTENDED", "").strip() == "0":
+        return False
+    return not env.get("CLAUDE_CODE_ENTRYPOINT", "").strip().lower().startswith("sdk")
 
 
 @main.command(name="page", context_settings={"ignore_unknown_options": True,
@@ -3397,86 +3423,68 @@ def _is_bridge_live_miss(message: str) -> bool:
     return any(n in msg for n in needles)
 
 
+def _is_serena_backend_cmdline(args: list[str]) -> bool:
+    """Whether a process command line is one of Serena's local Flask backends.
+
+    The desktop app runs a bundled sidecar (``serena-web-sidecar``, frozen)
+    or, unpackaged, ``python apps/desktop/sidecar.py``; the phone host runs
+    that same script. None of them mention ``chats``, which is all the old
+    GTK-era match looked for, so every caller of this came back empty and the
+    Stop hook's ``chats mark-done`` never reached the app.
+    """
+    for arg in args:
+        norm = str(arg).replace("\\", "/").lower()
+        name = norm.rsplit("/", 1)[-1]
+        if name in ("serena-web-sidecar", "serena-web-sidecar.exe"):
+            return True
+        if norm.endswith("desktop/sidecar.py"):
+            return True
+    joined = " ".join(str(arg) for arg in args)
+    # GTK-era `chats desktop` and a bare `python -m ui.web`.
+    if "chats" in joined and (
+        "desktop" in joined or "ui.web" in joined or "serena" in joined.lower()
+    ):
+        return True
+    return "cli.py" in joined and "desktop" in joined
+
+
 def _detect_serena_ports() -> list[int]:
     """Find running Serena Flask instances on localhost, newest first.
 
-    Cross-platform: uses `ss` on Linux + `netstat`/`Get-NetTCPConnection` on
-    Windows. Falls back to a port-probe of common ranges if neither works.
+    Stable and Serena Dev each own a backend, and the phone host is a third;
+    they share nothing in memory, so callers that notify "Serena" should
+    notify every one of them.
     """
-    import os
-    import re
-    import subprocess
-    import sys
-    import time
-    candidates: list[tuple[float, int]] = []  # (start_time, port)
-
-    if sys.platform == "linux":
-        try:
-            out = subprocess.check_output(["ss", "-tlnp"], text=True, timeout=2)
-        except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
-            return []
-        port_re = re.compile(r"127\.0\.0\.1:(\d+)")
-        pid_re = re.compile(r"pid=(\d+)")
-        for line in out.splitlines():
-            port_m = port_re.search(line)
-            if not port_m:
-                continue
-            port = int(port_m.group(1))
-            for pid_m in pid_re.finditer(line):
-                pid = int(pid_m.group(1))
-                try:
-                    with open(f"/proc/{pid}/cmdline", "rb") as fh:
-                        cmdline = fh.read().decode("utf-8", errors="replace")
-                except OSError:
-                    continue
-                if "chats" in cmdline and ("desktop" in cmdline or "ui.web" in cmdline or "serena" in cmdline.lower()):
-                    try:
-                        start = os.stat(f"/proc/{pid}").st_mtime
-                    except OSError:
-                        start = 0.0
-                    candidates.append((start, port))
-                    break
-    elif sys.platform == "win32":
-        # Use netstat -ano to map ports to PIDs, then look up cmdline via wmic
-        try:
-            out = subprocess.check_output(
-                ["netstat", "-ano", "-p", "TCP"], text=True, timeout=4
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
-            return []
-        # Lines like: "  TCP    127.0.0.1:50937    0.0.0.0:0    LISTENING    25224"
-        row_re = re.compile(r"\s+TCP\s+127\.0\.0\.1:(\d+)\s+\S+\s+LISTENING\s+(\d+)")
-        seen_pids: dict[int, str] = {}
-        for line in out.splitlines():
-            m = row_re.search(line)
-            if not m:
-                continue
-            port = int(m.group(1))
-            pid = int(m.group(2))
-            cmdline = seen_pids.get(pid)
-            if cmdline is None:
-                try:
-                    cmd_out = subprocess.check_output(
-                        ["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine", "/format:list"],
-                        text=True, timeout=3, stderr=subprocess.DEVNULL,
-                    )
-                    cmdline = cmd_out
-                except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
-                    cmdline = ""
-                seen_pids[pid] = cmdline
-            if "cli.py" in cmdline and "desktop" in cmdline:
-                # Use the PID itself as a (rough) age proxy — higher PID
-                # likely newer in Windows's monotonic-ish PID assignment.
-                candidates.append((float(pid), port))
-    if not candidates:
+    try:
+        import psutil
+    except ImportError:
         return []
-    ports: list[int] = []
-    seen: set[int] = set()
-    for _started, p in sorted(candidates, reverse=True):
-        if p in seen:
+    try:
+        connections = psutil.net_connections(kind="tcp")
+    except (psutil.Error, OSError):
+        return []
+    candidates: list[tuple[float, int]] = []  # (start_time, port)
+    verdicts: dict[int, float | None] = {}
+    for conn in connections:
+        if conn.status != psutil.CONN_LISTEN or not conn.laddr or not conn.pid:
             continue
-        seen.add(p)
-        ports.append(p)
+        if conn.laddr.ip != "127.0.0.1":
+            continue
+        if conn.pid not in verdicts:
+            try:
+                proc = psutil.Process(conn.pid)
+                verdicts[conn.pid] = (
+                    proc.create_time() if _is_serena_backend_cmdline(proc.cmdline()) else None
+                )
+            except (psutil.Error, OSError):
+                verdicts[conn.pid] = None
+        started = verdicts[conn.pid]
+        if started is not None:
+            candidates.append((started, conn.laddr.port))
+    ports: list[int] = []
+    for _started, port in sorted(candidates, reverse=True):
+        if port not in ports:
+            ports.append(port)
     return ports
 
 

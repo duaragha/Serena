@@ -20,6 +20,12 @@ def _describe(sid):
     return get_session(sid)
 
 
+def _turn_finished(sid):
+    from core import chat_attention
+
+    chat_attention.mark(sid)
+
+
 def install_workspace(
     app, state_path, *, resolve=resolve_workspace_session, factories=None, describe=_describe
 ):
@@ -45,7 +51,8 @@ def install_workspace(
         response.headers["Cache-Control"] = "no-store"
         return response
 
-    host = WorkspaceHost(journal=WorkspaceJournal(state_path), resolve=resolve, factories=factories, register_fork=register_fork)
+    host = WorkspaceHost(journal=WorkspaceJournal(state_path), resolve=resolve, factories=factories,
+                         register_fork=register_fork, on_turn_finished=_turn_finished)
     app.register_blueprint(workspace_blueprint(host, token=token))
     pages = Blueprint("workspace_pages", __name__)
     pages.before_request(local_workspace_request)
