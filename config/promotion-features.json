@@ -143,6 +143,18 @@
         "tests/test_chat_finished_signal.py", "tests/test_chat_finished_toast.py",
         "tests/test_web_startup_signals.py"
       ]
+    },
+    {
+      "id": "terminal-peer-sleep",
+      "title": "Merged-view terminal panes sleep when idle and wake on click",
+      "devTag": "v0.3.10-dev.15",
+      "commit": "fd313262f1881b717f5289eb559ef67887ef1a21",
+      "requires": ["chat-finished-toast"],
+      "paths": [
+        "ui/pty_terminal.py", "ui/web.py",
+        "tests/test_terminal_peer_sleep.py", "tests/test_terminal_peer_sleep_ui.py",
+        "tests/test_visible_panes_never_sleep.py"
+      ]
     }
   ]
 }
