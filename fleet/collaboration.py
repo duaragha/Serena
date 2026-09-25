@@ -68,7 +68,10 @@ class PeerStore:
         token = "fleetcap_" + secrets.token_urlsafe(32)
         with self.store._connect() as db:
             db.execute(
-                "INSERT INTO fleet_peer_tokens VALUES (?, ?, ?, ?, ?, ?, ?)",
+                # Name the columns: newer Fleet code adds a nullable `project` column
+                # to this shared table, and a positional insert then fails.
+                "INSERT INTO fleet_peer_tokens(digest,run_id,leg_id,attempt_id,worker_key,help_id,expires) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     hashlib.sha256(token.encode()).hexdigest(),
                     run_id,
