@@ -24,6 +24,27 @@ def _bin(name: str) -> str:
     return shutil.which(name) or name
 
 
+def _shim_search_path(executable: str, *, windows: bool | None = None) -> list[str]:
+    """Directories a Windows npm ``.cmd`` shim needs in order to find ``node``.
+
+    ``build_child_environment`` pins the child PATH to ``os.defpath``, which on
+    Windows is ``.;C:\\bin``. An npm shim such as ``codex.CMD`` runs a bare
+    ``node``, so under that PATH every ``codex mcp add``/``remove`` failed with
+    ``'"node"' is not recognized`` and Codex on Windows silently kept a stale MCP
+    list. ``_bin`` already resolved the shim from the caller's PATH, so trusting
+    the ``node`` that the same PATH resolves adds no new trust.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows or not executable.lower().endswith((".cmd", ".bat")):
+        return []
+    dirs = [str(Path(executable).parent)]
+    node = shutil.which("node")
+    if node:
+        dirs.append(str(Path(node).parent))
+    return dirs
+
+
 def _run(argv: list[str]) -> tuple[bool, str]:
     environment: dict[str, str] = {}
     try:
@@ -37,6 +58,10 @@ def _run(argv: list[str]) -> tuple[bool, str]:
             os.environ,
             preserve_subscription=native_cli,
         )
+        shim_dirs = _shim_search_path(argv[0])
+        if shim_dirs:
+            base = environment.get("PATH")
+            environment["PATH"] = os.pathsep.join([*shim_dirs, base] if base else shim_dirs)
         options = {}
         descriptor = environment.get("CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "")
         if os.name != "nt" and descriptor.isdigit():
@@ -138,10 +163,15 @@ def render_to_codex(server: dict) -> tuple[bool, str]:
         return _run(argv)
 
     argv = [_bin("codex"), "mcp", "add"]
-    for k, v in (server.get("env") or {}).items():
-        argv += ["--env", f"{k}={v}"]
-    for var in server.get("secrets") or []:
-        argv += ["--env", f"{var}=" + "${" + var + "}"]
+    if transport != "http":
+        # `codex mcp add` treats any --env as a stdio launch and then demands a
+        # command ("Error: command is required"), so an http server still carrying
+        # env from an earlier stdio life could never be rendered. Env only means
+        # something to a process Codex spawns itself.
+        for k, v in (server.get("env") or {}).items():
+            argv += ["--env", f"{k}={v}"]
+        for var in server.get("secrets") or []:
+            argv += ["--env", f"{var}=" + "${" + var + "}"]
 
     if transport == "http":
         url = server.get("url") or ""
