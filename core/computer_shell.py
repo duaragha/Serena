@@ -90,12 +90,6 @@ class HerShell:
             == 0
         )
 
-    def _line(self):
-        history, cursor = self._tmux(
-            "display-message", "-p", "-t", SESSION, "#{history_size} #{cursor_y}"
-        ).split()
-        return int(history) + int(cursor)
-
     def _lines(self, start=0):
         text = self._tmux("capture-pane", "-p", "-J", "-t", SESSION, "-S", "-", "-E", "-")
         return text.splitlines()[start:]
@@ -108,27 +102,34 @@ class HerShell:
         self.ensure()
         token = uuid.uuid4().hex[:12]
         marker = f"__SERENA_DONE_{token}_"
-        start = self._line()
         self._tmux("send-keys", "-t", SESSION, "-l", f"{command}; printf '\\n{marker}%s__\\n' \"$?\"")
         self._tmux("send-keys", "-t", SESSION, "Enter")
+        echo = f"{marker}%s__"
         done = re.compile(rf"^{marker}(\d+)__$")
         deadline = time.monotonic() + timeout
         while True:
-            lines = self._lines(start)
-            for index, line in enumerate(lines):
+            # Find this command by its unique token, not by counting rows: once
+            # his terminal window attaches, long commands wrap, and a row count
+            # from tmux no longer indexes the joined capture.
+            lines = self._lines()
+            begin = next(
+                (i for i in range(len(lines) - 1, -1, -1) if echo in lines[i]), None
+            )
+            output = lines[begin + 1 :] if begin is not None else lines[-40:]
+            for index, line in enumerate(output):
                 match = done.match(line.strip())
                 if match:
                     return {
                         "status": "done",
                         "exit_code": int(match.group(1)),
-                        "output": self._clip(lines[1:index]),
+                        "output": self._clip(output[:index]),
                     }
             if cancelled():
-                return {"status": "interrupted", "output": self._clip(lines[1:])}
+                return {"status": "interrupted", "output": self._clip(output)}
             if time.monotonic() >= deadline:
                 return {
                     "status": "running",
-                    "output": self._clip(lines[1:]),
+                    "output": self._clip(output),
                     "note": "still running; read again later, or send input such as y then Enter",
                 }
             time.sleep(0.1)

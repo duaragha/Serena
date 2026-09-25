@@ -182,6 +182,19 @@ def test_shell_returns_output_and_exit_code_as_text(shell):
         shell.run("sleep 5 &")
 
 
+def test_shell_finds_output_when_a_narrow_window_wraps_long_commands(shell):
+    # His terminal window attaching shrinks the pane; long commands then wrap.
+    shell.ensure()
+    subprocess.run(["tmux", "-L", computer_shell.SOCKET, "resize-window", "-t", "serena",
+                    "-x", "40", "-y", "15"], env=shell.env, check=True)
+    long = "echo " + "wrapped-" * 12 + "done"
+    started = time.monotonic()
+    result = shell.run(long, timeout=10)
+    assert result["status"] == "done" and time.monotonic() - started < 5
+    assert result["output"].endswith("wrapped-done")
+    assert shell.run("printf 'short\\n'", timeout=10)["output"] == "short"
+
+
 class FakeWeb:
     def __init__(self):
         self.runs = []
