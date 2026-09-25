@@ -207,10 +207,20 @@ def test_sending_a_codex_turn_watches_that_chats_own_rollout(monkeypatch):
 def test_a_structured_pane_turn_is_announced_when_it_ends_on_its_own(tmp_path, status, announced):
     """Serena Dev panes run their agents under the workspace host, where no
     Stop hook or rollout tail sees them. A stop he pressed is not news."""
+    import threading
+
     from core.workspace_host import WorkspaceHost
     from core.workspace_journal import WorkspaceJournal
+    from ui.workspace_app import _turn_finished
 
-    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "events.db"), resolve=lambda sid: None)
+    told = threading.Event()
+
+    def on_turn_finished(sid):
+        _turn_finished(sid)   # what the installed app wires in
+        told.set()
+
+    host = WorkspaceHost(journal=WorkspaceJournal(tmp_path / "events.db"), resolve=lambda sid: None,
+                         on_turn_finished=on_turn_finished)
     try:
         host._dispatch(host._publish("pane", {
             "method": "turn/completed", "params": {"turn": {"id": "t1", "status": status}},
@@ -218,7 +228,20 @@ def test_a_structured_pane_turn_is_announced_when_it_ends_on_its_own(tmp_path, s
         host._dispatch(host._publish("pane", {
             "method": "item/agentMessage/delta", "params": {"threadId": "pane"},
         }), 5)
+        assert told.wait(5 if announced else 0.3) is announced
     finally:
         host.shutdown()
     events, _ = chat_attention.events_since(0)
     assert [e["sid"] for e in events] == (["pane"] if announced else [])
+
+
+def test_the_installed_workspace_announces_its_turns(tmp_path):
+    from flask import Flask
+
+    from ui.workspace_app import _turn_finished, install_workspace
+
+    host = install_workspace(Flask(__name__), tmp_path / "events.db")
+    try:
+        assert host.on_turn_finished is _turn_finished
+    finally:
+        host.shutdown()
