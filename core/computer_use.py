@@ -83,6 +83,12 @@ class Session:
     frame_width: int = 1920
     worker_model: str = ""
     worker_effort: str = ""
+    browser_batches: list = field(default_factory=list)
+    browser_origin: str = ""
+    recipe_overflow: bool = False
+    recipe_partial: bool = False
+    replay_results: dict = field(default_factory=dict)
+    replaying: bool = False
 
 
 def number(value, name, minimum, maximum):
@@ -129,6 +135,10 @@ class ComputerController:
         self.agent = None
         self.conversations = None
         self.indicator_rect = None
+        from core.computer_recipes import RecipeStore
+
+        self.recipes = RecipeStore(clock=clock)
+        self.replay_lock = threading.Lock()
 
     @property
     def events(self):
@@ -345,6 +355,13 @@ class ComputerController:
         self.desktop.release()
         if s.grant_id:
             self.authority.revoke_grant(s.grant_id, reason=reason)
+        if (reason == "visual task finished" and s.mode == "control"
+                and s.desk == "isolated" and (s.browser_batches or s.recipe_partial)
+                and not s.recipe_overflow):
+            try:
+                self.recipes.save(s.request, s.browser_origin, s.browser_batches, partial=s.recipe_partial)
+            except (OSError, ComputerError):
+                self.event("recipe_save_failed", session_id=s.id)
         self.event("stopped", session_id=s.id, reason=s.reason)
         if self.agent:
             self.agent.cancel()
@@ -928,15 +945,107 @@ class ComputerController:
 
         validate_steps(steps)
         budget = sum(float(step.get("timeout", 5)) for step in steps) + 10
+
+        def execute(s):
+            from core.computer_recipes import bounded
+
+            result = self.web.run(steps, cancelled=lambda: self._input_cancelled(s))
+            saved = result.pop("_recipe_steps", [])
+            partial = result.pop("_recipe_partial", False)
+            starting_url = result.pop("_starting_url", "")
+            if result.get("ok") and not saved and not partial and not s.replaying:
+                s.recipe_overflow = True
+                s.browser_batches.clear()
+            if (result.get("ok") and (saved or partial) and s.desk == "isolated"
+                    and not s.replaying and not s.recipe_overflow and not s.recipe_partial):
+                try:
+                    batches = bounded([*s.browser_batches, *([saved] if saved else [])], partial=partial)
+                    with self.lock:
+                        if s.state == "active":
+                            if not s.browser_batches:
+                                s.browser_origin = starting_url
+                            s.browser_batches = batches
+                            s.recipe_partial = partial
+                except ComputerError:
+                    s.recipe_overflow = True
+                    s.browser_batches.clear()
+            return result
+
         return self._structured_batch(
             session_id,
             request_id=request_id,
             intent=intent,
             payload=["browser", steps],
             budget=min(budget, len(steps) * MAX_STEP_TIMEOUT + 10),
-            execute=lambda s: self.web.run(steps, cancelled=lambda: self._input_cancelled(s)),
+            execute=execute,
             confirmation_id=confirmation_id,
         )
+
+    def replay(self, session_id, recipe_id, *, request_id, intent):
+        """Replay through browser receipts, retaining failures for transport retries."""
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", request_id):
+            raise ComputerError("supply a unique request_id (8–80 letters/digits/dashes)")
+        if not isinstance(intent, str) or not intent.strip() or len(intent) > 500:
+            raise ComputerError("describe the intended effect of this batch")
+        s = self.current(session_id)
+        if s.desk != "isolated" or s.mode != "control" or self.web is None:
+            raise ComputerError("replay requires control of serena's own browser")
+        if not self.replay_lock.acquire(blocking=False):
+            raise ComputerError("another recipe is running")
+        try:
+            key = (recipe_id, intent)
+            if request_id in s.replay_results:
+                old = s.replay_results[request_id]
+                if old["key"] != key:
+                    raise ComputerError("request_id was reused with a different recipe")
+                return {**old["result"], "replayed": True}
+            if len(s.replay_results) >= 100:
+                raise ComputerError("session replay limit reached")
+            recipe = self.recipes.load(recipe_id)
+            from core.computer_recipes import origin
+
+            batches = list(recipe["batches"])
+            if not batches:
+                raise ComputerError("recipe has no replayable prefix")
+            current = self.web.snapshot()
+            starting_url = recipe.get("starting_url", recipe["origin"])
+            if starting_url and origin(current.get("url", "")) != recipe["origin"]:
+                batches.insert(0, [{"goto": starting_url}])
+            result = {"ok": False, "recipe_id": recipe_id}
+            s.replay_results[request_id] = {"key": key, "result": result}
+            s.replaying = True
+            # A recovery suffix after replay is not a complete learnable flow.
+            s.recipe_overflow = True
+            s.browser_batches.clear()
+            receipts = []
+            for index, steps in enumerate(batches):
+                child_id = "recipe-" + hashlib.sha256(
+                    f"{request_id}:{recipe_id}:{index}".encode()
+                ).hexdigest()
+                try:
+                    batch = self.browser(s.id, steps, request_id=child_id, intent=intent)
+                except ComputerError as exc:
+                    batch = {"ok": False, "error": str(exc)}
+                if not batch.get("ok") and "snapshot" not in batch:
+                    with contextlib.suppress(Exception):
+                        batch.update(self.web.snapshot())
+                result.update(batch, batch=index + 1)
+                receipts.append(batch.get("action_receipt_id"))
+                if not batch.get("ok"):
+                    break
+            result["receipts"] = receipts
+            result["request_id"] = request_id
+            result["partial"] = recipe.get("partial", False)
+            if result["partial"] and result["ok"]:
+                result["next"] = "Recorded prefix finished; observe and continue the remaining task."
+            try:
+                self.recipes.outcome(recipe_id, result["ok"])
+            except (OSError, ComputerError):
+                result["recipe_update_failed"] = True
+            return result
+        finally:
+            s.replaying = False
+            self.replay_lock.release()
 
     def shell(
         self,

@@ -207,8 +207,10 @@ The background worker is a separate ephemeral model thread linked to the exact
 launching Codex or Claude conversation. The caller resolves its full session ID;
 the helper never guesses a parent by title, directory or recency. Status shows
 `source_session_id`, `source_agent` and the worker's `context_message_count`.
-The worker receives the parent's earlier user/assistant text, new messages and
-completed coaching. After each eight-turn rotation it reloads this text history.
+The worker receives a bounded tail of the parent's user/assistant text and
+completed coaching. After each eight-turn rotation it reloads the selected tail
+and all completed coaching from this computer session. Between rotations it
+receives only new or changed selected records, in their original order.
 Images, hidden reasoning and tool transcripts are not copied into this history.
 
 `chats computer install` (or `install-hooks`) registers a `UserPromptSubmit`
@@ -222,10 +224,18 @@ is never rewritten. `computer_history` or `chats computer history SESSION_ID`
 provides a read-only fallback. A standalone terminal without a chat identity
 has local coaching history but cannot infer which conversation to link.
 
-Worker context is passed verbatim up to a 700 KB per-request guard; exceeding it
-produces a visible error instead of silently dropping earlier messages. Native
-parent-chat compaction still applies to very long chats. Stored text remains
-available for retrieval; this is not an unlimited model context window.
+`SERENA_COMPUTER_CONTEXT_CHARS` sets the linked-history text budget (default
+20,000 characters; invalid or negative values use the default). Whole messages
+are selected newest first and delivered chronologically, with an explicit marker
+when earlier history was omitted. The newest user message is always kept even
+if it exceeds the budget. All completed coaching from this computer session is
+kept outside that budget; older sessions' coaching competes for tail space.
+Set `0` to disable linked history entirely, including the newest parent message;
+current-session coaching and the explicit task still reach the worker. JSON
+metadata and the context header are outside the character budget. A 700 KB
+serialized per-request safety guard still reports oversized protected context.
+Durable storage and parent-chat coaching hooks remain complete and unchanged;
+stored text remains available through `computer_history`.
 
 Before the first screenshot turn, the worker starts its Claude session and builds a small read-only task pack from Serena's knowledge store
 plus shallow project `it/` and `docs/` folders. It ranks files against the task,

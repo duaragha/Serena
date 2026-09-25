@@ -71,6 +71,24 @@ def visual_tools(controller, session_id):
         tools.append(_shell_tool(controller, session_id))
     if control and controller.web is not None:
         tools.extend(_browser_tools(controller, session_id))
+        if controller.current(session_id).desk == "isolated":
+            async def replay(args):
+                return _text(await asyncio.to_thread(controller.replay, session_id, **args))
+
+            tools.append(SimpleNamespace(
+                name="replay",
+                description=("Run a saved browser recipe in one call. Use a new request_id; reuse it "
+                             "only for identical transport retries. Stops on the first failure and "
+                             "returns a fresh snapshot. Verify the result before reporting success."),
+                input_schema={
+                    "type": "object",
+                    "properties": {key: {"type": "string"} for key in
+                                   ("recipe_id", "request_id", "intent")},
+                    "required": ["recipe_id", "request_id", "intent"],
+                    "additionalProperties": False,
+                },
+                handler=replay,
+            ))
     if control:
         tools.append(
             SimpleNamespace(

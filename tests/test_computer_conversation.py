@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -150,7 +151,7 @@ def test_source_discovery_works_before_chat_indexing(tmp_path, monkeypatch):
     assert store.resolve(sid, "codex")["path"] == str(path)
 
 
-def test_oversized_context_is_never_silently_truncated(tmp_path):
+def test_oversized_protected_coaching_still_has_a_safety_guard(tmp_path):
     store = ConversationStore(tmp_path / "state", home=tmp_path)
     session = SimpleNamespace(id=uuid.uuid4().hex, request="test")
     store.bind(session)
@@ -163,9 +164,148 @@ def test_oversized_context_is_never_silently_truncated(tmp_path):
             "text": "x" * 710000,
         }
     )
-    with pytest.raises(ComputerError, match="no earlier messages were silently dropped"):
+    with pytest.raises(ComputerError, match="700 KB computer-context safety limit"):
         ConversationCursor(store, session.id).context()
     assert len(store.messages(session.id)[0]["text"]) == 710000
+
+
+def context_records(text):
+    return json.loads(text.split("New context records:\n", 1)[1]) if text else []
+
+
+@pytest.mark.parametrize("agent", ["codex", "claude"])
+def test_long_history_tail_preserves_order_storage_and_rotation(tmp_path, monkeypatch, agent):
+    monkeypatch.delenv("SERENA_COMPUTER_CONTEXT_CHARS", raising=False)
+    store = ConversationStore(tmp_path / "state", home=tmp_path)
+    sid, path = write_chat(tmp_path, agent, count=1000)
+    session = SimpleNamespace(id=uuid.uuid4().hex, request="test")
+    store.bind(session, store.register(sid, agent, path))
+    original = store.messages(session.id)
+    cursor = ConversationCursor(store, session.id)
+    text = cursor.context()
+    records = context_records(text)
+    assert 0 < len(records) < len(original)
+    assert sum(len(m["text"]) for m in records) <= 20000
+    assert records == original[-len(records):]
+    assert original[-2] in records  # Newest user followed by the newest assistant.
+    assert "Earlier linked history omitted" in text
+    assert cursor.message_count == 1000
+    assert store.messages(session.id) == original
+    assert cursor.context() == text
+    cursor.commit()
+    assert cursor.context() == ""
+    cursor.reset()
+    assert cursor.context() == text
+
+
+def fake_cursor(messages):
+    return ConversationCursor(SimpleNamespace(messages=lambda _: messages), "current")
+
+
+def chat_record(index, role, text, *, kind="chat", session_id=""):
+    return dict(id=str(index), role=role, text=text, kind=kind, session_id=session_id)
+
+
+@pytest.mark.parametrize("budget", ["20", "0", "-1", "invalid"])
+def test_context_budget_override_and_invalid_values(monkeypatch, budget):
+    monkeypatch.setenv("SERENA_COMPUTER_CONTEXT_CHARS", budget)
+    messages = [chat_record(i, "user" if i % 2 == 0 else "assistant", "界" * 10)
+                for i in range(8)]
+    cursor = fake_cursor(messages)
+    expected = [] if budget == "0" else messages[-2:] if budget == "20" else messages
+    assert context_records(cursor.context()) == expected
+    assert cursor.message_count == 8
+
+
+def test_newest_user_and_current_coaching_survive_tiny_budget(monkeypatch):
+    monkeypatch.setenv("SERENA_COMPUTER_CONTEXT_CHARS", "5")
+    messages = [
+        chat_record(0, "assistant", "old coaching", kind="coaching", session_id="previous"),
+        chat_record(1, "assistant", "first completed advice", kind="coaching", session_id="current"),
+        chat_record(2, "user", "newest user message exceeds budget"),
+        chat_record(3, "assistant", "a long assistant followup"),
+        chat_record(4, "assistant", "second completed advice", kind="coaching", session_id="current"),
+    ]
+    cursor = fake_cursor(messages)
+    text = cursor.context()
+    assert context_records(text) == [messages[1], messages[2], messages[4]]
+    assert "Earlier linked history omitted (2 records)" in text
+    cursor.commit()
+    assert cursor.context() == ""
+    messages[2]["text"] += " edited"
+    assert context_records(cursor.context()) == [messages[2]]
+    cursor.commit()
+    cursor.reset()
+    assert context_records(cursor.context()) == [messages[1], messages[2], messages[4]]
+    monkeypatch.setenv("SERENA_COMPUTER_CONTEXT_CHARS", "0")
+    cursor.reset()
+    assert context_records(cursor.context()) == [messages[1], messages[4]]
+
+
+def test_trimming_does_not_change_parent_hook_or_completed_coaching(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERENA_COMPUTER_CONTEXT_CHARS", "0")
+    store = ConversationStore(tmp_path / "state", home=tmp_path)
+    sid, path = write_chat(tmp_path, "codex")
+    origin = store.register(sid, "codex", path)
+    for session_id in ("previous", "current"):
+        store.bind(SimpleNamespace(id=session_id, request="test"), origin)
+        for event_id, kind in enumerate(("delta", "observation")):
+            store.record(dict(id=event_id, type=kind, session_id=session_id,
+                              at=time.time(), text=f"{session_id}-{kind}"))
+    cursor = ConversationCursor(store, "current")
+    assert [m["text"] for m in context_records(cursor.context())] == ["current-observation"]
+    assert len(store.messages("current")) == 32
+    injected = hook_context({"session_id": sid}, "codex", store=store)
+    text = injected["hookSpecificOutput"]["additionalContext"]
+    assert "previous-observation" in text and "current-observation" in text
+    assert "delta" not in text
+
+
+def test_tail_without_user_and_oversized_old_record(monkeypatch):
+    monkeypatch.setenv("SERENA_COMPUTER_CONTEXT_CHARS", "20")
+    messages = [chat_record(0, "assistant", "x" * 710000),
+                chat_record(1, "assistant", "recent")]
+    assert context_records(fake_cursor(messages).context()) == messages[-1:]
+    assert fake_cursor([]).context() == ""
+    assert ConversationCursor(None, "current").context() == ""
+
+
+def test_agent_context_and_thread_reset_use_the_bounded_tail(monkeypatch):
+    from core.computer_agent import ComputerAgent
+
+    monkeypatch.setenv("SERENA_COMPUTER_CONTEXT_CHARS", "20")
+    messages = [chat_record(i, "user", str(i) * 10) for i in range(6)]
+    controller = SimpleNamespace(
+        session=SimpleNamespace(id="current"),
+        conversations=SimpleNamespace(messages=lambda _: messages),
+    )
+    agent = ComputerAgent(controller)
+    resets = []
+
+    async def inline_thread(function, *args):
+        return function(*args)
+
+    # Exercise prompt integration without depending on sandbox thread wakeup sockets.
+    monkeypatch.setattr("core.computer_agent.asyncio.to_thread", inline_thread)
+
+    async def reset_thread():
+        resets.append(True)
+
+    async def check():
+        initial = await agent.context()
+        assert context_records(initial) == messages[-2:]
+        assert controller.session.context_message_count == 6
+        agent.conversation.commit()
+        assert await agent.context() == ""
+        messages.append(chat_record(6, "user", "followup"))
+        assert context_records(await agent.context()) == messages[-1:]
+        agent.conversation.commit()
+        await agent._reset_model_thread(SimpleNamespace(reset_thread=reset_thread))
+        assert context_records(await agent.context()) == messages[-2:]
+        assert controller.session.context_message_count == 7
+        assert resets == [True]
+
+    asyncio.run(check())
 
 
 def test_hook_installation_preserves_existing_hooks_and_is_idempotent(tmp_path):
