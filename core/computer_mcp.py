@@ -34,7 +34,8 @@ mcp = FastMCP(
         "active freezes whichever window is focused, often the chat terminal. Watch defaults to desktop; "
         "select a narrower target when the user names a window/display. Only observe that scope and perform its task. "
         "Control defaults to target=isolated: Serena's own desktop with its own mouse, keyboard, focus, browser "
-        "profile and terminal, so the user keeps working while it runs; a live viewer window shows it. "
+        "profile and terminal, so the user keeps working while it runs; it is headless, and chats computer desktop show "
+        "opens a view-only viewer (the indicator's take over button hands it to the user). "
         "Use a window:ID/display:NAME control target only when the task needs the user's own open windows. "
         "For app-specific coaching on multiple monitors, prefer the display containing that app: "
         "desktop-wide watching also reacts to chat updates on other monitors. "
@@ -72,7 +73,8 @@ async def computer_start(
     Watch observes only. Control is for a specific requested mouse/keyboard task.
     target defaults to desktop for watch and isolated for control. isolated is
     Serena's own desktop (own mouse, keyboard, browser, terminal): the user keeps
-    working meanwhile and can take over in its viewer. Use display:NAME or
+    working meanwhile, watches it in a view-only viewer, and takes over with the
+    indicator's take over button. Use display:NAME or
     window:ID when the task needs the user's own windows. active freezes the
     focused window, which can be the chat terminal.
     background=true (default) starts

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -149,6 +150,15 @@ class Runtime:
     def __init__(self):
         self.alive = False
         self.launched = []
+        self.modes = []
+        self.shown = 0
+
+    def set_interactive(self, interactive):
+        self.modes.append(interactive)
+
+    def show(self):
+        self.shown += 1
+        return self.status()
 
     def viewer_window(self):
         return "4242"
@@ -273,7 +283,7 @@ def test_her_desktop_runs_beside_his_watch_and_routes_by_session(server, control
         server.dispatch("resume", {}, operator=False)
 
 
-def test_closing_her_viewer_stops_her_task_and_close_releases_it(server, controller):
+def test_her_desktop_exiting_stops_her_task_and_close_releases_it(server, controller):
     start(server, "control", "isolated", "fill the form in your browser")
     isolated = server.isolated
     server.runtime.alive = False
@@ -476,3 +486,111 @@ def test_a_back_to_back_task_waits_for_the_last_worker_to_finish_closing(control
     monkeypatch.setattr(computer_use, "RELEASE_WAIT_SECONDS", 0.2)
     with pytest.raises(ComputerError, match="still releasing"):
         begin(c)
+
+
+def test_her_viewer_takes_his_input_only_while_she_is_not_driving(server, controller):
+    runtime = server.runtime
+    server.dispatch("desktop", {"action": "open"}, operator=True)
+    # Idle: the viewer is his, to sign in to a site for her.
+    assert runtime.modes == [True]
+    mine = start(server, "control", "isolated", "fill the form in your browser")
+    assert runtime.modes[-1] is False
+    with pytest.raises(ComputerError, match="operator"):
+        server.dispatch("takeover", {}, operator=False)
+    server.dispatch("takeover", {}, operator=True)
+    assert server.isolated.session.state == "paused"
+    assert server.isolated.session.paused_reason == "you took over from the indicator"
+    assert runtime.modes[-1] is True and runtime.shown == 1
+    with pytest.raises(ComputerError, match="not driving"):
+        server.dispatch("takeover", {}, operator=True)
+    server.dispatch("resume", {}, operator=True)
+    assert runtime.modes[-1] is False
+    settle(server.isolated)
+    server.dispatch("stop", {"session_id": mine["id"]}, operator=False)
+    assert runtime.modes[-1] is True
+    # Watching her desktop leaves the viewer his throughout.
+    count = len(runtime.modes)
+    start(server, "watch", "isolated", "watch me sign in")
+    assert runtime.modes[count:] == []
+
+
+def _rfb_pointer(path, x, y):
+    """Move the pointer the way a VNC viewer does: RFB 3.8, no auth, PointerEvent."""
+    import socket
+    import struct
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(5)
+        sock.connect(str(path))
+
+        def read(count):
+            data = b""
+            while len(data) < count:
+                chunk = sock.recv(count - len(data))
+                assert chunk, "vnc server closed the connection"
+                data += chunk
+            return data
+
+        assert read(12).startswith(b"RFB 003.")
+        sock.sendall(b"RFB 003.008\n")
+        types = read(read(1)[0])
+        assert 1 in types
+        sock.sendall(b"\x01")
+        assert struct.unpack(">I", read(4))[0] == 0
+        sock.sendall(b"\x01")  # shared
+        _width, _height = struct.unpack(">HH", read(4))
+        read(16)
+        read(struct.unpack(">I", read(4))[0])
+        sock.sendall(struct.pack(">BBHH", 5, 0, x, y))
+        # x11vnc applies motion on its next pass; hang up only after it has.
+        time.sleep(1.5)
+
+
+@pytest.mark.skipif(
+    not all(__import__("shutil").which(name) for name in ("Xvfb", "x11vnc", "xauth", "metacity")),
+    reason="needs Xvfb, x11vnc, xauth and metacity",
+)
+def test_headless_desktop_drops_his_viewer_input_until_it_is_his(tmp_path, monkeypatch):
+    from Xlib import display as xdisplay
+
+    from core.computer_nested import IsolatedDesktop as Headless
+
+    xauthority = tmp_path / "xauthority"
+    xauthority.touch()
+    monkeypatch.setenv("XAUTHORITY", str(xauthority))
+    env = {
+        "PATH": __import__("os").environ["PATH"],
+        "HOME": str(tmp_path),
+        "XAUTHORITY": str(xauthority),
+    }
+    runtime = Headless(tmp_path / "isolated", host_env=env, size=(1024, 768))
+    monkeypatch.setattr(runtime, "launch", lambda app, url=None: {"ok": True, "app": app})
+    info = runtime.start()
+    try:
+        assert runtime.running() and runtime.status()["viewer"] == "view-only"
+        socket_path = Path(info["socket"])
+        assert socket_path.exists()
+        assert (tmp_path / "isolated").stat().st_mode & 0o777 == 0o700
+        connection = xdisplay.Display(info["display"])
+
+        def pointer():
+            reply = connection.screen().root.query_pointer()
+            return reply.root_x, reply.root_y
+
+        start_at = pointer()
+        _rfb_pointer(socket_path, 300, 200)
+        assert pointer() == start_at  # dropped at the server while she drives
+        runtime.set_interactive(True)
+        assert runtime.status()["viewer"] == "interactive"
+        time.sleep(0.5)  # letting him in is not synchronous
+        _rfb_pointer(socket_path, 300, 200)
+        assert pointer() == (300, 200)
+        runtime.set_interactive(False)
+        _rfb_pointer(socket_path, 500, 400)
+        assert pointer() == (300, 200)
+        connection.close()
+        # A second start adopts the same desktop rather than making another.
+        assert runtime.start()["server_pid"] == info["server_pid"]
+    finally:
+        runtime.stop()
+    assert not runtime.running()

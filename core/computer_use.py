@@ -126,6 +126,9 @@ class ComputerController:
         # exist only on her own desktop (see computer_web / computer_shell).
         self.web = None
         self.terminal = None
+        # Her desktop's viewer: set_interactive(True) lets his clicks and keys
+        # reach it, False drops them at the server. None on his screen.
+        self.viewer_mode = None
         self.lock = threading.RLock()
         self.capture_lock = threading.Lock()
         self.action_lock = threading.Lock()
@@ -295,6 +298,9 @@ class ComputerController:
                 desk=self.desk,
             )
             self.session = s
+        if mode == "control":
+            # Before her first input, so nothing of his lands mid-task.
+            self._his_input(False)
         try:
             if self.indicator:
                 self.indicator(s)
@@ -319,6 +325,15 @@ class ComputerController:
             expires_at=s.expires_at,
         )
         return self.status()
+
+    def _his_input(self, allowed):
+        """His viewer reaches her display only while she is not driving it."""
+        if self.viewer_mode is None:
+            return
+        try:
+            self.viewer_mode(allowed)
+        except Exception as exc:
+            self.event("viewer_mode_failed", error=str(exc)[:200])
 
     def _releasing(self):
         return self.action_lock.locked() or bool(
@@ -353,6 +368,7 @@ class ComputerController:
             s.reason = str(reason)[:300]
             s.frames.clear()
         self.desktop.release()
+        self._his_input(True)
         if s.grant_id:
             self.authority.revoke_grant(s.grant_id, reason=reason)
         if (reason == "visual task finished" and s.mode == "control"
@@ -392,6 +408,7 @@ class ComputerController:
             # Anything captured before the takeover no longer describes the screen.
             s.frames.clear()
         self.desktop.release()
+        self._his_input(True)
         self.event("paused", session_id=s.id, reason=s.paused_reason, by_agent=by_agent)
         return self.status()
 
@@ -410,6 +427,7 @@ class ComputerController:
                 raise ComputerError("Serena's emergency stop is engaged")
             s.state = "resuming"
             s.resume_requested_at = self.clock()
+        self._his_input(False)
         self.event("resuming", session_id=s.id)
         return self.status()
 

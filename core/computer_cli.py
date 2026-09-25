@@ -134,8 +134,9 @@ def watch(**kwargs):
 def run(**kwargs):
     """Complete one GUI task, on Serena's own desktop by default.
 
-    Your mouse and keyboard stay yours. Clicking or typing on the desktop she
-    is driving pauses her; `chats computer resume` hands control back.
+    Your mouse and keyboard stay yours: her desktop is headless, and its viewer
+    is view-only while she drives. "take over" on her indicator pauses her and
+    hands you the viewer; `chats computer resume` hands control back.
     Ctrl+Alt+Shift+Esc stops.
     """
     run_task("control", **kwargs)
@@ -179,13 +180,13 @@ def desktop_close():
 
 @desktop.command("show")
 def desktop_show():
-    """Raise the live viewer window on your screen."""
+    """Open or raise the viewer: view-only while she drives, yours otherwise."""
     _desktop("show")
 
 
 @desktop.command("hide")
 def desktop_hide():
-    """Minimize the viewer; her desktop keeps running."""
+    """Minimize the viewer; her desktop keeps running headless."""
     _desktop("hide")
 
 
