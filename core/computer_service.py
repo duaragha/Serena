@@ -22,7 +22,7 @@ GUIDANCE = (
     "When the user requests computer use in this chat, the agent may start "
     "that scoped session directly. No manual user terminal step is required. "
     "Use computer_start with its default background=true for live coaching. "
-    "The worker uses Astra medium with fast processing and the exact launching "
+    "The worker uses Claude (Opus 5.5 at low effort by default) with the exact launching "
     "chat's history plus a bounded local task pack from Serena knowledge and project runbooks. "
     "Prompt hooks supply completed advice on follow-up questions; "
     "computer_history is the fallback when hooks are unavailable. "
@@ -186,7 +186,7 @@ class ComputerServer(ThreadingHTTPServer):
             if start_agent:
                 from core.computer_agent import ComputerAgent
 
-                c.session.driver = "astra"
+                c.session.driver = "claude"
                 c.session.observation_state = "starting"
                 try:
                     c.agent = ComputerAgent(c, speak=speak)

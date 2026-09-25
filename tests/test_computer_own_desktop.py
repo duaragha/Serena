@@ -350,7 +350,7 @@ def test_control_worker_continues_the_same_task_after_takeover(controller, monke
             pass
 
     begin(controller)
-    controller.session.driver = "astra"
+    controller.session.driver = "claude"
     agent = computer_agent.ComputerAgent(controller, client_factory=Model)
     controller.agent = agent
     agent.start()
@@ -390,10 +390,65 @@ def test_clipboard_bridge_only_takes_her_copies_from_the_viewer():
     bridge._viewer_focused = lambda: focused["value"]
     bridge._host_copied(b"his password")
     assert bridge.nested.offers == [b"his password"]
-    bridge._nested_copied(b"astra pressed ctrl+c")
+    bridge._nested_copied(b"the worker pressed ctrl+c")
     assert bridge.host.offers == []  # never clobbers what he copied
     focused["value"] = True
     bridge._nested_copied(b"he copied in the viewer")
     assert bridge.host.offers == [b"he copied in the viewer"]
     bridge._host_cleared()
     assert bridge.nested.cleared == 1  # a manager's timeout clears hers too
+
+
+def test_zoom_reads_a_region_at_native_resolution_without_becoming_a_frame(controller):
+    c = controller
+    captured = []
+    real_capture = c.desktop.capture
+
+    def capture(rect):
+        captured.append(rect)
+        return real_capture(rect)
+
+    c.desktop.capture = capture
+    sid, frame = begin(c)  # display:left is 2000x1200, sent as a 1920-wide frame
+    frames_before = set(c.session.frames)
+    crop = c.zoom(sid, frame["frame_id"], 960, 576, 480, 288)
+    region = captured[-1]
+    assert (region.width, region.height) == (500, 300)  # scaled back to desktop pixels
+    assert (crop["width"], crop["height"]) == (500, 300) and "frame_id" not in crop
+    assert set(c.session.frames) == frames_before  # nothing to aim input with
+    with pytest.raises(ComputerError, match="past the screenshot"):
+        c.zoom(sid, frame["frame_id"], 1900, 10, 100, 10)
+
+
+def test_on_her_desktop_a_click_that_raises_its_window_keeps_the_batch(controller):
+    c = controller
+    c.desk = "isolated"
+    windows = {
+        "123": {"x": -1800, "y": 100, "width": 1000, "height": 800},
+        "browser": {"x": -2000, "y": 0, "width": 2000, "height": 1200},
+        "popup": {"x": -500, "y": 900, "width": 100, "height": 100},
+    }
+    c.desktop.window_info = lambda identifier: {
+        "id": identifier, "app": "fixture", "title": identifier, "visible": True,
+        "rect": windows[identifier],
+    }
+    real_button = c.desktop.button
+    raised = {"to": "browser"}
+
+    def click(key, down):
+        real_button(key, down)
+        if not down:
+            c.desktop.focus = raised["to"]
+
+    c.desktop.button = click
+    sid, frame = begin(c)
+    batch = [{"type": "click", "x": 100, "y": 100}, {"type": "type", "text": "https://example.com"}]
+    assert act(c, sid, frame, batch)["ok"]
+    assert ("type", "https://example.com") in c.desktop.inputs
+    # A popup elsewhere taking focus still stops the batch before any typing.
+    c.desktop.inputs.clear()
+    c.desktop.focus, raised["to"] = "browser", "popup"
+    fresh = c.observe(sid)
+    stopped = act(c, sid, fresh, batch, request_id="popup-steals-1")
+    assert stopped["status"] == "partial" and "foreground changed" in stopped["error"]
+    assert not any(item[0] == "type" for item in c.desktop.inputs)

@@ -258,7 +258,7 @@ def main():
             assert any(
                 "serena_computer.act" in item.get("tool_calls", []) for item in observations
             ), observations
-            receipt["checks"]["astra_image_and_input"] = True
+            receipt["checks"]["model_image_and_input"] = True
         if args.watch:
             # Wait for the previous runner to finish closing its subscription process.
             time.sleep(1)
