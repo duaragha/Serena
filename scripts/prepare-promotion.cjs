@@ -23,9 +23,17 @@ function prepare({ root, destination, source, stable, selected, tested, request,
   const catalog = JSON.parse(fs.readFileSync(path.join(root, 'config/promotion-features.json'), 'utf8'));
   policy.catalogFeatures(catalog);
   const base = git(root, ['rev-parse', `${stable}^{commit}`]).trim();
+  const adopted = policy.adoptedBaseline(catalog, stable);
   let previous = null;
-  if (stable !== catalog.initialStable) previous = JSON.parse(git(root, ['show', `${base}:${receiptPath}`]));
-  const installed = policy.installedFeatures(catalog, stable, previous);
+  if (stable !== catalog.initialStable && !adopted) {
+    try { previous = JSON.parse(git(root, ['show', `${base}:${receiptPath}`])); }
+    catch { throw new Error(`${stable} has no promotion receipt; review it as an adoptedStable baseline first`); }
+  }
+  const installed = policy.installedFeatures(catalog, stable, previous, base);
+  // An adopted tree must really hold what its entry claims.
+  if (adopted) for (const f of catalog.features.filter(f => installed.includes(f.id))) {
+    git(root, ['merge-base', '--is-ancestor', f.commit, base]);
+  }
   const plan = policy.selection(catalog, selected, tested, installed);
   const version = policy.nextVersion(stable);
   if (git(root, ['tag', '--list', version]).trim()) throw new Error(`${version} already exists; review the stable baseline`);

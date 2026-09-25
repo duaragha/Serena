@@ -1,6 +1,25 @@
 {
   "schema": 1,
   "initialStable": "v0.3.4",
+  "adoptedStable": [
+    {
+      "tag": "v0.3.10",
+      "commit": "80f5717898d97010dcfe5e708691dce9993cb40b",
+      "reason": "Published out of band on 2026-09-25 from the v0.3.10-dev.13 tree while Promote to Main was down; that tree holds every feature registered through durable-chat-unlink.",
+      "features": [
+        "sidebar-order",
+        "sidebar-performance",
+        "sidebar-projects",
+        "sidebar-compact",
+        "sidebar-utilities",
+        "fleet-report-visibility",
+        "terminal-status-line",
+        "linked-member-removal",
+        "serena-coding-visible",
+        "durable-chat-unlink"
+      ]
+    }
+  ],
   "features": [
     {
       "id": "sidebar-order",

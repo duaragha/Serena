@@ -77,3 +77,41 @@ test('a second promotion retains the first release and refuses collisions or sta
   git(['tag', two.version, two.commit], fixture.root);
   assert.throws(() => prepare({ ...attempted, stable: one.version }), /already exists/);
 });
+
+test('promotion continues from an adopted out-of-band stable and names the next version above it', t => {
+  const [adopted] = catalog.adoptedStable || [];
+  if (!adopted) return t.skip('no adopted stable baseline');
+  const fixture = historyFixture(t);
+  try { git(['rev-parse', '--verify', `${adopted.tag}^{commit}`], fixture.root); }
+  catch { return t.skip(`${adopted.tag} is not in this checkout`); }
+  const next = nextVersion(adopted.tag);
+  if (git(['tag', '--list', next], fixture.root)) git(['tag', '-d', next], fixture.root);
+  // A throwaway feature committed on top of the source, registered only in this clone.
+  const probe = 'docs/promotion-adoption-probe.md';
+  fs.writeFileSync(path.join(fixture.root, probe), 'adoption probe\n');
+  git(['add', probe], fixture.root);
+  git(['-c', 'user.name=t', '-c', 'user.email=t@t.invalid', 'commit', '-q', '-m', 'probe'], fixture.root);
+  const commit = git(['rev-parse', 'HEAD'], fixture.root);
+  git(['tag', 'v9.9.9-dev.1', commit], fixture.root);
+  const registered = structuredClone(catalog);
+  registered.features.push({ id: 'adoption-probe', title: 'Adoption probe', devTag: 'v9.9.9-dev.1', commit,
+    requires: [], paths: [probe] });
+  fs.writeFileSync(path.join(fixture.root, 'config/promotion-features.json'), JSON.stringify(registered));
+  const options = { root: fixture.root, source: commit, stable: adopted.tag, latest: adopted.tag,
+    selected: ['adoption-probe'], tested: ['adoption-probe'], request: 'c'.repeat(32), mode: 'verify' };
+  const result = prepare({ ...options, destination: path.join(fixture.directory, 'adopted'), artifacts: fixture.directory });
+  assert.equal(result.version, next);
+  assert.equal(result.baseTag, adopted.tag);
+  assert.equal(result.baseCommit, adopted.commit);
+  assert.deepEqual(result.added, ['adoption-probe']);
+  assert.deepEqual(result.features.map(f => f.id), [...adopted.features, 'adoption-probe']);
+  const changed = git(['diff', '--name-only', `${adopted.tag}..HEAD`], path.join(fixture.directory, 'adopted')).split('\n');
+  assert.deepEqual(changed.sort(), ['apps/desktop/package-lock.json', 'apps/desktop/package.json',
+    'config/stable-promotion.json', probe].sort());
+  // Already-shipped features cannot be reapplied onto the adopted tree.
+  assert.throws(() => prepare({ ...options, destination: path.join(fixture.directory, 'again'),
+    selected: [adopted.features[0]], tested: [adopted.features[0]] }), /not already in main/);
+  registered.adoptedStable[0].commit = 'f'.repeat(40);
+  fs.writeFileSync(path.join(fixture.root, 'config/promotion-features.json'), JSON.stringify(registered));
+  assert.throws(() => prepare({ ...options, destination: path.join(fixture.directory, 'retagged') }), /reviewed baseline/);
+});
