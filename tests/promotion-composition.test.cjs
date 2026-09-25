@@ -25,35 +25,60 @@ function historyFixture(t) {
   return { directory, root: fixture, source };
 }
 
-test('every valid feature subset composes onto stable without importing unselected backend changes', t => {
+// Stable only moves forward. Features shipped in the newest adopted baseline
+// compose onto the original stable, as they did before it; features registered
+// after it compose onto that adopted tag, which is where a promotion applies them.
+const adoptedStable = (catalog.adoptedStable || []).at(-1) || null;
+const shippedInAdopted = new Set(adoptedStable ? adoptedStable.features : []);
+
+function composeEverySubset(t, { features, stable, installed }) {
   const fixture = historyFixture(t);
   const source = fixture.source;
+  if (stable !== catalog.initialStable) {
+    const next = nextVersion(stable);
+    if (git(['tag', '--list', next], fixture.root)) git(['tag', '-d', next], fixture.root);
+  }
   let count = 0;
-  for (let bits = 1; bits < 2 ** catalog.features.length; bits++) {
-    const selected = catalog.features.filter((_, i) => bits & (1 << i)).map(f => f.id);
-    try { selection(catalog, selected, selected); } catch { continue; }
+  for (let bits = 1; bits < 2 ** features.length; bits++) {
+    const selected = features.filter((_, i) => bits & (1 << i)).map(f => f.id);
+    try { selection(catalog, selected, selected, installed); } catch { continue; }
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'serena-selection-'));
     try {
       const destination = path.join(dir, 'candidate');
-      const result = prepare({ root: fixture.root, destination, artifacts: dir, source, stable: catalog.initialStable,
-        latest: catalog.initialStable, selected, tested: selected, request: 'a'.repeat(32), mode: 'verify' });
-      assert.deepEqual(result.features.map(f => f.id), selected);
+      const result = prepare({ root: fixture.root, destination, artifacts: dir, source, stable,
+        latest: stable, selected, tested: selected, request: 'a'.repeat(32), mode: 'verify' });
+      assert.deepEqual(result.features.map(f => f.id),
+        catalog.features.map(f => f.id).filter(id => installed.includes(id) || selected.includes(id)));
       for (const feature of catalog.features.filter(f => selected.includes(f.id)))
         assert.equal(result.features.find(f => f.id === feature.id).base, feature.base);
-      const changed = git(['diff', '--name-only', `${catalog.initialStable}..HEAD`], destination).split('\n');
+      const changed = git(['diff', '--name-only', `${stable}..HEAD`], destination).split('\n');
       const allowed = new Set(['apps/desktop/package.json', 'apps/desktop/package-lock.json', 'config/stable-promotion.json',
         ...catalog.features.filter(f => selected.includes(f.id)).flatMap(f => f.paths)]);
       assert.ok(changed.every(file => allowed.has(file)), changed.join('\n'));
-      for (const file of ['apps/desktop/main.js', 'apps/desktop/profile.js', 'core/workspace_host.py'])
-        assert.equal(git(['rev-parse', `HEAD:${file}`], destination), git(['rev-parse', `${catalog.initialStable}:${file}`]));
+      for (const file of ['apps/desktop/main.js', 'apps/desktop/profile.js', 'core/workspace_host.py'].filter(f => !allowed.has(f)))
+        assert.equal(git(['rev-parse', `HEAD:${file}`], destination), git(['rev-parse', `${stable}:${file}`]));
       const restored = path.join(dir, 'restored');
       git(['clone', '--branch', 'candidate', path.join(dir, 'candidate.bundle'), restored]);
       assert.equal(git(['rev-parse', 'HEAD'], restored), result.commit);
       count++;
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   }
-  assert.ok(count >= catalog.features.length, `too few valid selections: ${count}`);
-  t.diagnostic(`${count} valid selections verified`);
+  assert.ok(count >= features.length, `too few valid selections: ${count}`);
+  t.diagnostic(`${count} valid selections verified onto ${stable}`);
+}
+
+test('every valid feature subset composes onto stable without importing unselected backend changes', t => {
+  const features = adoptedStable ? catalog.features.filter(f => shippedInAdopted.has(f.id)) : catalog.features;
+  composeEverySubset(t, { features, stable: catalog.initialStable, installed: [] });
+});
+
+test('every feature registered after the adopted stable composes onto it', t => {
+  if (!adoptedStable) return t.skip('no adopted stable baseline');
+  const features = catalog.features.filter(f => !shippedInAdopted.has(f.id));
+  if (!features.length) return t.skip('nothing registered after the adopted stable');
+  try { git(['rev-parse', '--verify', `${adoptedStable.tag}^{commit}`]); }
+  catch { return t.skip(`${adoptedStable.tag} is not in this checkout`); }
+  composeEverySubset(t, { features, stable: adoptedStable.tag, installed: adoptedStable.features });
 });
 
 test('a second promotion retains the first release and refuses collisions or stale baselines', t => {

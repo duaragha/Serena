@@ -110,6 +110,39 @@
         "tests/test_workspace_pending_catalog_api.py", "tests/test_workspace_chat_trash.py",
         "tests/test_terminal_reload_detach.py", "tests/test_terminal_split_exit.py"
       ]
+    },
+    {
+      "id": "chat-nuke-trash",
+      "title": "Alt+Delete deletes a chat instantly, with Undo and a Trash bin",
+      "devTag": "v0.3.10-dev.14",
+      "commit": "41f8bc64bf4acf600165b7795214a59b0735c0d7",
+      "requires": ["durable-chat-unlink"],
+      "paths": [
+        "core/chat_trash.py", "core/indexer.py", "core/metadata.py", "core/workspace_lease.py",
+        "ui/pty_terminal.py", "ui/web.py",
+        "tests/test_chat_trash.py", "tests/test_workspace_browser.py",
+        "tests/test_workspace_chat_trash.py", "tests/test_workspace_pending_catalog_api.py"
+      ]
+    },
+    {
+      "id": "unlink-survives-handoff",
+      "title": "A chat removed from a thread stays out when a handoff resolves",
+      "devTag": "v0.3.10-dev.14",
+      "commit": "4a5866f45cf61735ea063c743d40a0db965c9214",
+      "requires": ["durable-chat-unlink"],
+      "paths": ["ui/web.py", "tests/test_unlink_survives_delete.py"]
+    },
+    {
+      "id": "chat-finished-toast",
+      "title": "Finished chats light up again and a toast names who finished",
+      "devTag": "v0.3.10-dev.14",
+      "commit": "5707c95d012bca659314fb9cf3e4631805a8a6ea",
+      "requires": [],
+      "paths": [
+        "cli.py", "core/chat_attention.py", "core/workspace_host.py", "ui/web.py", "ui/workspace_app.py",
+        "tests/test_chat_finished_signal.py", "tests/test_chat_finished_toast.py",
+        "tests/test_web_startup_signals.py"
+      ]
     }
   ]
 }
