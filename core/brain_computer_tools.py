@@ -19,7 +19,7 @@ def text(value):
 
 @tool(
     "computer_session",
-    "Start Astra screen watching or a GUI task requested in the actual user turn; or stop/status/resume. "
+    "Start screen watching or a GUI task requested in the actual user turn; or stop/status/resume. "
     "Use active by default. Scope to desktop only if the user explicitly says desktop/all screens. "
     "For a GUI task that does not need his own open windows, target isolated runs it on your own "
     "desktop so his mouse and keyboard stay free. resume continues a task he paused by taking over. "

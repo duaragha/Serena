@@ -26,7 +26,7 @@ class ComputerGroup(click.Group):
 
 @click.group(cls=ComputerGroup)
 def computer():
-    """Watch and operate your desktop with GPT-6 Astra."""
+    """Watch and operate your desktop, or Serena's own, with a Claude visual worker."""
 
 
 @computer.command()
@@ -115,7 +115,9 @@ def run_task(mode, task, target, seconds, speak, detach):
         **origin_arguments(),
     )
     session = result["session"]
-    click.echo(f"{mode} · {session['target']} · {session['id']} · gpt-6-astra")
+    click.echo(
+        f"{mode} · {session['target']} · {session['id']} · {session.get('worker_model') or result.get('model')}"
+    )
     if not detach:
         follow(client, after=0, session_id=session["id"])
 
@@ -203,7 +205,7 @@ def desktop_launch(app, url):
 @click.option(
     "--interactive",
     is_flag=True,
-    help="Share with the connected chat without automatic Astra updates.",
+    help="Share with the connected chat without automatic worker updates.",
 )
 def begin(task, mode, target, seconds, interactive):
     """Start a bounded session for a connected CLI/MCP agent.
@@ -211,7 +213,7 @@ def begin(task, mode, target, seconds, interactive):
     An agent may execute this command directly when the user requests computer
     use in chat. The user does not need to run it manually. Use their actual
     task and intended target; active can be the chat terminal. Watch mode starts
-    Astra coaching by default. --interactive explicitly opens sharing only;
+    coaching by default. --interactive explicitly opens sharing only;
     it does not produce automatic observations.
     """
     client = ComputerClient()
@@ -242,7 +244,7 @@ def stop(reason):
 @computer.command()
 @click.argument("message")
 def steer(message):
-    """Give a new instruction to the currently running Astra turn."""
+    """Give a new instruction to the currently running worker turn."""
     click.echo(json.dumps(ComputerClient().call("steer", message=message)))
 
 

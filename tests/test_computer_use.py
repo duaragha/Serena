@@ -239,7 +239,7 @@ def test_mixed_mcp_image_and_dynamic_transport(controller):
     sid, frame = begin(controller, mode="watch")
     result = _handler_result(frame_content(frame))
     assert [item["type"] for item in result["contentItems"]] == ["inputText", "inputImage"]
-    assert [item.name for item in visual_tools(controller, sid)] == ["observe"]
+    assert [item.name for item in visual_tools(controller, sid)] == ["observe", "zoom"]
 
 
 def test_resident_tool_cannot_invent_permission(monkeypatch):
@@ -373,7 +373,7 @@ def test_mcp_chat_can_start_observe_and_stop_requested_watch(controller, monkeyp
 
 
 @pytest.mark.parametrize("mode", ["watch", "control"])
-def test_mcp_background_start_uses_existing_astra_runner(controller, monkeypatch, mode):
+def test_mcp_background_start_uses_the_claude_worker(controller, monkeypatch, mode):
     from core import computer_agent, computer_mcp
     from core.computer_service import ComputerServer
 
@@ -414,10 +414,9 @@ def test_mcp_background_start_uses_existing_astra_runner(controller, monkeypatch
         )
         assert started == [(mode, True)]
         assert result["driver"] == {
-            "kind": "astra",
-            "model": "gpt-6-astra",
-            "effort": "medium",
-            "service_tier": "fast",
+            "kind": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "low",
         }
     finally:
         server.server_close()
@@ -595,7 +594,7 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, tmp_path,
                     seconds=30,
                 )
             )
-        assert result["session"]["driver"] == "astra"
+        assert result["session"]["driver"] == "claude"
         assert result["session"]["source_session_id"] == parent
         # Wait for everything that is asserted below, not just the first of
         # them: `options` is appended by the same background worker, and a
@@ -612,9 +611,9 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, tmp_path,
         assert controller.session.observation == "open the next setup step"
         assert controller.session.last_inspected_at is not None
         assert options, "the watch worker never recorded its model options"
-        assert options[0]["model"] == "gpt-6-astra" and options[0]["effort"] == "medium"
-        assert options[0]["service_tier"] == "fast"
-        assert options[0]["allow_user_hooks"] is False
+        assert options[0]["model"] == "claude-opus-5-5" and options[0]["effort"] == "low"
+        assert {tool.name for tool in options[0]["tools"]} == {"observe", "zoom"}  # no input
+        assert controller.session.frame_width == 1280  # Claude would downsample wider
         assert model_events[0] == "start"
         assert isinstance(model_events[1], str)
         assert store.coaching(parent)[0]["text"] == controller.session.observation

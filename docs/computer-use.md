@@ -1,7 +1,8 @@
 # Computer use
 
-Serena can watch the laptop's X11 desktop and complete bounded GUI tasks with
-GPT-6 Astra. A single local helper owns capture and input. CLI, MCP and the
+Serena can watch the laptop's X11 desktop and complete bounded GUI tasks with a
+Claude visual worker (Opus 5.5 at low effort by default; GPT-6 Astra until
+2026-09-25). A single local helper owns capture and input. CLI, MCP and the
 resident brain all use that helper; none creates a separate input executor.
 
 ## Use it
@@ -37,7 +38,7 @@ Her desktop is a separate X server with its own clipboard, so the helper
 bridges CLIPBOARD text between the two while her desktop is open. Everything you
 copy reaches her desktop, including what was on your clipboard when it opened,
 so Ctrl+V works in the viewer. Her copies reach your clipboard only while the
-viewer is your focused window, meaning you copied inside it; Astra pressing
+viewer is your focused window, meaning you copied inside it; the worker pressing
 Ctrl+C while you work elsewhere never replaces your clipboard. When your
 clipboard empties (a password manager's timeout, or its owner quitting), hers
 empties too. Text up to 200 KB is bridged; images and larger transfers are not.
@@ -75,11 +76,11 @@ Both `watch` and `run` stream text updates in the terminal. `--detach` leaves
 the task running with a visible desktop indicator; `chats computer events`
 reattaches to its updates. `--speak` sends completed observations through
 Serena's existing local voice output. `chats computer steer "new instruction"`
-steers the active Astra turn without starting a second controller.
+steers the active worker turn without starting a second controller.
 
 The desktop indicator is a compact, movable HUD card. Drag its header to move it
 out of the way; its current position and size are sent back to the helper so the
-card stays masked from screenshots. The header shows whether Astra is starting,
+card stays masked from screenshots. The header shows whether the worker is starting,
 thinking, watching, or has seen a changed screen. The context row identifies the
 focused application and window title from the latest captured frame (in a
 browser this normally includes the selected tab) and the selected display or
@@ -156,7 +157,7 @@ task. The chat calls `computer_start` directly from that request; you do not
 need to open a terminal session manually or send a second confirmation.
 
 `computer_start` defaults to live desktop coaching with `background=true`,
-using GPT-6 Astra at medium reasoning with fast processing. Watch defaults to
+using the Claude worker. Watch defaults to
 `target=desktop` and control to `target=isolated`. Select a window/display
 explicitly when the user requests that scope or the task needs their windows. Background sessions stream through
 `computer_events` and the desktop indicator. Do not send input from the chat
@@ -186,11 +187,10 @@ produces a visible error instead of silently dropping earlier messages. Native
 parent-chat compaction still applies to very long chats. Stored text remains
 available for retrieval; this is not an unlimited model context window.
 
-Before the first screenshot turn, the worker warms the local Codex app-server
-connection and builds a small read-only task pack from Serena's knowledge store
+Before the first screenshot turn, the worker starts its Claude session and builds a small read-only task pack from Serena's knowledge store
 plus shallow project `it/` and `docs/` folders. It ranks files against the task,
 strips HTML noise, caps the pack at 18 KB, and redacts obvious credentials. A
-matching AWS runbook therefore reaches Astra with the linked chat and current
+matching AWS runbook therefore reaches the worker with the linked chat and current
 screenshot; the worker does not need to rediscover that saved setup research.
 The pack is sent once per visual thread and is reloaded after history rotation.
 
@@ -270,19 +270,34 @@ Her desktop also needs a Chromium-family browser (`SERENA_ISOLATED_BROWSER`
 overrides the choice) and gnome-terminal. `SERENA_ISOLATED_SIZE=WxH` changes
 its 1920×1080 default.
 
-The existing Codex CLI must be signed into the ChatGPT subscription. The visual
-runner uses `gpt-6-astra` with medium reasoning effort and `service_tier=fast`
-through `codex app-server` (the accepted server tier is `priority`),
-with shell, web search, ambient MCP servers and metered credentials disabled.
-There is no API-key requirement. Each visual thread is ephemeral and rotates
-after eight watch turns. Model choice does not silently fall back to another
-model. Missing access or an unaccepted fast tier is returned as a visible error.
-Fast mode is scoped to computer workers and does not change the parent chat's
-model or effort. The worker keeps its app-server process warm when it rotates
-the visual thread, so the next screenshot does not pay initialization again.
-[Fast mode](https://learn.chatgpt.com/docs/agent-configuration/speed)
-uses 2.5 times standard Codex credits where available. It does not remove
-model inference latency.
+The installed `claude` CLI must be signed into the Claude subscription. The
+worker runs Claude through the Agent SDK against that CLI (the SDK's bundled CLI
+is too old for Opus 5.5), with the session's `observe`, `zoom` and `act` as its
+only tools. Built-in tools, user settings, hooks and skills are off, metered API
+keys are blanked so nothing bills the API, and `--no-session-persistence` keeps
+workers out of the chat list. Each Claude session rotates after eight watch
+turns. Model choice does not silently fall back to another model.
+
+`SERENA_COMPUTER_MODEL` picks the model (default `claude-opus-5-5`) and
+`SERENA_COMPUTER_EFFORT` its effort (default `low`). On the same screenshot and
+prompt, single decisions measured on 2026-09-25:
+
+| Model | Seconds per decision |
+|---|---|
+| Claude Sonnet 5 | 0.8–0.9 |
+| Claude Opus 5.5 (default) | 1.9–3.2 |
+| Claude Haiku 4.5 | 2.3–2.6 |
+| GPT-6 Astra (previous worker) | 3.2–3.5 |
+
+Opus 5.5 finished the terminal task below in 10.8 s of model time against
+Astra's 24.7 s. Frames go to the worker at 1280 px wide: Claude downsamples
+larger images, which would skew its click coordinates. `zoom` returns a
+full-resolution crop of part of a recent frame for reading small text. The crop
+has no frame id, so input can never be aimed with it.
+
+On her own desktop, a click that raises the window it hit keeps the batch going,
+so "click the browser, type the URL" is one batch. Any other focus change, such
+as a popup, still stops the batch. Your screen stays strict.
 
 `install` enables `serena-computer.service` for the graphical login. Starting
 the helper does not capture the screen. `status` can start a detached helper
@@ -384,6 +399,7 @@ nested display at 1920×1080):
 | Your input untouched | 0 XTEST events on your display during a full Astra task; your pointer never moved |
 | Concurrent desks | A watch session on HDMI-A-0 and a control task on her desktop were live together |
 | Astra on her desktop | Ran `uname -r` in her terminal and reported `7.0.0-28-generic` (24.7 s); opened example.com and read its heading |
+| Opus 5.5 on her desktop | Same `uname -r` task in 10.8 s (decisions 2.5 s each); read example.com's heading and sentence verbatim; watch coaching's first line in 3.4 s |
 | Timing split | Model decision 4.8–9.0 s per batch; input 1–9 ms; settle 0.17–0.6 s. Model reasoning dominates |
 | Typing | 198 characters into a Chromium textarea in 134 ms, lossless (xdotool path: 197 ms) |
 | Takeover | A key in the viewer paused a live task after its first batch; resume continued it and it reported both commands' output |
@@ -406,9 +422,9 @@ This release supports **Linux X11**. Her own desktop is an X server even on a
 Wayland host, but only the X11 host path is verified. Wayland, native Windows and macOS capture
 and input adapters are not implemented. Packaged launchers return an explicit
 unsupported-platform error rather than treating XWayland or a remote shell as
-full desktop access. Accessibility trees and OCR are also not claimed; Astra
-uses the real screenshot pixels.
+full desktop access. Accessibility trees and OCR are also not claimed; the
+worker uses the real screenshot pixels.
 
-Protocol references: [Codex app-server](https://developers.openai.com/codex/app-server),
-[computer use](https://developers.openai.com/api/docs/guides/tools-computer-use),
-and [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra).
+Research behind the model choice and the next speed steps:
+[approaches](../knowledge/openai-computer-use/computer-use-approaches-2026-09-25.md),
+[speed to human](../knowledge/openai-computer-use/speed-to-human-2026-09-25.md).

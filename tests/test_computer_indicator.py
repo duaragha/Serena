@@ -35,7 +35,7 @@ def test_state_details_surfaces_draft_and_model_timing() -> None:
     indicator = ComputerIndicator.__new__(ComputerIndicator)
     details = indicator._state_details(
         {
-            "driver": "astra",
+            "driver": "claude",
             "mode": "watch",
             "observation_state": "thinking",
             "inspection_started_at": 0,
@@ -52,7 +52,7 @@ def test_state_details_surfaces_draft_and_model_timing() -> None:
 
 def test_state_details_shows_why_a_session_is_paused() -> None:
     indicator = ComputerIndicator.__new__(ComputerIndicator)
-    for driver in ("astra", "connected_chat"):
+    for driver in ("claude", "connected_chat"):
         details = indicator._state_details(
             {
                 "driver": driver,

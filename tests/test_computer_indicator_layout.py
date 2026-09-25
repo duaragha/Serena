@@ -16,7 +16,7 @@ def test_wrapped_guidance_remains_visible_after_streaming_and_collapse():
     try:
         hud = ComputerIndicator(root, Client())
         session = {
-            "id": "layout-test", "driver": "astra", "mode": "watch",
+            "id": "layout-test", "driver": "claude", "mode": "watch",
             "target": "desktop", "observation_state": "watching",
             "observation": "short reply",
         }

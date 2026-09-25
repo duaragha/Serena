@@ -3,7 +3,7 @@
 Her desktop is a separate X server, so it has its own CLIPBOARD selection and
 nothing he copies reaches it on its own. His copies always reach her desktop,
 so he can paste into the viewer. Her copies reach his clipboard only while the
-viewer is his focused window, i.e. he copied inside it himself: Astra pressing
+viewer is his focused window, i.e. he copied inside it himself: the worker pressing
 Ctrl+C while he works elsewhere never replaces what he copied. When his
 clipboard empties (a password manager's timeout, or the owning app quitting),
 hers is emptied too, so a pasted password does not linger there.

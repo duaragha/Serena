@@ -395,7 +395,7 @@ class ComputerIndicator:
         return max(0, int(time.time() - started)) if started else 0
 
     def _state_details(self, session):
-        automated = session.get("driver") == "astra"
+        automated = session.get("driver") == "claude"
         mode = (
             ("controlling" if session.get("mode") == "control" else "watching")
             if automated
@@ -411,7 +411,7 @@ class ComputerIndicator:
             elapsed = self._elapsed(session)
             waiting = {
                 "starting": "warming the visual worker…",
-                "thinking": f"astra is reading your screen… {elapsed}s",
+                "thinking": f"reading your screen… {elapsed}s",
                 "screen_changed": "screen changed · checking the current view…",
             }.get(state, "watching for the next useful change…")
         else:
@@ -461,7 +461,18 @@ class ComputerIndicator:
             if session.get("desk") == "isolated"
             else _trim(session.get("target", "desktop"), 46)
         )
-        model = "gpt-6-astra · medium · fast" if automated else "connected chat"
+        model = (
+            " · ".join(
+                value
+                for value in (
+                    (session.get("worker_model") or "claude").removeprefix("claude-"),
+                    session.get("worker_effort") or "",
+                )
+                if value
+            )
+            if automated
+            else "connected chat"
+        )
         shown = (
             session["id"],
             mode,

@@ -16,6 +16,7 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 
 from core.action_authority import BASIS_GRANT, build_request, default_authority
+from core.computer_claude import computer_model
 from core.computer_platform import ComputerError, ComputerPaused, ComputerTransientError, Rect
 from core.visual_context import VisualPolicy
 
@@ -77,6 +78,10 @@ class Session:
     input_hold: threading.Event = field(default_factory=threading.Event)
     last_timing: dict | None = None
     frame_delivered_at: float = 0
+    # The visual worker's model sees frames at this width; see computer_claude.
+    frame_width: int = 1920
+    worker_model: str = ""
+    worker_effort: str = ""
 
 
 def number(value, name, minimum, maximum):
@@ -182,7 +187,8 @@ class ComputerController:
                     "source_session_id": s.source_session_id or None,
                     "source_agent": s.source_agent or None,
                     "context_message_count": s.context_message_count,
-                    "service_tier": "fast" if s.driver == "astra" else None,
+                    "worker_model": s.worker_model or None,
+                    "worker_effort": s.worker_effort or None,
                     "latest_frame": next(reversed(s.frames), None),
                     "focused_window": focused,
                     "desk": self.desk,
@@ -196,7 +202,7 @@ class ComputerController:
             "ok": True,
             "backend": self.desktop.name,
             "session": info,
-            "model": "gpt-6-astra",
+            "model": computer_model(),
             "stop_shortcut": "Ctrl+Alt+Shift+Escape",
             "event_id": self.sequence,
         }
@@ -447,12 +453,14 @@ class ComputerController:
             ):
                 self._assert_public(window)
 
-    def observe(self, session_id, *, max_width=1920):
+    def observe(self, session_id, *, max_width=None):
         from PIL import Image, ImageDraw
 
-        number(max_width, "max_width", 640, 2560)
+        if max_width is not None:
+            number(max_width, "max_width", 640, 2560)
         with self.capture_lock:
             s = self.current(session_id)
+            max_width = max_width or s.frame_width
             if self.desktop.locked():
                 self.stop("desktop locked")
                 raise ComputerError("desktop locked")
@@ -555,6 +563,70 @@ class ComputerController:
         if not value or self.clock() >= value["expires_at"]:
             raise ComputerError("frame is expired; observe again before acting")
         return value
+
+    def zoom(self, session_id, frame_id, x, y, width, height, *, max_width=1280):
+        """A full-resolution crop of part of a frame, for reading small text.
+
+        Coordinates are in the frame's pixels. The crop is not a frame: it has
+        no id, so input can never be aimed with its coordinates. Privacy checks
+        and the indicator mask apply exactly as they do to observe.
+        """
+        from PIL import Image, ImageDraw
+
+        with self.capture_lock:
+            s = self.current(session_id)
+            frame = self.frame(session_id, frame_id)
+            for name, value, limit in (
+                ("x", x, frame["width"] - 1),
+                ("y", y, frame["height"] - 1),
+                ("width", width, frame["width"]),
+                ("height", height, frame["height"]),
+            ):
+                number(value, name, 1 if name in {"width", "height"} else 0, limit)
+            if x + width > frame["width"] or y + height > frame["height"]:
+                raise ComputerError("zoom region extends past the screenshot")
+            base = Rect(**frame["rect"])
+            sx, sy = base.width / frame["width"], base.height / frame["height"]
+            rect = Rect(
+                base.x + round(x * sx),
+                base.y + round(y * sy),
+                max(1, round(width * sx)),
+                max(1, round(height * sy)),
+            )
+            if self.geometry(s.target)[2] != frame["geometry"]:
+                raise ComputerError("display/window geometry changed; observe again")
+            if self.desktop.context().get("id") != frame["context"].get("id"):
+                raise ComputerError("foreground changed; observe again")
+            self._assert_public_region(rect)
+            image = self.desktop.capture(rect)
+            try:
+                if self.indicator_rect:
+                    masked = self.indicator_rect
+                    ImageDraw.Draw(image).rectangle(
+                        (
+                            masked.x - rect.x,
+                            masked.y - rect.y,
+                            masked.x + masked.width - rect.x,
+                            masked.y + masked.height - rect.y,
+                        ),
+                        fill=(33, 27, 41),
+                    )
+                image.thumbnail((int(max_width), 1600), Image.Resampling.LANCZOS)
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                buffer = io.BytesIO()
+                image.save(buffer, format="JPEG", quality=90, subsampling=0)
+                return {
+                    "zoom_of": frame_id,
+                    "region": {"x": x, "y": y, "width": width, "height": height},
+                    "width": image.width,
+                    "height": image.height,
+                    "note": "for reading only; aim input with the full screenshot's coordinates",
+                    "media_type": "image/jpeg",
+                    "data": base64.b64encode(buffer.getvalue()).decode(),
+                }
+            finally:
+                image.close()
 
     def next_frame(self, session_id, after_signature="", timeout=10):
         number(timeout, "timeout", 0, 20)
@@ -748,6 +820,7 @@ class ComputerController:
             input_started = time.monotonic()
             preflight_ms = round((input_started - arrived) * 1000)
             input_ms = 0
+            expected_focus = frame["context"].get("id")
             try:
                 for action in actions:
                     self.current(session_id)
@@ -757,12 +830,13 @@ class ComputerController:
                         raise ComputerError("input stopped by lock")
                     if self.geometry(s.target)[2] != geometry:
                         raise ComputerError("target moved during the batch")
-                    if self.desktop.context().get("id") != frame["context"].get("id"):
+                    if self.desktop.context().get("id") != expected_focus:
                         raise ComputerError(
                             "foreground changed during the batch; inspect before continuing"
                         )
                     self._execute(s, action, frame, monitors)
                     receipt["actions_executed"] += 1
+                    expected_focus = self._clicked_focus(s, action, frame, monitors, expected_focus)
                 receipt.update(ok=True, status="executed")
             except Exception as exc:
                 receipt.update(
@@ -902,6 +976,24 @@ class ComputerController:
             raise ComputerError("wait cancelled")
         elif kind == "launch":
             self.launcher(a["app"], a.get("url"))
+
+    def _clicked_focus(self, s, action, frame, monitors, expected):
+        """On her own desktop, a click that raised the window it hit is intended.
+
+        "Click the browser, type the URL" then stays one batch instead of
+        costing a model round trip. Anything else taking focus, such as a popup
+        or a window elsewhere, still stops the batch. His screen stays strict.
+        """
+        if self.desk != "isolated" or action["type"] not in {"click", "double_click"}:
+            return expected
+        with contextlib.suppress(ComputerError):
+            current = self.desktop.context()
+            if current.get("id") == expected or not current.get("rect"):
+                return expected
+            point = self._point(frame, action["x"], action["y"], monitors)
+            if Rect(**current["rect"]).contains(*point):
+                return current.get("id")
+        return expected
 
     def _hold_wait(self, s, seconds):
         """Sleep, returning True as soon as the batch must stop."""

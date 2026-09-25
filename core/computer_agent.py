@@ -1,4 +1,4 @@
-"""GPT-6 Astra visual tasks over the existing Codex subscription transport."""
+"""Visual tasks and live coaching, driven by Claude on Raghav's subscription."""
 
 from __future__ import annotations
 
@@ -8,9 +8,8 @@ import json
 import threading
 import time
 
-from core.codex_brain import CodexBrainClient
-from core.codex_brain_tools import CodexBrainToolRegistry
 from core.computer_browser import BrowserChecks, Check, task_data
+from core.computer_claude import FRAME_WIDTH, ClaudeComputerClient, computer_effort, computer_model
 from core.computer_client import state_dir
 from core.computer_conversation import ConversationCursor
 from core.computer_knowledge import build_task_pack
@@ -41,7 +40,7 @@ The screenshot may supersede an interrupted earlier turn; base guidance on this 
 
 
 class ComputerAgent:
-    def __init__(self, controller, *, speak=False, client_factory=CodexBrainClient):
+    def __init__(self, controller, *, speak=False, client_factory=ClaudeComputerClient):
         self.controller = controller
         self.session = controller.session
         self.speak = speak
@@ -56,6 +55,8 @@ class ComputerAgent:
         self._task_pack_pending = False
         self._browser_post_data = []
         self._browser_target_id = None
+        self.model = computer_model()
+        self.effort = computer_effort()
 
     async def _browser_conditions(self, phase):
         plan = getattr(self.session, "browser_checks", None)
@@ -172,7 +173,7 @@ class ComputerAgent:
             session_id=s.id,
             text=text,
             captured_at=frame["captured_at"],
-            model="gpt-6-astra",
+            model=self.model,
             model_ms=round((time.monotonic() - started) * 1000),
             tool_calls=reply.get("tool_calls", []),
         )
@@ -413,7 +414,7 @@ class ComputerAgent:
                         session_id=s.id,
                         text=text,
                         captured_at=frame["captured_at"],
-                        model="gpt-6-astra",
+                        model=self.model,
                         model_ms=round((time.monotonic() - started) * 1000),
                         tool_calls=reply.get("tool_calls", []),
                         revision=revision,
@@ -439,43 +440,27 @@ class ComputerAgent:
         client = None
         try:
             c.current(s.id)
-            registry = CodexBrainToolRegistry(
-                {
-                    "serena_computer": (
-                        "Observe and operate only this authorized session.",
-                        visual_tools(c, s.id),
-                    )
-                }
-            )
+            # Claude downsamples wider screenshots, which would skew its clicks.
+            s.frame_width = FRAME_WIDTH
+            s.worker_model, s.worker_effort = self.model, self.effort
             options = {
                 "cwd": state_dir() / "agent",
-                "developer_instructions": INSTRUCTIONS,
-                "base_instructions": INSTRUCTIONS,
-                "model": "gpt-6-astra",
-                "effort": "medium",
-                "service_tier": "fast",
-                "allow_user_hooks": False,
-                "ephemeral": True,
-                "tool_registry": registry,
+                "instructions": INSTRUCTIONS,
+                "tools": visual_tools(c, s.id),
+                "model": self.model,
+                "effort": self.effort,
             }
             if s.mode == "control":
                 # One control turn is the whole task; the lease bounds it.
                 options["turn_timeout"] = MAX_SESSION_SECONDS
             self.client = client = self.client_factory(**options)
-            c.event(
-                "model_started",
-                session_id=s.id,
-                model="gpt-6-astra",
-                effort="medium",
-                service_tier="fast",
-            )
+            c.event("model_started", session_id=s.id, model=self.model, effort=self.effort)
             await self._warm_client(client)
             c.event(
                 "model_ready",
                 session_id=s.id,
-                model="gpt-6-astra",
-                effort="medium",
-                service_tier=getattr(client, "accepted_service_tier", None) or "fast",
+                model=self.model,
+                effort=self.effort,
                 knowledge_pack=bool(self.task_pack),
             )
             if s.mode == "watch":
