@@ -49,7 +49,11 @@ On her desktop the worker has two tools that skip screenshots:
 
 - **`shell`** runs a command in a tmux session (private socket `serena-desktop`)
   that her terminal window is attached to, so you watch every command in the
-  viewer. The output and exit code come back as text. `send` answers a prompt
+  viewer. The output and exit code come back as text. A multi-line command is
+  written to a 0600 file in her private `shell/` directory and run as one
+  `bash <file>` (the file deletes itself once bash has it open), so loops and
+  heredocs cost one call; its `cd` and `export` do not carry over. Nothing may
+  end in `&`. `send` answers a prompt
   and `read` shows recent output. Her terminal's `$BROWSER` opens her own Edge
   profile, so sign-in pages that CLIs launch (gcloud, Shopify) open on her
   desktop, not in your browser.
@@ -61,6 +65,12 @@ On her desktop the worker has two tools that skip screenshots:
   and the batch stops at the first failure and returns a fresh snapshot.
   Password fields refuse `fill`; the worker hands off instead. Input goes through
   CDP, never XTest, so it never touches your pointer or trips takeover.
+  Links show their target on a `/url:` line and `goto` accepts that path, so a
+  list page (search results, Hacker News) becomes one batch of goto+read pairs
+  rather than a click, read and back per item. A target that matches several
+  elements fails with `matches` (each one's `nth`, ref, role, name and url) so
+  one retry picks the right one; `back` waits only for the history navigation
+  to commit, not for the page's images.
 
 Her Edge starts with `--remote-debugging-port=0`. The helper attaches only to a
 loopback port whose listener it verifies belongs to her profile. An Edge started

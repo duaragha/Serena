@@ -1150,10 +1150,11 @@ class ComputerController:
                 receipt.update(ok=ok, status=result.get("status", "executed" if ok else "failed"))
                 failed = next((item for item in result.get("steps", []) if not item.get("ok")), None)
                 if failed:
-                    # Which of the model's own steps broke, never page text.
+                    # Which of the model's own steps broke, never page text:
+                    # the error's first line only, never its matches.
                     receipt["failed_step"] = {
                         "step": failed["step"],
-                        "detail": str(failed.get("detail", ""))[:240],
+                        "detail": str(failed.get("detail", "")).split("\n")[0][:240],
                     }
             except Exception as exc:
                 receipt.update(status="failed", error=str(exc)[:500], outcome_uncertain=True)

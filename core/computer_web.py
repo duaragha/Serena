@@ -21,6 +21,7 @@ import json
 import re
 import threading
 from pathlib import Path
+from urllib.parse import urljoin
 
 from core.computer_platform import ComputerError
 
@@ -30,6 +31,8 @@ MAX_STEP_TIMEOUT = 30.0
 SNAPSHOT_CHARS = 14000
 RESULT_SNAPSHOT_CHARS = 7000
 READ_CHARS = 3000
+MAX_MATCHES = 5
+MATCH_TEXT_CHARS = 80
 KINDS = (
     "goto",
     "click",
@@ -45,6 +48,9 @@ KINDS = (
 )
 TARGET_KEYS = ("ref", "role", "label", "placeholder", "text", "selector")
 STOPPED = "stopped: input is held or the session ended"
+URL = re.compile(r"https?://\S{1,2040}")
+# A link as the snapshot shows it (/url: item?id=1): anything without a scheme.
+LINK_PATH = re.compile(r"(?![A-Za-z][A-Za-z0-9+.-]*:)[^\s\\]{1,2040}")
 
 
 class WebError(ComputerError):
@@ -83,8 +89,8 @@ def validate_steps(steps):
             raise WebError(f"{where} timeout must be 0-{MAX_STEP_TIMEOUT:g} seconds")
         body = step[kind]
         if kind == "goto":
-            if not isinstance(body, str) or not re.fullmatch(r"https?://\S{1,2040}", body):
-                raise WebError(f"{where} goto needs one http(s) URL")
+            if not isinstance(body, str) or not (URL.fullmatch(body) or LINK_PATH.fullmatch(body)):
+                raise WebError(f"{where} goto needs an http(s) URL or a link path such as /item?id=1")
         elif kind in {"click", "check", "uncheck", "read"}:
             _target(body, where)
         elif kind in {"fill", "select"}:
@@ -124,6 +130,8 @@ class HerBrowser:
         self.playwright = None
         self.browser = None
         self.page = None
+        # The latest ref-annotated snapshot, untruncated: refs resolve against it.
+        self.last_snapshot = ""
 
     def call(self, coroutine, timeout):
         future = asyncio.run_coroutine_threadsafe(coroutine, self.loop)
@@ -187,7 +195,7 @@ class HerBrowser:
             text = await page._impl_obj._channel.send("snapshotForAI", None, {"timeout": 5000})
         except Exception:
             text = await page.locator("body").aria_snapshot(timeout=5000)
-        text = text if isinstance(text, str) else str(text)
+        text = self.last_snapshot = text if isinstance(text, str) else str(text)
         if len(text) > limit:
             text = text[:limit] + f"\n… snapshot truncated at {limit} characters"
         return text
@@ -218,6 +226,14 @@ class HerBrowser:
     def run(self, steps, cancelled):
         validate_steps(steps)
         return self.call(self._run(steps, cancelled), MAX_STEPS * MAX_STEP_TIMEOUT + 20)
+
+    @staticmethod
+    def _absolute(page, link):
+        """A snapshot's link path, resolved against the page it came from."""
+        url = urljoin(page.url, link)
+        if not URL.fullmatch(url):
+            raise WebError("a link path needs an http(s) page to resolve against")
+        return url
 
     def _locator(self, page, target):
         if "ref" in target:
@@ -254,6 +270,9 @@ class HerBrowser:
             self.opened.clear()
             try:
                 saved = copy.deepcopy(step)
+                if kind == "goto":
+                    # Replays start elsewhere: record where the link led.
+                    saved["goto"] = self._absolute(page, step["goto"])
                 target = saved[kind]
                 if kind == "wait_for":
                     target = target.get("target", target.get("gone"))
@@ -289,7 +308,14 @@ class HerBrowser:
                 results.append({"step": index + 1, "ok": True, **({"detail": detail} if detail else {})})
             except Exception as exc:
                 message = str(exc).split("\n")[0][:400]
-                results.append({"step": index + 1, "ok": False, "detail": message})
+                failure = {"step": index + 1, "ok": False, "detail": message}
+                if "strict mode violation" in message and isinstance(step[kind], dict):
+                    # Name every candidate so one retry can pick it, instead
+                    # of guessing a new selector from the first line alone.
+                    with contextlib.suppress(Exception):
+                        failure["matches"] = await self._matches(page, step[kind])
+                        failure["detail"] += " Retry with the same target plus nth, or a ref from matches."
+                results.append(failure)
                 ok = False
                 break
         state = await self._state(page, RESULT_SNAPSHOT_CHARS)
@@ -301,11 +327,20 @@ class HerBrowser:
         """Keep semantic identity, never snapshot-local refs or DOM positions."""
         locator = self._locator(page, target)
         candidates = []
-        with contextlib.suppress(Exception):
-            snapshot = await locator.aria_snapshot(timeout=timeout)
-            match = re.match(r'^- ([a-z]+) ("(?:[^"\\]|\\.)*")', snapshot.strip())
-            if match:
+        # Role and name come from the snapshot line that carries the ref. Never
+        # locator.aria_snapshot(): it replaces the snapshot aria-ref resolves
+        # against, and the step itself could then never find its ref.
+        line = re.compile(
+            r'- ([a-z]+) ("(?:[^"\\]|\\.)*")(?: \[(?!ref=)[^\]]*\])* \[ref=' + re.escape(target["ref"]) + r"\]"
+        )
+        if not line.search(self.last_snapshot):
+            with contextlib.suppress(Exception):
+                await self._snapshot_text(page, 0)
+        match = line.search(self.last_snapshot)
+        if match:
+            with contextlib.suppress(ValueError):
                 candidates.append({"role": match[1], "name": json.loads(match[2]), "exact": True})
+        timeout = min(timeout, 1000)  # a ref names an element the snapshot saw
         with contextlib.suppress(Exception):
             labels = await locator.evaluate("""element => ({
                 label: element.getAttribute('aria-label') ||
@@ -314,21 +349,80 @@ class HerBrowser:
             })""", timeout=timeout)
             candidates.extend({key: labels[key], "exact": True} for key in ("label", "text")
                               if labels.get(key))
+        handle = await locator.element_handle(timeout=timeout)
         for candidate in candidates:
             try:
                 _target(candidate, "recipe")
-                if await self._locator(page, candidate).count() == 1:
+                chosen = self._locator(page, candidate)
+                # Unique, and the same element: a cached snapshot line can be stale.
+                if await chosen.count() == 1 and await chosen.evaluate(
+                    "(a, b) => a === b", handle, timeout=timeout
+                ):
                     return candidate
             except Exception:
                 continue
         raise WebError("recipe target has no unique semantic identity")
 
+    async def _matches(self, page, target):
+        """What an ambiguous target resolved to: nth, ref, role, name and link."""
+        locator = self._locator(page, {k: v for k, v in target.items() if k != "nth"})
+        found = []
+        for index in range(min(await locator.count(), MAX_MATCHES)):
+            item = locator.nth(index)
+            entry = {"nth": index}
+            with contextlib.suppress(Exception):
+                facts = await item.evaluate("""element => ({
+                    text: (element.innerText || element.value || element.textContent || '').trim(),
+                    href: element.getAttribute('href') || ''
+                })""", timeout=1000)
+                entry["name"] = " ".join(facts["text"].split())[:MATCH_TEXT_CHARS]
+                if facts["href"]:
+                    entry["url"] = facts["href"][:300]
+            with contextlib.suppress(Exception):
+                aria = (await item.aria_snapshot(timeout=1000)).strip()
+                head = re.match(r'^- ([a-z]+)(?: ("(?:[^"\\]|\\.)*"))?(?=[ :\n]|$)', aria)
+                if head and head[1] != "text":
+                    entry["role"] = head[1]
+                    if head[2]:
+                        entry["name"] = json.loads(head[2])[:MATCH_TEXT_CHARS]
+                    entry["_line"] = (head[1], head[2], await item.element_handle(timeout=1000))
+            found.append(entry)
+        # aria-ref resolves against the latest page snapshot, which the element
+        # snapshots above replace: take it last. An element keeps its ref.
+        snapshot = await self._snapshot_text(page, 10**6)
+        for entry in found:
+            role, name, handle = entry.pop("_line", (None, None, None))
+            if handle is None:
+                continue
+            pattern = (
+                rf"- {role}" + (f" {re.escape(name)}" if name else "")
+                + r"(?: \[(?!ref=)[^\]]*\])* \[ref=(e\d+)\]"
+            )
+            for ref in re.findall(pattern, snapshot):
+                with contextlib.suppress(Exception):
+                    same = await page.locator(f"aria-ref={ref}").evaluate(
+                        "(a, b) => a === b", handle, timeout=1000
+                    )
+                    if same:
+                        entry["ref"] = ref
+                        break
+        return found
+
     async def _step(self, page, kind, step, timeout):
         body = step[kind]
         if kind == "goto":
-            await page.goto(body, wait_until="domcontentloaded", timeout=timeout)
+            await page.goto(self._absolute(page, body), wait_until="domcontentloaded", timeout=timeout)
         elif kind == "back":
-            await page.go_back(wait_until="domcontentloaded", timeout=timeout)
+            before = page.url
+            try:
+                await page.go_back(wait_until="commit", timeout=timeout)
+            except Exception:
+                # History navigation can land without reporting its load (a
+                # cached page, one still fetching images): the URL is the proof.
+                if page.url == before:
+                    raise
+            with contextlib.suppress(Exception):
+                await page.wait_for_load_state("domcontentloaded", timeout=min(timeout, 2000))
         elif kind == "press":
             await page.keyboard.press(body)
         elif kind == "tab":
