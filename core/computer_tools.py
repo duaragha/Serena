@@ -66,7 +66,12 @@ def visual_tools(controller, session_id):
             handler=zoom,
         ),
     ]
-    if controller.current(session_id).mode == "control":
+    control = controller.current(session_id).mode == "control"
+    if control and controller.terminal is not None:
+        tools.append(_shell_tool(controller, session_id))
+    if control and controller.web is not None:
+        tools.extend(_browser_tools(controller, session_id))
+    if control:
         tools.append(
             SimpleNamespace(
                 name="act",
@@ -114,3 +119,100 @@ def visual_tools(controller, session_id):
             )
         )
     return tools
+
+
+def _text(result):
+    return {
+        "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
+        "isError": result.get("ok") is False,
+    }
+
+
+def _shell_tool(controller, session_id):
+    async def shell(args):
+        result = await asyncio.to_thread(controller.shell, session_id, **args)
+        return _text(result)
+
+    return SimpleNamespace(
+        name="shell",
+        description=(
+            "Your own desktop's terminal as text. Prefer this over typing into the terminal window "
+            "for anything a command can do. command runs one foreground command (chain with && or ;) "
+            "and returns its output and exit code; timeout is seconds to wait (default 30, max 600). "
+            "If it is still running (status running), read later or answer its prompt with send "
+            "(text, then Enter unless enter=false). Raghav watches the same terminal in the viewer. "
+            "URLs that commands open go to your own browser. Never send passwords or codes: hand off. "
+            "command and send need a new request_id and an intent; read needs neither."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "send": {"type": "string"},
+                "enter": {"type": "boolean"},
+                "read": {"type": "boolean"},
+                "timeout": {"type": "number", "minimum": 1, "maximum": 600},
+                "request_id": {"type": "string"},
+                "intent": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+        handler=shell,
+    )
+
+
+def _browser_tools(controller, session_id):
+    async def page(_args):
+        return _text(await asyncio.to_thread(controller.browser_snapshot, session_id))
+
+    async def browser(args):
+        result = await asyncio.to_thread(controller.browser, session_id, **args)
+        return _text(result)
+
+    target = (
+        "a target is {ref:'e12'} from the latest page snapshot, or {role:'button', name:'Continue'}, "
+        "{label:'Email'}, {placeholder:'Search'}, {text:'Add project'} or {selector:'css'}; "
+        "add nth:0 when several match"
+    )
+    return [
+        SimpleNamespace(
+            name="page",
+            description=(
+                "Read your browser's current page as text: URL, tabs, and an accessibility snapshot "
+                "in which every element has a ref like e12. Far faster than a screenshot; use it for "
+                "any web page, and use observe only for visual content or to check how it looks."
+            ),
+            input_schema={"type": "object", "properties": {}},
+            handler=page,
+        ),
+        SimpleNamespace(
+            name="browser",
+            description=(
+                "Run a whole sequence of steps in your browser in ONE call; they execute locally and "
+                "stop at the first failure. Steps: {goto:url}, {click:T}, {fill:T, value}, "
+                "{select:T, value}, {check:T}, {uncheck:T}, {press:'Enter'}, {read:T}, "
+                "{wait_for:{text|url|target|gone}}, {tab:{index|url_contains|title_contains}}, "
+                "{back:true}; any step takes timeout seconds (default 5). "
+                + target
+                + ". Every action waits for its own target to appear, so chain actions straight "
+                "across pages: when the task names the buttons and fields, send the whole flow in "
+                "one call, targeting pages you have not seen by the labels the task gives or by role "
+                "(e.g. {role:'combobox'} when there is likely one). Add wait_for only for text you "
+                "already know will appear, such as the task's success message; never guess a page's "
+                "wording. A click that opens a tab continues in it. Returns each step's result, the "
+                "URL, tabs and a fresh snapshot; after a failure, continue from that snapshot. "
+                "Password fields refuse fill: hand off."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "steps": {"type": "array", "minItems": 1, "maxItems": 25, "items": {"type": "object"}},
+                    "request_id": {"type": "string"},
+                    "intent": {"type": "string"},
+                },
+                "required": ["steps", "request_id", "intent"],
+                "additionalProperties": False,
+            },
+            handler=browser,
+        ),
+    ]

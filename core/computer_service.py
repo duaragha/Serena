@@ -43,6 +43,16 @@ def _isolated_x11(env):
     return X11Desktop(env, role="isolated")
 
 
+def _isolated_tools(runtime, info):
+    """Her browser as text and her shell, for the worker's fast paths."""
+    from core.computer_shell import HerShell
+    from core.computer_web import HerBrowser
+
+    web = HerBrowser(runtime.profile, prepare=runtime.ensure_debuggable)
+    terminal = HerShell(runtime.shell_env(info), show=lambda: runtime.launch("terminal"))
+    return web, terminal
+
+
 def _clipboard_bridge(host, nested, viewer):
     from core.computer_clipboard import ClipboardBridge
 
@@ -62,6 +72,7 @@ class ComputerServer(ThreadingHTTPServer):
         isolated=None,
         isolated_desktop=_isolated_x11,
         clipboard=_clipboard_bridge,
+        isolated_tools=_isolated_tools,
     ):
         self.controller = controller
         self.directory = directory or state_dir()
@@ -83,6 +94,7 @@ class ComputerServer(ThreadingHTTPServer):
         # His clipboard reaches her desktop; hers reaches his only from the viewer.
         self.clipboard_bridge = clipboard
         self.clipboard = None
+        self.isolated_tools = isolated_tools
         self.client_slots = threading.BoundedSemaphore(16)
         super().__init__(("127.0.0.1", 0), Handler)
 
@@ -298,6 +310,12 @@ class ComputerServer(ThreadingHTTPServer):
                 launcher=runtime.launch,
             )
             c.conversations = self.conversations
+            if self.isolated_tools is not None:
+                try:
+                    c.web, c.terminal = self.isolated_tools(runtime, info)
+                except Exception as exc:
+                    # Screenshots still work without the fast paths.
+                    self.controller.event("structured_tools_unavailable", error=str(exc)[:200])
             try:
                 # Metacity there takes his GNOME keybindings, including this
                 # stop chord; the host grab stops her sessions too.
@@ -335,6 +353,9 @@ class ComputerServer(ThreadingHTTPServer):
         if c is not None:
             with contextlib.suppress(Exception):
                 c.stop(reason)
+            if c.web is not None:
+                with contextlib.suppress(Exception):
+                    c.web.close()
             c.shutdown.set()
             with contextlib.suppress(Exception):
                 c.desktop.close()

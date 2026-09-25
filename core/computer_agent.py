@@ -204,9 +204,13 @@ class ComputerAgent:
             if s.desk == "isolated":
                 prompt += (
                     "\nThis is your own isolated desktop, not Raghav's screen: he keeps working on "
-                    "his own screen meanwhile. Its browser keeps its own saved profile. To open a "
-                    "browser window or tab, or a terminal, end a batch with launch "
-                    "{app: browser|terminal, url}."
+                    "his own screen meanwhile. Its browser keeps its own saved profile. Use the "
+                    "fastest tool that can do each part: shell for anything a command can do; page "
+                    "and browser for web pages, where one browser call runs a whole sequence of "
+                    "steps (actions wait for their own targets); observe/act screenshots only for "
+                    "visual content or apps those cannot reach. When the task already lists the "
+                    "steps, send them as one browser call instead of deciding each click. To open "
+                    "a window, end an act batch with launch {app: browser|terminal, url}."
                 )
             if resumed:
                 prompt += (

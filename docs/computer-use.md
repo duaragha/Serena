@@ -43,6 +43,46 @@ Ctrl+C while you work elsewhere never replaces your clipboard. When your
 clipboard empties (a password manager's timeout, or its owner quitting), hers
 empties too. Text up to 200 KB is bridged; images and larger transfers are not.
 
+### Fast paths: shell and page steps
+
+On her desktop the worker has two tools that skip screenshots:
+
+- **`shell`** runs a command in a tmux session (private socket `serena-desktop`)
+  that her terminal window is attached to, so you watch every command in the
+  viewer. The output and exit code come back as text. `send` answers a prompt
+  and `read` shows recent output. Her terminal's `$BROWSER` opens her own Edge
+  profile, so sign-in pages that CLIs launch (gcloud, Shopify) open on her
+  desktop, not in your browser.
+- **`page`** returns her current page as an accessibility snapshot in which
+  every element has a ref (the same snapshot Playwright MCP gives models).
+  **`browser`** runs up to 25 steps in one call through Playwright over CDP:
+  goto, click, fill, select, check, press, read, wait_for, tab and back. Each
+  action waits for its own target, a click that opens a tab continues in it,
+  and the batch stops at the first failure and returns a fresh snapshot.
+  Password fields refuse `fill`; the worker hands off instead. Input goes through
+  CDP, never XTest, so it never touches your pointer or trips takeover.
+
+Her Edge starts with `--remote-debugging-port=0`. The helper attaches only to a
+loopback port whose listener it verifies belongs to her profile. An Edge started
+before that flag existed is restarted once, with its tabs restored. Receipts,
+authority, idempotency and pause/resume work as they do for `act`. Events record
+which step failed but never page text or command output.
+
+Measured on 2026-09-25 with a local copy of the Firebase "add to existing
+project" wizard (8 clicks across 6 pages), the same prose instructions, and
+Opus 5.5 on her desktop:
+
+| Worker tools | Wall time | Model decisions |
+|---|---|---|
+| Screenshots only (`observe`/`act`) | 45.6 s | 8 |
+| With `page`/`browser` | 19.6–26.1 s | 3–4 |
+
+The page actions themselves took 2–6 s in total. What remains is one decision
+per new page, about 2–3.5 s each, because the worker cannot see a page before it
+loads. Sonnet 5 measured the same here (20.0–26.4 s). The first decision, about
+4–5 s, is mostly the linked chat's history. Replaying a flow that is already
+known and trimming that history are the next levers.
+
 Her browser uses its own persistent profile under
 `~/.config/serena/computer/isolated/browser-profile`. It cannot share your
 running browser's profile, so sign in there once, in the viewer, for each site

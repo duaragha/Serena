@@ -128,6 +128,24 @@ class IsolatedDesktop:
         env["XAUTHORITY"] = self._xauthority()
         return env
 
+    def shell_env(self, info=None):
+        """Her terminal's environment: her display, and URLs open in her browser."""
+        from core.computer_shell import browser_opener
+
+        env = self.env(info)
+        binary = self.browser_binary()
+        if binary:
+            env["BROWSER"] = browser_opener(self.directory, self.profile, binary)
+            # Desktop-specific openers would hand URLs to his session's browser.
+            env.pop("XDG_CURRENT_DESKTOP", None)
+        return env
+
+    @staticmethod
+    def browser_binary():
+        return os.environ.get("SERENA_ISOLATED_BROWSER") or next(
+            (item for item in BROWSERS if shutil.which(item)), None
+        )
+
     def status(self):
         info = self.running()
         if not info:
@@ -300,32 +318,16 @@ class IsolatedDesktop:
         info = self.running()
         if not info:
             raise ComputerError("serena's desktop is not running")
-        env = self.env(info)
+        env = self.shell_env(info)
         if app == "browser":
-            binary = os.environ.get("SERENA_ISOLATED_BROWSER") or next(
-                (item for item in BROWSERS if shutil.which(item)), None
-            )
-            if not binary:
-                raise ComputerError("no Chromium-family browser is installed")
-            self.profile.mkdir(parents=True, exist_ok=True, mode=0o700)
-            width, height = info["size"].split("x")
-            self._spawn(
-                [
-                    binary,
-                    f"--user-data-dir={self.profile}",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--start-maximized",
-                    f"--window-size={width},{height}",
-                    "--window-position=0,0",
-                    url or "about:blank",
-                ],
-                env,
-            )
+            self._spawn_browser(info, env, [url or "about:blank"])
         else:
+            from core.computer_shell import SESSION, SOCKET
+
             self._ensure_terminal_server(info, env)
-            # The client reports a spurious registration error for a custom
-            # app id, yet the server still opens the window: ignore its code.
+            # The window attaches to the tmux session her shell tool drives, so
+            # he sees every command. The client reports a spurious registration
+            # error for a custom app id, yet the window opens: ignore its code.
             self._spawn(
                 [
                     "gnome-terminal",
@@ -333,10 +335,91 @@ class IsolatedDesktop:
                     TERMINAL_APP_ID,
                     "--window",
                     f"--working-directory={Path.home()}",
+                    "--",
+                    "tmux",
+                    "-L",
+                    SOCKET,
+                    "new-session",
+                    "-A",
+                    "-s",
+                    SESSION,
                 ],
                 env,
             )
         return {"ok": True, "app": app}
+
+    def _spawn_browser(self, info, env, extra):
+        binary = self.browser_binary()
+        if not binary:
+            raise ComputerError("no Chromium-family browser is installed")
+        self.profile.mkdir(parents=True, exist_ok=True, mode=0o700)
+        width, height = info["size"].split("x")
+        self._spawn(
+            [
+                binary,
+                f"--user-data-dir={self.profile}",
+                # A loopback DevTools port, written to DevToolsActivePort in her
+                # profile; attach checks that the listener is this profile's.
+                "--remote-debugging-port=0",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--start-maximized",
+                f"--window-size={width},{height}",
+                "--window-position=0,0",
+                *extra,
+            ],
+            env,
+        )
+
+    def _browser_processes(self):
+        import psutil
+
+        profile = os.path.realpath(self.profile)
+        found = []
+        for process in psutil.process_iter(["pid", "cmdline"]):
+            argv = process.info.get("cmdline") or []
+            if any(
+                arg.startswith("--user-data-dir=") and os.path.realpath(arg.split("=", 1)[1]) == profile
+                for arg in argv
+            ) and not any(arg.startswith("--type=") for arg in argv):
+                found.append(process)
+        return found
+
+    def ensure_debuggable(self):
+        """Her Edge running with its automation port; restart it once if not.
+
+        An Edge started before the port existed keeps running without one, and
+        a second launch only opens a tab in it. Restarting restores its tabs.
+        """
+        from core.computer_browser import BrowserError, _active_port, _verify_profile_listener
+
+        info = self.running()
+        if not info:
+            raise ComputerError("serena's desktop is not running")
+        port = _active_port(self.profile / "DevToolsActivePort")
+        if port:
+            try:
+                _verify_profile_listener(port, self.profile)
+                return port
+            except BrowserError:
+                pass
+        for process in self._browser_processes():
+            with contextlib.suppress(Exception):
+                process.terminate()
+        deadline = time.monotonic() + 8
+        while self._browser_processes() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        (self.profile / "DevToolsActivePort").unlink(missing_ok=True)
+        self._spawn_browser(info, self.shell_env(info), ["--restore-last-session"])
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            port = _active_port(self.profile / "DevToolsActivePort")
+            if port:
+                with contextlib.suppress(BrowserError):
+                    _verify_profile_listener(port, self.profile)
+                    return port
+            time.sleep(0.1)
+        raise ComputerError("her browser did not open its automation port")
 
     def _ensure_terminal_server(self, info, env):
         if _alive(info.get("terminal_pid"), TERMINAL_APP_ID):
