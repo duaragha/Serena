@@ -9,9 +9,46 @@ resident brain all use that helper; none creates a separate input executor.
 ```bash
 chats computer status
 chats computer watch "tell me when the download finishes" --target desktop
+chats computer run "log into the shopify cli and link the storefront"   # her own desktop
 chats computer run "fill in this form using the details I gave you" --target active
+chats computer resume
 chats computer stop
 ```
+
+## Serena's own desktop
+
+`run` defaults to `--target isolated`: Serena's own desktop, a nested X server
+(Xephyr) with its own pointer, keyboard, focus, browser profile and terminal.
+Her XTest input goes to that server, so your cursor and keyboard focus never
+move and you keep working while a GUI task runs. The Xephyr window on your
+screen is the live viewer; the helper places it on your rightmost secondary
+monitor. Minimizing it does not stop her. Closing it closes her desktop and
+stops any task there.
+
+```bash
+chats computer desktop open       # start or adopt it, with a browser and terminal
+chats computer desktop show|hide  # raise or minimize the viewer
+chats computer desktop launch browser https://example.com
+chats computer desktop launch terminal
+chats computer desktop close      # browser logins survive in its own profile
+```
+
+Her browser uses its own persistent profile under
+`~/.config/serena/computer/isolated/browser-profile`. It cannot share your
+running browser's profile, so sign in there once, in the viewer, for each site
+she needs. Her terminal is a separate `gnome-terminal-server` instance on her
+display, running as you.
+
+Use `window:ID` or `display:NAME` only when the task needs your own open windows.
+A watch session on your screen and a control session on her desktop can run at
+the same time. Each has its own HUD card; hers sits below yours and has a
+**view** button that raises the viewer. `status` lists both under `sessions`,
+and `session` is the first one still running.
+
+X clients reach her display with a per-start cookie: the server reads it from a
+private file and clients find it in your Xauthority file, keyed by display
+number. CPU and RAM are shared with your desktop, and her desktop does not
+reduce model reasoning time.
 
 `active` freezes the currently focused window at session start. If starting from
 a terminal, use `window:ID` or `display:NAME` for the intended application.
@@ -75,11 +112,33 @@ the task; model-written arguments cannot invent permission. The existing
 one screenshot of the active window.
 
 Stop with **Ctrl+Alt+Shift+Escape**, the visible stop button, `Ctrl+C` in an
-attached computer command, or `chats computer stop`. Physical mouse/keyboard
-input stops a control session. Watch sessions allow normal user input. A lock,
-expired lease, disconnected indicator, or failed input monitor also stops the
-session. Cinnamon already owns Ctrl+Alt+Escape, so that shorter shortcut is not
-used. Failure to register the actual stop shortcut prevents startup.
+attached computer command, or `chats computer stop`. The shortcut is grabbed on
+your screen and stops sessions on both desktops. Watch sessions allow normal
+user input. A lock, expired lease, disconnected indicator, or failed input
+monitor also stops the session. Cinnamon already owns Ctrl+Alt+Escape, so that
+shorter shortcut is not used. Failure to register the actual stop shortcut
+prevents startup. Metacity on her desktop reads your GNOME keybindings, which
+bind Shift+Ctrl+Alt+Escape there, so her display relies on the host grab.
+
+### Takeover pauses, resume continues
+
+Physical input on the desktop being controlled **pauses** the session instead
+of ending it: on your screen any mouse movement, click or key; on her desktop a
+click or key inside the viewer (your pointer merely crossing it does not
+count). The pause holds input at once, including mid-batch, clears frames taken
+before the takeover, and keeps the lease, task and model thread.
+
+Resume with the HUD's **resume** button, `chats computer resume`, MCP
+`computer_resume`, or the resident brain's `resume` operation. Input returns
+only after your hands have been off for 0.8 seconds, because the click on
+resume is itself input. The worker then starts a new turn on the same task
+with a fresh screenshot and is told not to repeat finished steps. A paused
+session still expires with its lease.
+
+The worker can also hand off: an `act` batch ending in `handoff {reason}` pauses
+the session with "serena needs you: …" on the HUD. It uses this for passwords,
+passcodes, MFA and payment details, which it never types. You type them in the
+viewer, press resume, and it continues.
 
 ## CLI agent integration
 
@@ -88,8 +147,9 @@ task. The chat calls `computer_start` directly from that request; you do not
 need to open a terminal session manually or send a second confirmation.
 
 `computer_start` defaults to live desktop coaching with `background=true`,
-using GPT-6 Astra at medium reasoning with fast processing. Select a window/display explicitly when
-the user requests that narrower scope. Background sessions stream through
+using GPT-6 Astra at medium reasoning with fast processing. Watch defaults to
+`target=desktop` and control to `target=isolated`. Select a window/display
+explicitly when the user requests that scope or the task needs their windows. Background sessions stream through
 `computer_events` and the desktop indicator. Do not send input from the chat
 alongside a background controller.
 
@@ -153,7 +213,8 @@ claude mcp add --scope user serena-computer -- /path/to/serena/.venv/bin/python 
 ```
 
 The stdio server exposes `computer_start`, `computer_status`, `computer_observe`,
-`computer_act`, `computer_events`, `computer_history`, and `computer_stop`. The local chat is an
+`computer_act`, `computer_events`, `computer_history`, `computer_resume`,
+`computer_desktop`, and `computer_stop`. The local chat is an
 operator surface: it starts only the task its user requested, and screen text
 cannot supply authorization. A lease's task and owner are visible in status. An agent receives
 mixed text/image MCP content, including frame IDs, timestamps, and coordinates.
@@ -161,7 +222,18 @@ The Codex dynamic-tool adapter preserves images as `inputImage` items instead
 of discarding or JSON-encoding them as text.
 
 Input batches require a fresh frame and a unique request ID. They support move,
-click, double-click, drag, scrolling, key chords, text entry, and bounded waits.
+click, double-click, drag, scrolling, key chords, text entry, bounded waits,
+`handoff {reason}`, and on her desktop `launch {app: browser|terminal, url}`.
+`handoff` and `launch` must end their batch. The worker is told to batch
+predictable steps, such as click a field, type, Tab, type, Enter, and to split
+only where the next step depends on what appears.
+
+Each batch's receipt carries `timing`: `decision_ms` (since the caller last
+received a screenshot), `preflight_ms`, `input_ms`, `settle_ms` and
+`capture_ms`. The HUD shows think and act time. The post-action screenshot is
+settled: the helper polls until the screen changes and then holds still for one
+sample, returns after 0.45 seconds if nothing changed, and never waits more than
+1 second. A batch ending in `wait` returns one immediate capture.
 Coordinates refer to the returned image, including its scaling and monitor
 origin. A duplicate ID with identical arguments returns the prior receipt;
 different arguments under that ID are rejected. Partial execution is reported
@@ -171,16 +243,23 @@ a claim of task success.
 
 Batches have a 15-second input deadline and accept at most 500 typed characters,
 including at most 100 non-ASCII characters. Split longer text into fresh batches.
-Text entry preserves the clipboard and finishes short key sequences before
-cancelling so injected keys are released.
+Characters present in the keymap are typed through XTest in the helper process,
+each a complete press/release with Shift as needed, so a takeover stops typing
+within one character. Characters outside the keymap, or any text while Caps
+Lock is on, fall back to xdotool in short complete chunks, so injected keys are
+always released.
 
 ## Install and runtime
 
 ```bash
-sudo apt install xdotool xinput x11-xserver-utils python3-tk
+sudo apt install xdotool xinput x11-xserver-utils python3-tk xserver-xephyr metacity xauth
 python -m pip install -e .
 chats computer install
 ```
+
+Her desktop also needs a Chromium-family browser (`SERENA_ISOLATED_BROWSER`
+overrides the choice) and gnome-terminal. `SERENA_ISOLATED_SIZE=WxH` changes
+its 1920×1080 default.
 
 The existing Codex CLI must be signed into the ChatGPT subscription. The visual
 runner uses `gpt-6-astra` with medium reasoning effort and `service_tier=fast`
@@ -244,7 +323,7 @@ Live verification on the two 2560×1440 monitors on 2026-09-08 covered:
 | Unicode | Greek, Cyrillic, Chinese and emoji verified on an isolated X11 server |
 | Duplicate requests | Same action ID did not click twice |
 | Stop shortcut | Approximately 105–137 ms including xdotool dispatch and status polling |
-| Physical takeover | Real input cancelled a live control session |
+| Physical takeover | Real input cancelled a live control session (it now pauses; see below) |
 | Astra control | Read a random code from the image, retyped it, clicked confirm and inspected success |
 | Complete Astra GUI task | 22.3 seconds in the recorded multi-action sample |
 | Live watching | Correctly reported a changed fixture status in two consecutive observations |
@@ -287,6 +366,20 @@ then answered the 41st message using a random detail from the first chat message
 and another from the last coaching update, injected through the trusted native
 hook. Both Codex and Claude transcript tests also verify restart and isolation.
 
+Live verification of her desktop on 2026-09-25 (laptop, two 2560×1440 monitors,
+nested display at 1920×1080):
+
+| Check | Result |
+|---|---|
+| Capture of her display | 4–12 ms per 1920×1080 frame |
+| Your input untouched | 0 XTEST events on your display during a full Astra task; your pointer never moved |
+| Concurrent desks | A watch session on HDMI-A-0 and a control task on her desktop were live together |
+| Astra on her desktop | Ran `uname -r` in her terminal and reported `7.0.0-28-generic` (24.7 s); opened example.com and read its heading |
+| Timing split | Model decision 4.8–9.0 s per batch; input 1–9 ms; settle 0.17–0.6 s. Model reasoning dominates |
+| Typing | 198 characters into a Chromium textarea in 134 ms, lossless (xdotool path: 197 ms) |
+| Takeover | A key in the viewer paused a live task after its first batch; resume continued it and it reported both commands' output |
+| HUD | Paused card shows the reason, **resume** and **view** |
+
 Run reproducible local verification:
 
 ```bash
@@ -296,11 +389,12 @@ python scripts/computer_smoke.py --output /path/to/Projects/_artifacts/computer-
 
 The opt-in smoke harness operates only its own test window, checks actual
 widget state, and saves a fixture screenshot plus receipts. Moving the physical
-mouse or typing during its control phase cancels it, just like a normal task.
+mouse or typing during its control phase pauses it, just like a normal task.
 The isolated X11 test uses `Xvfb` (or `SERENA_TEST_XVFB`) and skips if unavailable.
 The verified run completed 104 Python tests and 69 desktop tests.
 
-This release supports **Linux X11**. Wayland, native Windows and macOS capture
+This release supports **Linux X11**. Her own desktop is an X server even on a
+Wayland host, but only the X11 host path is verified. Wayland, native Windows and macOS capture
 and input adapters are not implemented. Packaged launchers return an explicit
 unsupported-platform error rather than treating XWayland or a remote shell as
 full desktop access. Accessibility trees and OCR are also not claimed; Astra

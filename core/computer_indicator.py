@@ -36,7 +36,10 @@ STATE_STYLES = {
     "screen_changed": ("CHANGED", PALETTE["accent"]),
     "sharing": ("SHARING", PALETTE["accent"]),
     "watching": ("WATCHING", PALETTE["success"]),
+    "paused": ("PAUSED", PALETTE["warning"]),
+    "resuming": ("RESUMING", PALETTE["accent"]),
 }
+LIVE_STATES = {"active", "paused", "resuming"}
 
 
 def _trim(value, limit):
@@ -79,9 +82,11 @@ def focus_label(session):
 
 
 class ComputerIndicator:
-    def __init__(self, root, client):
+    def __init__(self, root, client, desk="host"):
         self.root = root
         self.client = client
+        # "isolated" is the card for Serena's own desktop; it sits below his.
+        self.desk = desk
         self.failures = 0
         self.visible_session = ""
         self.shown = None
@@ -92,7 +97,7 @@ class ComputerIndicator:
         self._copy_reset_job = None
         self._last_observation = ""
         self.x = 20
-        self.y = 20
+        self.y = 160 if desk == "isolated" else 20
         self.screen_width = max(360, root.winfo_screenwidth())
         self.screen_height = max(240, root.winfo_screenheight())
         self.width = min(500, max(360, self.screen_width - 40))
@@ -149,7 +154,7 @@ class ComputerIndicator:
         self.status_dot.pack(side="left", padx=(0, 7))
         self.brand = tk.Label(
             self.header_frame,
-            text="SERENA · COMPUTER USE",
+            text="SERENA'S DESKTOP" if desk == "isolated" else "SERENA · COMPUTER USE",
             bg=PALETTE["surface"],
             fg=PALETTE["text"],
             font=("sans", 10, "bold"),
@@ -222,7 +227,6 @@ class ComputerIndicator:
             font=("sans", 8),
             anchor="w",
         )
-        self.meta_label.pack(side="left", fill="x", expand=True)
         self.copy_button = self._small_button(self.footer, "copy", self.copy_text, width=5)
         self.copy_button.pack(side="right", padx=(6, 0))
         self.stop_button = tk.Button(
@@ -241,6 +245,27 @@ class ComputerIndicator:
             takefocus=False,
         )
         self.stop_button.pack(side="right")
+        self.resume_button = tk.Button(
+            self.footer,
+            text="resume",
+            command=self.resume,
+            bg=PALETTE["surface_alt"],
+            fg=PALETTE["success"],
+            activebackground=PALETTE["success"],
+            activeforeground=PALETTE["background"],
+            relief="flat",
+            bd=0,
+            padx=10,
+            pady=4,
+            font=("sans", 8, "bold"),
+            takefocus=False,
+        )
+        self.view_button = None
+        if desk == "isolated":
+            self.view_button = self._small_button(self.footer, "view", self.view, width=5)
+            self.view_button.pack(side="right", padx=(6, 0))
+        # Packed after the buttons so a long timing line shrinks, never a button.
+        self.meta_label.pack(side="left", fill="x", expand=True)
 
         self._bind_drag(self.header_frame)
         for widget in (self.status_dot, self.brand, self.state_badge, self.header_hint):
@@ -321,6 +346,15 @@ class ComputerIndicator:
         with suppress(Exception):
             self.client.call("stop", reason="stopped from the desktop indicator")
 
+    def resume(self):
+        self.resume_button.configure(text="hands off…")
+        with suppress(Exception):
+            self.client.call("resume", session_id=(self._session or {}).get("id", ""))
+
+    def view(self):
+        with suppress(Exception):
+            self.client.call("desktop", action="show")
+
     def copy_text(self):
         if not self._last_observation:
             return
@@ -370,6 +404,8 @@ class ComputerIndicator:
         state = session.get("observation_state") or ("watching" if automated else "sharing")
         if not automated:
             state = "sharing"
+        if session.get("state") in {"paused", "resuming"}:
+            state = session["state"]
         badge, accent = STATE_STYLES.get(state, STATE_STYLES["watching"])
         if automated:
             elapsed = self._elapsed(session)
@@ -384,8 +420,18 @@ class ComputerIndicator:
         observation = session.get("observation") or waiting
         if session.get("observation_preview"):
             observation = "draft · " + session["observation_preview"]
+        if state == "paused":
+            observation = (
+                session.get("paused_reason") or "you took over"
+            ) + " · press resume when your hands are off"
+        elif state == "resuming":
+            observation = "resuming · keep your hands off for a moment…"
         last_ms = session.get("last_model_ms")
-        if automated and last_ms:
+        timing_detail = session.get("last_timing") or {}
+        if timing_detail.get("decision_ms") is not None:
+            acted = (timing_detail.get("input_ms") or 0) + (timing_detail.get("settle_ms") or 0)
+            timing = f"think {timing_detail['decision_ms'] / 1000:.1f}s · act {acted / 1000:.1f}s"
+        elif automated and last_ms:
             timing = f"last check {last_ms / 1000:.1f}s"
         elif automated and state == "thinking":
             timing = f"checking · {elapsed}s"
@@ -396,6 +442,7 @@ class ComputerIndicator:
     def heartbeat(self, height=None):
         return self.client.call(
             "indicator",
+            desk=getattr(self, "desk", "host"),
             visible_session=self.visible_session if self.root.winfo_viewable() else "",
             rect={
                 "x": self.x,
@@ -409,7 +456,11 @@ class ComputerIndicator:
         self._session = session
         automated, mode, state, badge, accent, observation, timing = self._state_details(session)
         focus = focus_label(session)
-        target = _trim(session.get("target", "desktop"), 46)
+        target = (
+            "serena's own desktop"
+            if session.get("desk") == "isolated"
+            else _trim(session.get("target", "desktop"), 46)
+        )
         model = "gpt-6-astra · medium · fast" if automated else "connected chat"
         shown = (
             session["id"],
@@ -431,8 +482,14 @@ class ComputerIndicator:
         self.status_dot.itemconfigure(1, fill=accent)
         self.state_badge.configure(text=badge, fg=accent)
         self.context_label.configure(text=f"{focus}  ·  scope {target}")
-        self.meta_label.configure(text=f"{model}   ·   {timing}   ·   drag header to move")
+        self.meta_label.configure(text=f"{model}   ·   {timing}")
         self.stop_button.configure(text="stop")
+        if state == "paused":
+            self.resume_button.configure(text="resume")
+            if not self.resume_button.winfo_manager():
+                self.resume_button.pack(side="right", padx=(6, 0), before=self.stop_button)
+        elif self.resume_button.winfo_manager():
+            self.resume_button.pack_forget()
         self._last_observation = observation
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
@@ -491,7 +548,7 @@ class ComputerIndicator:
         try:
             result = self.heartbeat()
             session = result.get("session")
-            if session and session["state"] == "active":
+            if session and session["state"] in LIVE_STATES:
                 self.show(session)
             else:
                 self.root.withdraw()
@@ -507,9 +564,9 @@ class ComputerIndicator:
         self.root.after(100 if self.visible_session else 350, self.poll)
 
 
-def main():
+def main(desk="host"):
     root = tk.Tk(className="SerenaComputer")
-    indicator = ComputerIndicator(root, ComputerClient(timeout=1))
+    indicator = ComputerIndicator(root, ComputerClient(timeout=1), desk)
     root.after(0, indicator.poll)
     root.mainloop()
 

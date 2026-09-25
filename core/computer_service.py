@@ -15,15 +15,47 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from core.computer_client import child_command, state_dir
-from core.computer_platform import ComputerError, Rect, create_desktop
-from core.computer_use import ComputerController
+from core.computer_platform import ComputerError, Rect, X11Desktop, create_desktop
+from core.computer_use import LIVE_STATES, ComputerController
+
+GUIDANCE = (
+    "When the user requests computer use in this chat, the agent may start "
+    "that scoped session directly. No manual user terminal step is required. "
+    "Use computer_start with its default background=true for live coaching. "
+    "The worker uses Astra medium with fast processing and the exact launching "
+    "chat's history plus a bounded local task pack from Serena knowledge and project runbooks. "
+    "Prompt hooks supply completed advice on follow-up questions; "
+    "computer_history is the fallback when hooks are unavailable. "
+    "If that tool is not loaded, execute chats computer watch --detach "
+    "for live guidance or chats computer run --detach for a GUI task. "
+    "begin --mode watch also starts the watcher unless --interactive is explicit. "
+    "Sharing-only sessions do not produce automatic observations. Pass the user's task, mode and intended "
+    "target explicitly; active may be the terminal. Watch is observation "
+    "only; control needs a specific requested GUI task. "
+    "Control defaults to target=isolated: Serena's own desktop with its own mouse, keyboard, browser "
+    "and terminal, so the user keeps working meanwhile. Use a window:ID/display:NAME target only when "
+    "the task needs the user's own open windows. Physical input pauses a control session on that "
+    "desktop; computer_resume continues it from a fresh screenshot."
+)
+
+
+def _isolated_x11(env):
+    return X11Desktop(env, role="isolated")
 
 
 class ComputerServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 16
 
-    def __init__(self, controller, *, directory=None, conversations=None):
+    def __init__(
+        self,
+        controller,
+        *,
+        directory=None,
+        conversations=None,
+        isolated=None,
+        isolated_desktop=_isolated_x11,
+    ):
         self.controller = controller
         self.directory = directory or state_dir()
         self.conversations = controller.conversations = conversations
@@ -32,34 +64,54 @@ class ComputerServer(ThreadingHTTPServer):
         self.indicator_seen = 0.0
         self.visible_session = ""
         self.indicator_process = None
+        # Serena's own nested desktop: its lifecycle, and the controller that
+        # drives it once opened. Its sessions run alongside one on his screen.
+        self.isolated_runtime = isolated
+        self.isolated_desktop = isolated_desktop
+        self.isolated = None
+        self.isolated_lock = threading.Lock()
+        self.isolated_indicator_process = None
+        self.isolated_indicator_seen = 0.0
+        self.isolated_visible_session = ""
         self.client_slots = threading.BoundedSemaphore(16)
         super().__init__(("127.0.0.1", 0), Handler)
+
+    def controllers(self):
+        return [c for c in (self.controller, self.isolated) if c is not None]
+
+    def owner(self, session_id):
+        for c in self.controllers():
+            if session_id and c.session and c.session.id == session_id:
+                return c
+        raise ComputerError("computer session not found")
+
+    def status(self):
+        result = self.controller.status()
+        isolated = self.isolated.status()["session"] if self.isolated else None
+        sessions = [item for item in (result["session"], isolated) if item]
+        live = [item for item in sessions if item["state"] in LIVE_STATES]
+        # Old clients read one session: prefer whichever is still running.
+        result["session"] = (live or sessions or [None])[0]
+        result["sessions"] = sessions
+        result["isolated_desktop"] = (
+            self.isolated_runtime.status() if self.isolated_runtime else None
+        )
+        return result
 
     def dispatch(self, method, params, operator):
         c = self.controller
         if method == "status":
             return {
-                **c.status(),
+                **self.status(),
                 "monitors": c.desktop.monitors(),
-                "session_start": {
-                    "mcp_tool": "computer_start",
-                    "guidance": (
-                        "When the user requests computer use in this chat, the agent may start "
-                        "that scoped session directly. No manual user terminal step is required. "
-                        "Use computer_start with its default background=true for live coaching. "
-                        "The worker uses Astra medium with fast processing and the exact launching "
-                        "chat's history plus a bounded local task pack from Serena knowledge and project runbooks. "
-                        "Prompt hooks supply completed advice on follow-up questions; "
-                        "computer_history is the fallback when hooks are unavailable. "
-                        "If that tool is not loaded, execute chats computer watch --detach "
-                        "for live guidance or chats computer run --detach for a GUI task. "
-                        "begin --mode watch also starts the watcher unless --interactive is explicit. "
-                        "Sharing-only sessions do not produce automatic observations. Pass the user's task, mode and intended "
-                        "target explicitly; active may be the terminal. Watch is observation "
-                        "only; control needs a specific requested GUI task."
-                    ),
-                },
+                "session_start": {"mcp_tool": "computer_start", "guidance": GUIDANCE},
             }
+        if method == "indicator" and params.get("desk") == "isolated":
+            # Her desktop's HUD lives on his screen, so it is never in her
+            # screenshots and needs no mask.
+            self.isolated_indicator_seen = time.monotonic()
+            self.isolated_visible_session = str(params.get("visible_session", ""))
+            return self.isolated.status() if self.isolated else {**c.status(), "session": None}
         if method == "indicator":
             if "rect" in params:
                 value = params["rect"]
@@ -98,6 +150,9 @@ class ComputerServer(ThreadingHTTPServer):
                 raise ComputerError("conversation linking is unavailable")
             if not isinstance(interactive, bool):
                 raise ComputerError("interactive must be a boolean")
+            if params.get("target") == "isolated":
+                c = self.isolated_controller()
+                params["target"] = "desktop"
             # Old chats used begin --mode watch for coaching. Honor that intent
             # while leaving internal one-shot captures and explicit sharing alone.
             start_agent = method == "run" or (
@@ -130,25 +185,163 @@ class ComputerServer(ThreadingHTTPServer):
                     c.stop("visual worker failed to start")
                     raise
             return c.status()
-        if method == "observe":
-            return c.observe(**params)
-        if method == "act":
-            return c.act(**params)
-        if method == "next_frame":
-            return c.next_frame(**params)
+        if method in {"observe", "act", "next_frame"}:
+            return getattr(self.owner(params.get("session_id")), method)(**params)
         if method == "events":
+            # Every desk writes the same ordered stream; events carry session_id.
             return c.read_events(**params)
         if method == "stop":
-            return c.stop(**params)
+            for item in self.controllers():
+                item.stop(**params)
+            return self.status()
+        if method == "resume":
+            if not operator:
+                raise ComputerError("resume from the local operator surface")
+            session_id = params.get("session_id") or ""
+            if session_id:
+                target = self.owner(session_id)
+            else:
+                paused = [
+                    item
+                    for item in self.controllers()
+                    if item.session and item.session.state in {"paused", "resuming"}
+                ]
+                if not paused:
+                    raise ComputerError("no paused computer session to resume")
+                if len(paused) > 1:
+                    raise ComputerError("two sessions are paused; pass session_id")
+                target = paused[0]
+            target.resume(session_id or None)
+            return self.status()
         if method == "steer":
-            if not c.agent:
+            session_id = params.get("session_id")
+            running = (
+                [self.owner(session_id)]
+                if session_id
+                else [
+                    item
+                    for item in self.controllers()
+                    if item.agent and item.agent.thread and item.agent.thread.is_alive()
+                ]
+            )
+            if not running or not running[0].agent:
                 raise ComputerError("no running visual task to steer")
-            return c.agent.steer(params["message"])
+            if len(running) > 1:
+                raise ComputerError("two visual tasks are running; pass session_id")
+            return running[0].agent.steer(params["message"])
         if method == "history":
             if not self.conversations:
                 raise ComputerError("conversation history is unavailable")
             return {"messages": self.conversations.messages(params["session_id"])}
+        if method == "desktop":
+            if not operator:
+                raise ComputerError("manage serena's desktop from the local operator surface")
+            return self.desktop_operation(**params)
         raise ComputerError("unknown computer operation")
+
+    # -- Serena's own desktop ------------------------------------------------
+    def desktop_operation(self, action="status", app="", url=None):
+        runtime = self.isolated_runtime
+        if runtime is None:
+            raise ComputerError("serena's own desktop is unavailable in this helper")
+        if action == "status":
+            return runtime.status()
+        if action == "open":
+            self.isolated_controller()
+            return runtime.status()
+        if action == "close":
+            with self.isolated_lock:
+                self._drop_isolated("serena's desktop closed")
+            return runtime.stop()
+        if action == "show":
+            self.isolated_controller()
+            return runtime.show()
+        if action == "hide":
+            return runtime.hide()
+        if action == "launch":
+            if url is not None and not (
+                isinstance(url, str) and url.startswith(("http://", "https://")) and len(url) <= 2048
+            ):
+                raise ComputerError("launch url must be one http(s) URL")
+            self.isolated_controller()
+            return runtime.launch(app, url)
+        raise ComputerError("desktop action must be status, open, close, show, hide, or launch")
+
+    def isolated_controller(self):
+        """The controller for her own desktop, starting or adopting it on demand."""
+        with self.isolated_lock:
+            runtime = self.isolated_runtime
+            if runtime is None:
+                raise ComputerError("serena's own desktop is unavailable in this helper")
+            if self.isolated is not None and runtime.running():
+                return self.isolated
+            self._drop_isolated("serena's desktop restarted")
+            info = runtime.start()
+            desktop = self.isolated_desktop(runtime.env(info))
+            c = ComputerController(
+                desktop,
+                authority=self.controller.authority,
+                clock=self.controller.clock,
+                publish=self.controller.publish,
+                bus=self.controller.bus,
+                desk="isolated",
+                launcher=runtime.launch,
+            )
+            c.conversations = self.conversations
+            try:
+                # Metacity there takes his GNOME keybindings, including this
+                # stop chord; the host grab stops her sessions too.
+                desktop.start_input_monitor(c.physical_input, c.stop, motion=False, shortcut=False)
+                self.start_isolated_indicator(c)
+            except Exception:
+                with contextlib.suppress(Exception):
+                    desktop.close()
+                raise
+            self.isolated = c
+            return c
+
+    def _drop_isolated(self, reason):
+        c, self.isolated = self.isolated, None
+        process, self.isolated_indicator_process = self.isolated_indicator_process, None
+        if c is not None:
+            with contextlib.suppress(Exception):
+                c.stop(reason)
+            c.shutdown.set()
+            with contextlib.suppress(Exception):
+                c.desktop.close()
+        if process is not None:
+            with contextlib.suppress(Exception):
+                process.terminate()
+
+    def close_isolated(self):
+        """Release her controller but leave her desktop running for the next helper."""
+        with self.isolated_lock:
+            self._drop_isolated("computer service stopped")
+
+    def start_isolated_indicator(self, controller):
+        self.isolated_indicator_seen = 0.0
+        self.isolated_visible_session = ""
+        self.isolated_indicator_process = subprocess.Popen(
+            [*child_command("indicator"), "--desk", "isolated"],
+            cwd=Path(__file__).resolve().parents[1],
+            env=self.controller.desktop.env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        def require_indicator(_session):
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if (
+                    self.isolated_visible_session == _session.id
+                    and time.monotonic() - self.isolated_indicator_seen < 1
+                ):
+                    return
+                time.sleep(0.05)
+            raise ComputerError("visible indicator for serena's desktop did not start")
+
+        controller.indicator = require_indicator
 
     def start_indicator(self):
         # Match the compact HUD's initial footprint before its first heartbeat.
@@ -183,41 +376,56 @@ class ComputerServer(ThreadingHTTPServer):
     LOCK_PROBE_GRACE_SECONDS = 3.0
 
     def supervise(self):
-        last_lock_check = 0.0
-        lock_probe_failing_since = None
+        last_lock_check = {}
+        lock_probe_failing_since = {}
+        runtime_checked = 0.0
         while not self.controller.shutdown.wait(0.05):
-            s = self.controller.session
-            if s and s.state == "active":
-                with self.controller.lock:
-                    for identifier, frame in list(s.frames.items()):
-                        if time.time() >= frame["expires_at"]:
-                            s.frames.pop(identifier, None)
-                if time.time() >= s.expires_at:
-                    self.controller.stop("session expired")
-                elif self.indicator_process and (
-                    self.indicator_process.poll() is not None
-                    # begin waits for its first acknowledgement before capture.
-                    # An initial zero heartbeat is not a disconnected indicator.
-                    or (
-                        self.indicator_seen
-                        and time.monotonic() - self.indicator_seen > self.INDICATOR_STALE_SECONDS
-                    )
-                ):
-                    self.controller.stop("visible indicator disconnected")
-                elif self.controller.authority.lock_state()["engaged"]:
-                    self.controller.stop("Serena emergency stop")
-                elif time.monotonic() - last_lock_check >= 0.5:
-                    last_lock_check = time.monotonic()
-                    try:
-                        if self.controller.desktop.locked():
-                            self.controller.stop("desktop locked")
-                        lock_probe_failing_since = None
-                    except ComputerError:
-                        lock_probe_failing_since = lock_probe_failing_since or time.monotonic()
-                        if time.monotonic() - lock_probe_failing_since >= self.LOCK_PROBE_GRACE_SECONDS:
-                            self.controller.stop("desktop lock state unavailable")
-            else:
-                lock_probe_failing_since = None
+            for desk, c in (("host", self.controller), ("isolated", self.isolated)):
+                if c is not None:
+                    self._supervise(desk, c, last_lock_check, lock_probe_failing_since)
+            if self.isolated is not None and time.monotonic() - runtime_checked >= 1:
+                runtime_checked = time.monotonic()
+                if not self.isolated_runtime.running():
+                    # Closing the viewer window closes her desktop.
+                    with self.isolated_lock:
+                        self._drop_isolated("serena's desktop was closed")
+
+    def _supervise(self, desk, c, last_lock_check, lock_probe_failing_since):
+        s = c.session
+        if not s or s.state not in LIVE_STATES:
+            lock_probe_failing_since[desk] = None
+            return
+        with c.lock:
+            for identifier, frame in list(s.frames.items()):
+                if time.time() >= frame["expires_at"]:
+                    s.frames.pop(identifier, None)
+        if desk == "host":
+            process, seen = self.indicator_process, self.indicator_seen
+        else:
+            process, seen = self.isolated_indicator_process, self.isolated_indicator_seen
+        if time.time() >= s.expires_at:
+            c.stop("session expired")
+        elif process and (
+            process.poll() is not None
+            # begin waits for its first acknowledgement before capture.
+            # An initial zero heartbeat is not a disconnected indicator.
+            or (seen and time.monotonic() - seen > self.INDICATOR_STALE_SECONDS)
+        ):
+            c.stop("visible indicator disconnected")
+        elif c.authority.lock_state()["engaged"]:
+            c.stop("Serena emergency stop")
+        elif time.monotonic() - last_lock_check.get(desk, 0.0) >= 0.5:
+            last_lock_check[desk] = time.monotonic()
+            try:
+                if c.desktop.locked():
+                    c.stop("desktop locked")
+                lock_probe_failing_since[desk] = None
+            except ComputerError:
+                since = lock_probe_failing_since.get(desk) or time.monotonic()
+                lock_probe_failing_since[desk] = since
+                if time.monotonic() - since >= self.LOCK_PROBE_GRACE_SECONDS:
+                    c.stop("desktop lock state unavailable")
+        c.settle_resume()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -296,6 +504,8 @@ def serve():
             "ok",
             "status",
             "actions_executed",
+            "timing",
+            "by_agent",
         }
         with contextlib.suppress(Exception):
             ledger.append_event(
@@ -308,9 +518,15 @@ def serve():
 
     controller = ComputerController(desktop, publish=publish)
     from core.computer_conversation import ConversationStore
+    from core.computer_nested import IsolatedDesktop
 
     server = ComputerServer(
-        controller, directory=directory, conversations=ConversationStore(directory)
+        controller,
+        directory=directory,
+        conversations=ConversationStore(directory),
+        isolated=IsolatedDesktop(
+            directory / "isolated", host_env=desktop.env, host_monitors=desktop.monitors
+        ),
     )
     info = {
         "port": server.server_port,
@@ -326,18 +542,25 @@ def serve():
     temporary.replace(discovery)
 
     def stopping(_signum, _frame):
-        controller.stop("computer service shutting down")
+        for item in server.controllers():
+            item.stop("computer service shutting down")
         threading.Thread(target=server.shutdown, daemon=True).start()
 
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, stopping)
     try:
-        desktop.start_input_monitor(controller.physical_input, controller.stop)
+        desktop.start_input_monitor(
+            controller.physical_input,
+            controller.stop,
+            # The stop chord is global: it also ends a task on her own desktop.
+            on_shortcut=lambda reason: [item.stop(reason) for item in server.controllers()],
+        )
         server.start_indicator()
         threading.Thread(target=server.supervise, daemon=True).start()
         print(f"computer service ready: {desktop.name}, pid={os.getpid()}", flush=True)
         server.serve_forever(poll_interval=0.1)
     finally:
+        server.close_isolated()
         controller.close()
         if server.indicator_process:
             server.indicator_process.terminate()

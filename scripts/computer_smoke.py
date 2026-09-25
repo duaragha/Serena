@@ -125,7 +125,7 @@ def main():
     state_path.unlink(missing_ok=True)
     client = ComputerClient()
     status = client.ensure_running()
-    if status.get("session") and status["session"]["state"] == "active":
+    if status.get("session") and status["session"]["state"] in {"active", "paused", "resuming"}:
         raise RuntimeError("an existing user session is active; smoke test will not interrupt it")
     env = desktop_environment()
     process = subprocess.Popen(
