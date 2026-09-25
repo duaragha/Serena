@@ -20,7 +20,34 @@ function catalogFeatures(catalog) {
       throw new Error('Invalid or unordered feature catalog');
     seen.add(f.id);
   }
+  adoptedBaselines(catalog, seen);
   return catalog.features;
+}
+
+// A stable release published outside Promote to Main carries no receipt. Its
+// reviewed entry pins the exact tag commit and the features that tree holds,
+// so promotion can continue from it instead of refusing every request.
+function adoptedBaselines(catalog, known = new Set(catalog.features.map(f => f.id))) {
+  const adopted = catalog.adoptedStable ?? [];
+  if (!Array.isArray(adopted) || adopted.length > 50) throw new Error('Invalid adopted stable baselines');
+  const tags = new Set();
+  for (const entry of adopted) {
+    if (!STABLE.test(entry?.tag) || tags.has(entry.tag) || entry.tag === catalog.initialStable
+        || !SHA.test(entry.commit) || typeof entry.reason !== 'string' || !entry.reason
+        || !Array.isArray(entry.features) || new Set(entry.features).size !== entry.features.length
+        || entry.features.some(id => !known.has(id)))
+      throw new Error('Invalid adopted stable baselines');
+    const chosen = new Set(entry.features);
+    for (const f of catalog.features.filter(f => chosen.has(f.id))) {
+      if (f.requires.some(id => !chosen.has(id))) throw new Error('Invalid adopted stable baselines');
+    }
+    tags.add(entry.tag);
+  }
+  return adopted;
+}
+
+function adoptedBaseline(catalog, tag) {
+  return adoptedBaselines(catalog).find(entry => entry.tag === tag) || null;
 }
 
 function selection(catalog, selected, tested, installed = []) {
@@ -41,10 +68,16 @@ function selection(catalog, selected, tested, installed = []) {
   return { added, all: features.filter(f => chosen.has(f.id)) };
 }
 
-function installedFeatures(catalog, tag, receipt) {
+function installedFeatures(catalog, tag, receipt, tagCommit = null) {
   catalogFeatures(catalog);
   if (!STABLE.test(tag)) throw new Error('Invalid stable release');
   if (tag === catalog.initialStable && !receipt) return [];
+  const adopted = receipt ? null : adoptedBaseline(catalog, tag);
+  if (adopted) {
+    // Only the reviewed tree counts: a retagged or different build is refused.
+    if (tagCommit !== adopted.commit) throw new Error(`Main ${tag} does not match its reviewed baseline commit`);
+    return catalog.features.filter(f => adopted.features.includes(f.id)).map(f => f.id);
+  }
   if (receipt?.schema !== 1 || receipt.version !== tag || !Array.isArray(receipt.features))
     throw new Error('Main has no compatible promotion receipt; review its baseline before promoting');
   const known = new Map(catalog.features.map(f => [f.id, f]));
@@ -64,4 +97,4 @@ function nextVersion(tag) {
   return `v${parts.join('.')}`;
 }
 
-module.exports = { STABLE, DEV, SHA, REQUEST, catalogFeatures, selection, installedFeatures, nextVersion };
+module.exports = { STABLE, DEV, SHA, REQUEST, catalogFeatures, adoptedBaseline, selection, installedFeatures, nextVersion };

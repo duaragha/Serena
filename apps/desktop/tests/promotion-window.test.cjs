@@ -39,3 +39,23 @@ test('only the isolated release window main frame can invoke its bounded IPC', a
   assert.equal((await fn({ sender: instance.webContents, senderFrame: frame })).ok, true);
   assert.equal(external, 'https://github.com/duaragha/Serena/actions/workflows/selective-promotion.yml');
 });
+
+test('a failed release action is written to the desktop log, not only shown in the window', async () => {
+  const handlers = new Map();
+  const logged = [];
+  let instance;
+  class Window {
+    constructor() { instance = this; this.webContents = { mainFrame: {}, setWindowOpenHandler() {}, on() {} }; }
+    setMenu() {} once() {} on() {} isDestroyed() { return false; } async loadFile() {} show() {} focus() {}
+  }
+  const open = createPromotionWindow({ app: { getPath: () => '/tmp/test-unused' }, profile: { channel: 'dev' },
+    BrowserWindow: Window, ipcMain: { handle: (name, fn) => handlers.set(name, fn) },
+    shell: { openExternal: async () => { throw new Error('No browser available'); } }, dialog: {},
+    log: message => logged.push(message) });
+  await open();
+  const frame = instance.webContents.mainFrame;
+  frame.url = pathToFileURL(path.resolve(__dirname, '../promotion.html')).href;
+  const result = await handlers.get('promotion:github')({ sender: instance.webContents, senderFrame: frame });
+  assert.deepEqual(result, { ok: false, error: 'No browser available' });
+  assert.deepEqual(logged, ['releases github failed: No browser available']);
+});

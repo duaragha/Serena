@@ -37,6 +37,18 @@ class PromotionService {
     if (result.encoding !== 'base64' || typeof result.content !== 'string') throw new Error('Invalid GitHub file response');
     return JSON.parse(Buffer.from(result.content, 'base64').toString('utf8'));
   }
+  async receipt(tag) {
+    try { return await this.content('config/stable-promotion.json', tag); }
+    catch (error) {
+      // A 404 here is not a connection or sign-in problem: main was published
+      // some other way and nobody has reviewed what it contains yet.
+      if (/HTTP 404|Not Found/.test(error.message)) {
+        throw new Error(`Main ${tag} was published outside Promote to Main and has no reviewed baseline. `
+          + 'Add it to adoptedStable in config/promotion-features.json before promoting.');
+      }
+      throw error;
+    }
+  }
   async pending() {
     try { return JSON.parse(await fs.readFile(this.file, 'utf8')); }
     catch (error) { if (error.code === 'ENOENT') return null; throw new Error('Saved release request is unreadable'); }
@@ -61,9 +73,11 @@ class PromotionService {
     const release = await this.api('releases/latest');
     if (!policy.STABLE.test(release.tag_name)) throw new Error('Invalid main release');
     const catalog = await this.content('config/promotion-features.json', source);
-    const receipt = release.tag_name === catalog.initialStable ? null
-      : await this.content('config/stable-promotion.json', release.tag_name);
-    const installed = policy.installedFeatures(catalog, release.tag_name, receipt);
+    const adopted = policy.adoptedBaseline(catalog, release.tag_name);
+    const receipt = release.tag_name === catalog.initialStable || adopted ? null
+      : await this.receipt(release.tag_name);
+    const tagCommit = adopted ? (await this.api(`commits/${release.tag_name}`)).sha : null;
+    const installed = policy.installedFeatures(catalog, release.tag_name, receipt, tagCommit);
     const status = await this.status();
     this.snapshot = { source, stable: release.tag_name, catalog, installed, version: this.version };
     return { ...this.snapshot, status };

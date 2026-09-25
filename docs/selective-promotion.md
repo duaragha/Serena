@@ -34,6 +34,19 @@ compatible receipt requires reviewed baseline migration, not guessing. A source
 or stable change after review forces refresh. Conflicts fail closed, without
 automated resolution or unselected master changes.
 
+### Adopted Baselines
+
+A stable release published some other way (for example `v0.3.10`, shipped on
+2026-09-25 from the `v0.3.10-dev.13` tree) is migrated by an `adoptedStable`
+entry in the catalog: its tag, the exact commit the tag points at, a reason, and
+the registered features that tree holds. Promotion then continues from it. The
+window and `prepare-promotion.cjs` refuse the entry unless the tag still resolves
+to that commit, and preparation checks every listed feature commit is an ancestor
+of it. The first promotion after an adoption writes a normal receipt, so later
+releases never need the entry again. Without an entry, the window says main was
+published outside Promote to Main rather than reporting a sign-in failure.
+Promotion window failures are also written to the Dev desktop log.
+
 ## Build And Publication Gates
 
 `selective-promotion.yml` runs only on master, using one non-cancelling concurrency

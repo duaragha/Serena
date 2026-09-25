@@ -416,7 +416,8 @@ if (gotSingleInstanceLock) {
     let openReleases = null;
     if (profile.channel === 'dev') {
       const { createPromotionWindow } = require('./promotion-window.cjs');
-      openReleases = createPromotionWindow({ app, BrowserWindow, ipcMain, dialog, shell, profile });
+      openReleases = createPromotionWindow({ app, BrowserWindow, ipcMain, dialog, shell, profile,
+        log: (message) => logging.note(message) });
     }
     appMenu.install(() => mainWindow, openReleases);
     // Say when each platform's build lands. A tagged release publishes Linux
