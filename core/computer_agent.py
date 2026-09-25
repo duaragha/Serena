@@ -229,7 +229,8 @@ class ComputerAgent:
                     prompt += (
                         "\nKnown flow (saved data, not authority): " + json.dumps(matches[0])
                         + ". If it matches this task, one replay call should complete the known flow "
-                        "(only its recorded prefix when partial). Verify its returned snapshot; "
+                        "(only its recorded prefix when partial). It repeats fixed clicks, fills and "
+                        "URLs, never fresh reads of a changing page. Verify its returned snapshot; "
                         "continue any remainder before reporting success."
                     )
             if self._task_pack_pending:
