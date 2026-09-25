@@ -214,7 +214,13 @@ def server(controller):
         def stop(self):
             self.stopped = True
 
-    server = ComputerServer(controller, isolated=runtime, isolated_desktop=make, clipboard=Bridge)
+    server = ComputerServer(
+        controller,
+        isolated=runtime,
+        isolated_desktop=make,
+        clipboard=Bridge,
+        isolated_tools=lambda runtime, info: (None, None),
+    )
     server.start_isolated_indicator = lambda c: None
     server.runtime, server.desktops, server.bridges = runtime, desktops, bridges
     yield server

@@ -115,6 +115,10 @@ class ComputerController:
         self.desk = desk
         # Opens an allow-listed app on her own desktop; None on his screen.
         self.launcher = launcher
+        # Her browser read as text and driven by element, and her shell; both
+        # exist only on her own desktop (see computer_web / computer_shell).
+        self.web = None
+        self.terminal = None
         self.lock = threading.RLock()
         self.capture_lock = threading.Lock()
         self.action_lock = threading.Lock()
@@ -892,6 +896,170 @@ class ComputerController:
                 **{k: v for k, v in receipt.items() if k != "frame"},
             )
             return {**receipt, **({"frame": post_frame} if post_frame else {})}
+        finally:
+            self.action_lock.release()
+
+    # -- structured input on her own desktop ---------------------------------
+    def browser_snapshot(self, session_id):
+        """Her current page as an accessibility snapshot with element refs."""
+        s = self.current(session_id)
+        if self.web is None:
+            raise ComputerError("page snapshots exist only on serena's own desktop")
+        result = self.web.snapshot()
+        s.frame_delivered_at = time.monotonic()
+        return result
+
+    def browser(self, session_id, steps, *, request_id, intent, confirmation_id=""):
+        """Run a whole sequence of page steps in one call; stop at the first failure."""
+        if self.web is None:
+            raise ComputerError("browser steps exist only on serena's own desktop")
+        from core.computer_web import MAX_STEP_TIMEOUT, validate_steps
+
+        validate_steps(steps)
+        budget = sum(float(step.get("timeout", 5)) for step in steps) + 10
+        return self._structured_batch(
+            session_id,
+            request_id=request_id,
+            intent=intent,
+            payload=["browser", steps],
+            budget=min(budget, len(steps) * MAX_STEP_TIMEOUT + 10),
+            execute=lambda s: self.web.run(steps, cancelled=lambda: self._input_cancelled(s)),
+            confirmation_id=confirmation_id,
+        )
+
+    def shell(
+        self,
+        session_id,
+        *,
+        request_id="",
+        intent="",
+        command=None,
+        send=None,
+        enter=True,
+        read=False,
+        timeout=30,
+        confirmation_id="",
+    ):
+        """Her terminal as text: run a command, answer a prompt, or read output."""
+        if self.terminal is None:
+            raise ComputerError("the shell exists only on serena's own desktop")
+        if sum(bool(item) for item in (command, send is not None, read)) != 1:
+            raise ComputerError("shell takes exactly one of command, send, or read")
+        s = self.current(session_id)
+        if read:
+            result = self.terminal.read()
+            s.frame_delivered_at = time.monotonic()
+            return result
+        number(timeout, "timeout", 1, 600)
+        if command is not None:
+            payload = ["shell", command, timeout]
+
+            def execute(session):
+                return self.terminal.run(
+                    command, timeout=timeout, cancelled=lambda: self._input_cancelled(session)
+                )
+        else:
+            payload = ["send", send, enter]
+
+            def execute(_session):
+                return self.terminal.send(send, enter=enter)
+
+        return self._structured_batch(
+            session_id,
+            request_id=request_id,
+            intent=intent,
+            payload=payload,
+            budget=timeout + 10,
+            execute=execute,
+            confirmation_id=confirmation_id,
+        )
+
+    def _structured_batch(self, session_id, *, request_id, intent, payload, budget, execute, confirmation_id):
+        """Authority, receipts, idempotency and timing for non-pixel input."""
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", request_id):
+            raise ComputerError("supply a unique request_id (8–80 letters/digits/dashes)")
+        if not isinstance(intent, str) or not intent.strip() or len(intent) > 500:
+            raise ComputerError("describe the intended effect of this batch")
+        if not self.action_lock.acquire(blocking=False):
+            raise ComputerError("another action batch is running")
+        try:
+            arrived = time.monotonic()
+            s = self.current(session_id)
+            decision_ms = (
+                round((arrived - s.frame_delivered_at) * 1000) if s.frame_delivered_at else None
+            )
+            digest = hashlib.sha256(json.dumps([payload, intent], sort_keys=True).encode()).hexdigest()
+            if request_id in s.results:
+                old = s.results[request_id]
+                if old["digest"] != digest:
+                    raise ComputerError("request_id was reused with different actions")
+                return {**old["result"], "replayed": True}
+            if s.mode != "control":
+                raise ComputerError("this session can watch but cannot send input")
+            authorization = build_request(
+                capability="computer.input",
+                intent=f"{s.request}; {intent}",
+                source="automation",
+                target=s.target,
+                effect="external",
+                session_id=s.id,
+                authorization_basis=BASIS_GRANT,
+                grant_id=s.grant_id,
+                confirmation_id=confirmation_id,
+            )
+            decision = self.authority.authorize(authorization)
+            if not decision.allowed:
+                raise ComputerError(decision.reason)
+            receipt = {
+                "ok": False,
+                "status": "running",
+                "request_id": request_id,
+                "action_receipt_id": authorization.request_id,
+            }
+            s.results[request_id] = {"digest": digest, "result": receipt}
+            while len(s.results) > 100:
+                s.results.popitem(last=False)
+            self.event("action_started", session_id=s.id, request_id=request_id, intent=intent)
+            # A leftover pixel-batch deadline must not cancel this one.
+            s.action_deadline = time.monotonic() + budget
+            started = time.monotonic()
+            try:
+                result = execute(s)
+                ok = bool(result.get("ok", result.get("status") != "interrupted"))
+                receipt.update(result)
+                receipt.update(ok=ok, status=result.get("status", "executed" if ok else "failed"))
+                failed = next((item for item in result.get("steps", []) if not item.get("ok")), None)
+                if failed:
+                    # Which of the model's own steps broke, never page text.
+                    receipt["failed_step"] = {
+                        "step": failed["step"],
+                        "detail": str(failed.get("detail", ""))[:240],
+                    }
+            except Exception as exc:
+                receipt.update(status="failed", error=str(exc)[:500], outcome_uncertain=True)
+            finally:
+                run_ms = round((time.monotonic() - started) * 1000)
+                self.authority.record_outcome(
+                    authorization.request_id,
+                    status="completed" if receipt["ok"] else "failed",
+                    detail="structured input dispatched"
+                    if receipt["ok"]
+                    else str(receipt.get("error") or receipt.get("status")),
+                    receipt={k: receipt.get(k) for k in ("request_id", "status", "ok")},
+                )
+            receipt["timing"] = s.last_timing = {"decision_ms": decision_ms, "run_ms": run_ms}
+            s.frame_delivered_at = time.monotonic()
+            # Events stay small: page text and command output never enter them.
+            self.event(
+                "action_finished",
+                session_id=s.id,
+                **{
+                    k: receipt.get(k)
+                    for k in ("request_id", "ok", "status", "error", "timing", "failed_step")
+                    if k in receipt
+                },
+            )
+            return receipt
         finally:
             self.action_lock.release()
 
