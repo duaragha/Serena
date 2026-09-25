@@ -9,6 +9,9 @@ on:
   push:
     tags:
       - "v*-dev.*"
+      # One-off: stable v0.3.10 is the Dev v0.3.10-dev.13 tree, published by
+      # hand while Promote to Main is broken. Lives only on this release branch.
+      - "v0.3.10"
 
 # Releases land on this repository, which is what publishing a tag needs.
 permissions:
