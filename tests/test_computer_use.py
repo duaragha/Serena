@@ -170,7 +170,8 @@ def test_watch_and_operator_scope(controller):
     assert c.session.state == "active"
 
 
-def test_stop_during_batch_cancels_wait_and_releases_input(controller):
+@pytest.mark.parametrize("interruption", ["takeover", "stop"])
+def test_takeover_or_stop_during_batch_cancels_wait_and_releases_input(controller, interruption):
     c = controller
     sid, frame = begin(c)
     result = []
@@ -186,12 +187,18 @@ def test_stop_during_batch_cancels_wait_and_releases_input(controller):
     while not c.session.results and time.monotonic() < deadline:
         time.sleep(0.005)
     started = time.monotonic()
-    c.physical_input()
+    if interruption == "takeover":
+        c.physical_input()
+    else:
+        c.stop()
     worker.join(timeout=1)
     assert not worker.is_alive() and time.monotonic() - started < 1
     assert not result[0]["ok"] and not c.desktop.inputs
     assert not c.session.frames and c.desktop.releases
-    with pytest.raises(ComputerError, match="stopped"):
+    # His takeover pauses the task instead of ending it; stop still ends it.
+    expected = "paused" if interruption == "takeover" else "stopped"
+    assert c.session.state == expected
+    with pytest.raises(ComputerError, match=expected):
         c.observe(sid)
 
 
@@ -597,7 +604,9 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, tmp_path,
         # that says what was missing.
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
-            if controller.session.observation and options:
+            # The observation lands on the session a moment before its event
+            # is recorded as coaching; wait for both.
+            if controller.session.observation and options and store.coaching(parent):
                 break
             time.sleep(0.01)
         assert controller.session.observation == "open the next setup step"

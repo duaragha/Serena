@@ -38,10 +38,11 @@ def serve():
 
 
 @computer.command(hidden=True)
-def indicator():
+@click.option("--desk", type=click.Choice(["host", "isolated"]), default="host")
+def indicator(desk):
     from core.computer_indicator import main
 
-    main()
+    main(desk)
 
 
 @computer.command()
@@ -80,9 +81,11 @@ def options(func):
             click.argument("task"),
             click.option(
                 "--target",
-                default="active",
-                show_default=True,
-                help="active, desktop, display:NAME, window:ID",
+                default=None,
+                help=(
+                    "isolated (Serena's own desktop), active, desktop, display:NAME, window:ID. "
+                    "Default: active for watch, isolated for run."
+                ),
             ),
             click.option("--seconds", type=click.IntRange(1, 1800), default=300, show_default=True),
             click.option(
@@ -98,6 +101,8 @@ def options(func):
 
 
 def run_task(mode, task, target, seconds, speak, detach):
+    # A GUI task runs on her own desktop unless it needs one of his windows.
+    target = target or ("isolated" if mode == "control" else "active")
     client = ComputerClient()
     client.ensure_running()
     result = client.call(
@@ -125,8 +130,69 @@ def watch(**kwargs):
 @computer.command()
 @options
 def run(**kwargs):
-    """Complete one GUI task. Physical input or Ctrl+Alt+Shift+Esc takes over."""
+    """Complete one GUI task, on Serena's own desktop by default.
+
+    Your mouse and keyboard stay yours. Clicking or typing on the desktop she
+    is driving pauses her; `chats computer resume` hands control back.
+    Ctrl+Alt+Shift+Esc stops.
+    """
     run_task("control", **kwargs)
+
+
+@computer.command()
+@click.option("--session", "session_id", default="", help="Which paused session, if two are.")
+def resume(session_id):
+    """Hand control back after you took over; she continues from a fresh screenshot."""
+    click.echo(json.dumps(ComputerClient().call("resume", session_id=session_id), indent=2))
+
+
+@computer.group()
+def desktop():
+    """Serena's own desktop: its own mouse, keyboard, browser and terminal."""
+
+
+def _desktop(action, **params):
+    client = ComputerClient()
+    client.ensure_running()
+    click.echo(json.dumps(client.call("desktop", action=action, **params), indent=2))
+
+
+@desktop.command("status")
+def desktop_status():
+    """Whether her desktop is running, and where."""
+    _desktop("status")
+
+
+@desktop.command("open")
+def desktop_open():
+    """Start her desktop (or adopt the running one) with a browser and terminal."""
+    _desktop("open")
+
+
+@desktop.command("close")
+def desktop_close():
+    """Stop any task there and close her desktop. Browser logins persist."""
+    _desktop("close")
+
+
+@desktop.command("show")
+def desktop_show():
+    """Raise the live viewer window on your screen."""
+    _desktop("show")
+
+
+@desktop.command("hide")
+def desktop_hide():
+    """Minimize the viewer; her desktop keeps running."""
+    _desktop("hide")
+
+
+@desktop.command("launch")
+@click.argument("app", type=click.Choice(["browser", "terminal"]))
+@click.argument("url", required=False)
+def desktop_launch(app, url):
+    """Open a browser (optionally at URL) or a terminal on her desktop."""
+    _desktop("launch", app=app, url=url)
 
 
 @computer.command()
@@ -223,6 +289,14 @@ def follow(client, *, after=0, session_id=None):
                 elif kind == "screen_changed":
                     click.echo("\n[screen changed · updating guidance]", err=True)
                     streamed = False
+                elif kind == "paused":
+                    click.echo(
+                        f"\n[paused · {event.get('reason')} · chats computer resume continues]",
+                        err=True,
+                    )
+                    streamed = False
+                elif kind == "resumed":
+                    click.echo("[resumed · continuing from a fresh screenshot]", err=True)
                 elif kind in {"error", "speech_error", "stopped"}:
                     click.echo("\n" + str(event.get("error") or event.get("reason")), err=True)
                     if kind == "error":
@@ -231,12 +305,14 @@ def follow(client, *, after=0, session_id=None):
                     if failure:
                         raise ComputerError(failure)
                     return
-            current = client.call("status").get("session")
-            if (
-                not current
-                or current["state"] != "active"
-                or (session_id and current["id"] != session_id)
-            ):
+            status = client.call("status")
+            sessions = status.get("sessions") or [status.get("session")]
+            current = (
+                next((item for item in sessions if item and item["id"] == session_id), None)
+                if session_id
+                else status.get("session")
+            )
+            if not current or current["state"] not in {"active", "paused", "resuming"}:
                 return
     except KeyboardInterrupt:
         client.call("stop", reason="Ctrl+C in computer CLI")

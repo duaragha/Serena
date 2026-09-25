@@ -40,7 +40,9 @@ class ComputerClient:
             info = json.loads((state_dir() / "service.json").read_text(encoding="utf-8"))
             port = int(info["port"])
             token = (
-                info["operator_token"] if method in {"begin", "run", "confirm"} else info["token"]
+                info["operator_token"]
+                if method in {"begin", "run", "confirm", "resume", "desktop"}
+                else info["token"]
             )
             request = urllib.request.Request(
                 f"http://127.0.0.1:{port}/rpc",

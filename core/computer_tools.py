@@ -49,9 +49,18 @@ def visual_tools(controller, session_id):
                     "Use a new request_id for each batch; retry the identical ID after a transport error. "
                     "Actions: move/click/double_click {x,y,button:left|right|middle}; drag {path:[{x,y}],button}; "
                     "scroll {x,y,scroll_y,scroll_x} (positive down/right, 100 per notch); "
-                    "keypress {keys:[CTRL,a]} as a chord; type {text}; wait {seconds<=3}. "
-                "Text batches allow at most 500 characters, including at most 100 non-ASCII characters. "
-                "All keys/buttons release automatically. Returns a receipt AND a post-action screenshot. "
+                    "keypress {keys:[CTRL,a]} as a chord; type {text}; wait {seconds<=3}; "
+                    "handoff {reason} when Raghav must act (password, MFA, payment). "
+                    + (
+                        "launch {app:browser|terminal, url} opens an app on your own desktop. "
+                        if controller.launcher
+                        else ""
+                    )
+                    + "handoff/launch must be the last action. Batch predictable steps, e.g. click, type, "
+                    "keypress TAB, type, keypress ENTER in one call. "
+                    "Text batches allow at most 500 characters, including at most 100 non-ASCII characters. "
+                    "All keys/buttons release automatically. Returns a receipt AND a settled post-action "
+                    "screenshot; read it instead of observing again. "
                     "Inspect that image before claiming success. On partial/uncertain output inspect again; do not blindly retry."
                 ),
                 input_schema={

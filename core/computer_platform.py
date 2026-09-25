@@ -23,6 +23,10 @@ class ComputerTransientError(ComputerError):
     """The foreground changed during capture; retry with a fresh screen check."""
 
 
+class ComputerPaused(ComputerError):
+    """Raghav holds the input right now; wait for resume, then observe again."""
+
+
 @lru_cache(maxsize=1)
 def legacy_unicode_keys():
     """Old X11 clients need legacy Greek/Cyrillic keysyms, not Uxxxx aliases."""
@@ -89,12 +93,17 @@ def desktop_environment():
 
 class X11Desktop:
     name = "x11"
+    # Short enough that 500 characters take about a second, long enough that
+    # Chromium and GTK never coalesce or drop a key.
+    TYPE_DELAY_SECONDS = 0.002
 
-    def __init__(self):
+    def __init__(self, env=None, *, role="host"):
+        """role="isolated" drives Serena's own nested display, never his screen."""
         from Xlib import display
 
-        self.env = desktop_environment()
-        if self.env.get("XDG_SESSION_TYPE") == "wayland":
+        self.role = role
+        self.env = dict(env) if env is not None else desktop_environment()
+        if role == "host" and self.env.get("XDG_SESSION_TYPE") == "wayland":
             raise ComputerError(
                 "Wayland requires a portal adapter; XWayland is not full desktop access"
             )
@@ -102,8 +111,11 @@ class X11Desktop:
             raise ComputerError("no graphical X11 session; start the service in your desktop login")
         if not shutil.which("xdotool") or not shutil.which("xinput"):
             raise ComputerError("computer use needs xdotool and xinput installed")
-        # Xlib reads XAUTHORITY itself, once at connection creation.
-        for key in ("DISPLAY", "XAUTHORITY"):
+        # Xlib reads XAUTHORITY itself, once at connection creation. Her nested
+        # display's cookie lives in the same file, keyed by display number, so
+        # only the host desktop pins the process-wide DISPLAY.
+        keys = ("DISPLAY", "XAUTHORITY") if role == "host" else ("XAUTHORITY",)
+        for key in keys:
             if self.env.get(key):
                 os.environ[key] = self.env[key]
         self.display = display.Display(self.env["DISPLAY"])
@@ -235,6 +247,10 @@ class X11Desktop:
         return False
 
     def locked(self):
+        if self.role == "isolated":
+            # Her own display has no lock screen, and his screen locking while
+            # she works there exposes nothing of his.
+            return False
         # Fail closed if the current desktop lock cannot be queried.
         for name, path, interface in [
             (
@@ -330,7 +346,77 @@ class X11Desktop:
             (self.held_keys.add if down else self.held_keys.discard)(code)
             self.display.sync()
 
+    def _stroke(self, char):
+        """Keycode and Shift for a character already in the keymap, else None."""
+        from Xlib import XK
+
+        if char == "\n":
+            keysym = XK.string_to_keysym("Return")
+        elif char == "\t":
+            keysym = XK.string_to_keysym("Tab")
+        elif 0x20 <= ord(char) <= 0x7E or 0xA0 <= ord(char) <= 0xFF:
+            keysym = ord(char)  # Latin-1 keysyms equal their code points.
+        else:
+            return None
+        code = self.display.keysym_to_keycode(keysym)
+        if not code:
+            return None
+        for index, shift in ((0, False), (1, True)):
+            if self.display.keycode_to_keysym(code, index) == keysym:
+                return code, shift
+        return None
+
+    def _refresh_keymap(self):
+        # xdotool maps spare keycodes for Unicode and restores them afterwards.
+        from Xlib import X
+
+        while self.display.pending_events():
+            event = self.display.next_event()
+            if event.type == X.MappingNotify:
+                self.display.refresh_keyboard_mapping(event)
+
     def type_text(self, text, cancelled):
+        """Type through XTest in this process; xdotool only for missing keysyms.
+
+        Each character is a complete press/release (with Shift when needed), so
+        a cancellation between characters never leaves a key down, and takeover
+        is noticed within one character instead of one eight-character chunk.
+        Starting an xdotool process per chunk cost more than the typing itself.
+        """
+        from Xlib import XK, X
+        from Xlib.ext import xtest
+
+        with self.lock:
+            self._refresh_keymap()
+            caps_lock = self.display.get_keyboard_control().led_mask & 1
+            shift = self.display.keysym_to_keycode(XK.string_to_keysym("Shift_L"))
+            strokes = [None if caps_lock else self._stroke(char) for char in text]
+        pending = ""
+        for char, stroke in zip(text, strokes, strict=True):
+            if stroke is None:
+                pending += char
+                continue
+            if pending:
+                self._type_with_xdotool(pending, cancelled)
+                pending = ""
+                with self.lock:
+                    self._refresh_keymap()
+            if cancelled():
+                raise ComputerError("text entry interrupted; some characters may have been typed")
+            code, shifted = stroke
+            with self.lock:
+                if shifted:
+                    xtest.fake_input(self.display, X.KeyPress, detail=shift)
+                xtest.fake_input(self.display, X.KeyPress, detail=code)
+                xtest.fake_input(self.display, X.KeyRelease, detail=code)
+                if shifted:
+                    xtest.fake_input(self.display, X.KeyRelease, detail=shift)
+                self.display.sync()
+            time.sleep(self.TYPE_DELAY_SECONDS)
+        if pending:
+            self._type_with_xdotool(pending, cancelled)
+
+    def _type_with_xdotool(self, text, cancelled):
         # Short complete chunks bound takeover latency without killing xdotool
         # between a synthetic key-down and its key-up. stdin hides text from ps.
         legacy = legacy_unicode_keys() if any(ord(char) > 255 for char in text) else {}
@@ -366,8 +452,13 @@ class X11Desktop:
             self.held_buttons.clear()
             self.display.sync()
 
-    def start_input_monitor(self, on_input, on_stop):
-        """XI2 identifies XTEST separately, so our input never counts as takeover."""
+    def start_input_monitor(self, on_input, on_stop, *, motion=True):
+        """XI2 identifies XTEST separately, so our input never counts as takeover.
+
+        motion=False counts only clicks and key presses: his pointer merely
+        crossing her desktop's viewer on the way elsewhere is not a takeover.
+        """
+        takeover = ("RawKeyPress", "RawButtonPress") + (("RawMotion",) if motion else ())
 
         def watch():
             try:
@@ -399,7 +490,7 @@ class X11Desktop:
                         if "HierarchyChanged" in kind:
                             on_stop("input devices changed; start a new session")
                     elif "device:" in line and any(
-                        name in kind for name in ("RawMotion", "RawKeyPress", "RawButtonPress")
+                        name in kind for name in takeover
                     ):
                         match = re.search(r"\((\d+)\)", line)
                         if match and int(match.group(1)) not in synthetic:

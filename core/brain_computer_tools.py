@@ -19,8 +19,10 @@ def text(value):
 
 @tool(
     "computer_session",
-    "Start Astra screen watching or a GUI task requested in the actual user turn; or stop/status. "
+    "Start Astra screen watching or a GUI task requested in the actual user turn; or stop/status/resume. "
     "Use active by default. Scope to desktop only if the user explicitly says desktop/all screens. "
+    "For a GUI task that does not need his own open windows, target isolated runs it on your own "
+    "desktop so his mouse and keyboard stay free. resume continues a task he paused by taking over. "
     "The dedicated visual runner streams observations to the desktop indicator and chats computer events.",
     {"operation": str, "target": str, "seconds": int, "speak": bool},
 )
@@ -32,8 +34,10 @@ async def computer_session(args):
             return text(await asyncio.to_thread(client.call, "status"))
         if operation == "stop":
             return text(await asyncio.to_thread(client.call, "stop", reason="stopped from Serena"))
+        if operation == "resume":
+            return text(await asyncio.to_thread(client.call, "resume"))
         if operation not in {"watch", "run"}:
-            raise ComputerError("operation must be watch, run, stop, or status")
+            raise ComputerError("operation must be watch, run, stop, resume, or status")
         origin = current_turn()
         request = str(origin.get("text") or "").strip()
         action_words = (
@@ -64,8 +68,11 @@ async def computer_session(args):
         ):
             raise ComputerError("the user authorized observation only")
         target = args.get("target", "active")
+        # Her own desktop is narrower than any scope of his screen.
+        isolated = target == "isolated" and operation == "run"
         if (
-            target != "active"
+            not isolated
+            and target != "active"
             and target not in request
             and (
                 target != "desktop"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import io
 import json
@@ -15,12 +16,29 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 
 from core.action_authority import BASIS_GRANT, build_request, default_authority
-from core.computer_platform import ComputerError, ComputerTransientError, Rect
+from core.computer_platform import ComputerError, ComputerPaused, ComputerTransientError, Rect
 from core.visual_context import VisualPolicy
 
 MAX_ACTIONS = 12
 MAX_SESSION_SECONDS = 1800
 MAX_FRAME_AGE = 45
+# After resume, input waits until his hands have been off for this long: the
+# click on the resume button is itself physical input.
+RESUME_QUIET_SECONDS = 0.8
+# A post-action screenshot waits for the UI to react and stop painting, so the
+# model rarely spends a whole turn discovering that nothing had rendered yet.
+POST_ACTION_SETTLE_SECONDS = 1.0
+POST_ACTION_QUIET_SECONDS = 0.45
+LIVE_STATES = frozenset({"active", "paused", "resuming"})
+
+
+class EventBus:
+    """One ordered event stream shared by every desktop the helper owns."""
+
+    def __init__(self):
+        self.condition = threading.Condition(threading.RLock())
+        self.events = deque(maxlen=256)
+        self.sequence = 0
 
 
 @dataclass
@@ -50,6 +68,15 @@ class Session:
     context_message_count: int = 0
     action_deadline: float = 0
     browser_checks: dict | None = None
+    desk: str = "host"
+    paused_reason: str = ""
+    paused_by_agent: bool = False
+    pauses: int = 0
+    resume_requested_at: float | None = None
+    last_physical_at: float = 0
+    input_hold: threading.Event = field(default_factory=threading.Event)
+    last_timing: dict | None = None
+    frame_delivered_at: float = 0
 
 
 def number(value, name, minimum, maximum):
@@ -61,33 +88,59 @@ def number(value, name, minimum, maximum):
 
 
 class ComputerController:
-    def __init__(self, desktop, *, authority=None, clock=time.time, indicator=None, publish=None):
+    def __init__(
+        self,
+        desktop,
+        *,
+        authority=None,
+        clock=time.time,
+        indicator=None,
+        publish=None,
+        bus=None,
+        desk="host",
+        launcher=None,
+    ):
         self.desktop = desktop
         self.authority = authority or default_authority()
         self.clock = clock
         self.indicator = indicator
         self.publish = publish
+        self.bus = bus or EventBus()
+        # "host" is his screen; "isolated" is Serena's own nested desktop.
+        self.desk = desk
+        # Opens an allow-listed app on her own desktop; None on his screen.
+        self.launcher = launcher
         self.lock = threading.RLock()
         self.capture_lock = threading.Lock()
         self.action_lock = threading.Lock()
         self.session = None
-        self.events = deque(maxlen=256)
-        self.sequence = 0
-        self.condition = threading.Condition(self.lock)
         self.shutdown = threading.Event()
         self.policy = VisualPolicy()
         self.agent = None
         self.conversations = None
         self.indicator_rect = None
 
+    @property
+    def events(self):
+        return self.bus.events
+
+    @property
+    def sequence(self):
+        return self.bus.sequence
+
+    @property
+    def condition(self):
+        return self.bus.condition
+
     def event(self, kind, **data):
-        with self.condition:
-            self.sequence += 1
-            event = {"id": self.sequence, "type": kind, "at": self.clock(), **data}
+        bus = self.bus
+        with bus.condition:
+            bus.sequence += 1
+            event = {"id": bus.sequence, "type": kind, "at": self.clock(), **data}
             if self.conversations:
                 self.conversations.record(event)
-            self.events.append(event)
-            self.condition.notify_all()
+            bus.events.append(event)
+            bus.condition.notify_all()
         if self.publish and kind not in {"frame", "delta"}:
             self.publish(event)
         return event
@@ -132,6 +185,11 @@ class ComputerController:
                     "service_tier": "fast" if s.driver == "astra" else None,
                     "latest_frame": next(reversed(s.frames), None),
                     "focused_window": focused,
+                    "desk": self.desk,
+                    "paused_reason": s.paused_reason or None,
+                    "paused_by_agent": s.paused_by_agent,
+                    "pauses": s.pauses,
+                    "last_timing": s.last_timing,
                 }
             )
         return {
@@ -181,7 +239,7 @@ class ComputerController:
             target = "window:" + window_id
         self.geometry(target)
         with self.lock:
-            if self.session and self.session.state == "active":
+            if self.session and self.session.state in LIVE_STATES:
                 raise ComputerError("a computer session already owns this desktop; stop it first")
             if self.action_lock.locked() or (
                 self.agent and self.agent.thread and self.agent.thread.is_alive()
@@ -208,6 +266,7 @@ class ComputerController:
                 source_session_id=source_session_id,
                 source_agent=source_agent,
                 browser_checks=browser_checks,
+                desk=self.desk,
             )
             self.session = s
         try:
@@ -225,13 +284,24 @@ class ComputerController:
         except Exception:
             self.stop("session startup failed")
             raise
-        self.event("started", session_id=s.id, mode=mode, target=target, expires_at=s.expires_at)
+        self.event(
+            "started",
+            session_id=s.id,
+            mode=mode,
+            target=target,
+            desk=self.desk,
+            expires_at=s.expires_at,
+        )
         return self.status()
 
     def current(self, session_id):
         s = self.session
         if not s or s.id != session_id:
             raise ComputerError("computer session not found")
+        if s.state in {"paused", "resuming"} and not s.cancelled.is_set():
+            raise ComputerPaused(
+                "paused: Raghav has the mouse and keyboard; after resume, observe before acting"
+            )
         if s.state != "active" or s.cancelled.is_set():
             raise ComputerError(f"computer session {s.state}: {s.reason}")
         if self.clock() >= s.expires_at:
@@ -244,7 +314,7 @@ class ComputerController:
             s = self.session
             if session_id and (not s or s.id != session_id):
                 return self.status()
-            if not s or s.state != "active":
+            if not s or s.state not in LIVE_STATES:
                 return self.status()
             # Cancellation is visible to the executor before waiting for any I/O.
             s.cancelled.set()
@@ -260,9 +330,68 @@ class ComputerController:
         return self.status()
 
     def physical_input(self):
+        """His real input pauses a control session; watch sessions ignore it."""
         s = self.session
-        if s and s.state == "active" and s.mode == "control":
-            self.stop("you took over with the mouse or keyboard")
+        if not s or s.mode != "control" or s.state not in LIVE_STATES:
+            return
+        s.last_physical_at = self.clock()
+        if s.state == "active":
+            self.pause(s.id, "you took over with the mouse or keyboard")
+
+    def pause(self, session_id, reason, *, by_agent=False):
+        """Hold input without ending the task; its lease and context survive."""
+        with self.lock:
+            s = self.session
+            if not s or s.id != session_id or s.state != "active" or s.mode != "control":
+                return self.status()
+            s.state = "paused"
+            s.paused_reason = str(reason)[:300]
+            s.paused_by_agent = by_agent
+            s.pauses += 1
+            s.resume_requested_at = None
+            # An in-flight batch sees the hold before the next key or click.
+            s.input_hold.set()
+            # Anything captured before the takeover no longer describes the screen.
+            s.frames.clear()
+        self.desktop.release()
+        self.event("paused", session_id=s.id, reason=s.paused_reason, by_agent=by_agent)
+        return self.status()
+
+    def resume(self, session_id=None):
+        with self.lock:
+            s = self.session
+            if not s or (session_id and s.id != session_id):
+                raise ComputerError("computer session not found")
+            if s.state in {"active", "resuming"}:
+                return self.status()
+            if s.state != "paused":
+                raise ComputerError(f"computer session {s.state}: {s.reason}")
+            if self.clock() >= s.expires_at:
+                raise ComputerError("computer session expired")
+            if self.authority.lock_state()["engaged"]:
+                raise ComputerError("Serena's emergency stop is engaged")
+            s.state = "resuming"
+            s.resume_requested_at = self.clock()
+        self.event("resuming", session_id=s.id)
+        return self.status()
+
+    def settle_resume(self):
+        """Hand input back once his hands have been off for a moment."""
+        s = self.session
+        if not s or s.state != "resuming":
+            return False
+        quiet_since = max(s.resume_requested_at or 0, s.last_physical_at or 0)
+        if self.clock() - quiet_since < RESUME_QUIET_SECONDS:
+            return False
+        with self.lock:
+            if self.session is not s or s.state != "resuming":
+                return False
+            s.state = "active"
+            s.paused_reason = ""
+            s.paused_by_agent = False
+            s.input_hold.clear()
+        self.event("resumed", session_id=s.id)
+        return True
 
     def geometry(self, target):
         monitors = self.desktop.monitors()
@@ -417,6 +546,7 @@ class ComputerController:
                 s.frames[frame["frame_id"]] = frame
                 while len(s.frames) > 4:
                     s.frames.popitem(last=False)
+                s.frame_delivered_at = time.monotonic()
             return frame
 
     def frame(self, session_id, frame_id):
@@ -468,8 +598,10 @@ class ComputerController:
             "type",
             "wait",
             "screenshot",
+            "launch",
+            "handoff",
         }
-        for a in actions:
+        for index, a in enumerate(actions):
             if not isinstance(a, dict) or a.get("type") not in allowed:
                 raise ComputerError("unknown computer action")
             kind = a["type"]
@@ -484,9 +616,31 @@ class ComputerController:
                 "scroll_y",
                 "text",
                 "seconds",
+                "app",
+                "url",
+                "reason",
             }
             if set(a) - fields:
                 raise ComputerError("unexpected action fields")
+            if kind in {"launch", "handoff"} and index != len(actions) - 1:
+                # Both change who or what is in front; inspect before anything else.
+                raise ComputerError(f"{kind} must be the last action in its batch")
+            if kind == "launch":
+                if not self.launcher:
+                    raise ComputerError("launch works only on serena's own desktop")
+                if a.get("app") not in {"browser", "terminal"}:
+                    raise ComputerError("launch app must be browser or terminal")
+                url = a.get("url")
+                if url is not None and (
+                    a["app"] != "browser"
+                    or not isinstance(url, str)
+                    or not re.fullmatch(r"https?://[^\s]{1,2040}", url)
+                ):
+                    raise ComputerError("launch url must be one http(s) URL for the browser")
+            if kind == "handoff" and (
+                not isinstance(a.get("reason"), str) or not 1 <= len(a["reason"].strip()) <= 300
+            ):
+                raise ComputerError("handoff needs a 1–300 character reason for Raghav")
             if kind in {"move", "click", "double_click", "scroll"}:
                 self._point(frame, a.get("x"), a.get("y"), monitors)
             if kind in {"click", "double_click", "drag"} and a.get("button", "left") not in {
@@ -537,7 +691,12 @@ class ComputerController:
         if not self.action_lock.acquire(blocking=False):
             raise ComputerError("another action batch is running")
         try:
+            arrived = time.monotonic()
             s = self.current(session_id)
+            # Time since the model last received a screenshot: its decision time.
+            decision_ms = (
+                round((arrived - s.frame_delivered_at) * 1000) if s.frame_delivered_at else None
+            )
             digest = hashlib.sha256(
                 json.dumps([frame_id, actions, intent], sort_keys=True).encode()
             ).hexdigest()
@@ -555,6 +714,11 @@ class ComputerController:
             if self.desktop.context().get("id") != frame["context"].get("id"):
                 raise ComputerError("foreground changed; observe again")
             self._validate_actions(actions, frame, monitors)
+            # A fresh baseline tells the settle loop what "the UI reacted" means,
+            # and re-checks privacy just before input.
+            baseline = frame["signature"]
+            with contextlib.suppress(ComputerTransientError):
+                baseline = self.observe(session_id)["signature"]
             authorization = build_request(
                 capability="computer.input",
                 intent=f"{s.request}; {intent}",
@@ -581,13 +745,14 @@ class ComputerController:
                 s.results.popitem(last=False)
             self.event("action_started", session_id=s.id, request_id=request_id, intent=intent)
             s.action_deadline = time.monotonic() + 15
+            input_started = time.monotonic()
+            preflight_ms = round((input_started - arrived) * 1000)
+            input_ms = 0
             try:
                 for action in actions:
                     self.current(session_id)
                     if self._input_cancelled(s):
-                        raise ComputerError(
-                            "input batch deadline reached; inspect the partial result"
-                        )
+                        raise ComputerError(self._cancel_reason(s))
                     if self.authority.lock_state()["engaged"] or self.desktop.locked():
                         raise ComputerError("input stopped by lock")
                     if self.geometry(s.target)[2] != geometry:
@@ -606,6 +771,7 @@ class ComputerController:
                     outcome_uncertain=True,
                 )
             finally:
+                input_ms = round((time.monotonic() - input_started) * 1000)
                 self.desktop.release()
                 self.authority.record_outcome(
                     authorization.request_id,
@@ -615,14 +781,37 @@ class ComputerController:
                     else receipt["error"],
                     receipt={k: v for k, v in receipt.items() if k != "data"},
                 )
-            if not s.cancelled.is_set():
+            if receipt["ok"] and actions[-1]["type"] == "handoff":
+                self.pause(
+                    s.id, "serena needs you: " + actions[-1]["reason"].strip(), by_agent=True
+                )
+                receipt.update(
+                    status="handed_off",
+                    next=(
+                        "Raghav has the input now. End this turn; you continue from a fresh "
+                        "screenshot after he resumes."
+                    ),
+                )
+            post_frame = None
+            settle_ms = None
+            if not s.cancelled.is_set() and not s.input_hold.is_set():
+                settle_started = time.monotonic()
                 try:
-                    post_frame = self.observe(session_id)
+                    post_frame = self._post_action_frame(
+                        session_id,
+                        baseline,
+                        settle=actions[-1]["type"] not in {"wait", "screenshot"},
+                    )
                 except Exception as exc:
                     receipt["verification_error"] = str(exc)
-                    post_frame = None
-            else:
-                post_frame = None
+                settle_ms = round((time.monotonic() - settle_started) * 1000)
+            receipt["timing"] = s.last_timing = {
+                "decision_ms": decision_ms,
+                "preflight_ms": preflight_ms,
+                "input_ms": input_ms,
+                "settle_ms": settle_ms,
+                "capture_ms": post_frame["capture_ms"] if post_frame else None,
+            }
             self.event(
                 "action_finished",
                 session_id=s.id,
@@ -632,6 +821,39 @@ class ComputerController:
         finally:
             self.action_lock.release()
 
+    def _post_action_frame(self, session_id, baseline, *, settle=True):
+        """The screen once the UI has reacted and stopped painting, within a bound.
+
+        Signatures are hashes of a small grayscale thumbnail, so this compares
+        frames without decoding them. A batch with no visible effect returns
+        after the quiet window; a continuous animation returns at the cap.
+        """
+        if not settle:
+            return self.observe(session_id)
+        s = self.session
+        started = time.monotonic()
+        moved = False
+        last = None
+        while True:
+            frame = None
+            with contextlib.suppress(ComputerTransientError):
+                frame = self.observe(session_id)
+            if frame is not None:
+                if moved and last is not None and frame["signature"] == last["signature"]:
+                    return frame
+                moved = moved or frame["signature"] != baseline
+                last = frame
+            elapsed = time.monotonic() - started
+            if last is not None and (
+                elapsed >= POST_ACTION_SETTLE_SECONDS
+                or (not moved and elapsed >= POST_ACTION_QUIET_SECONDS)
+            ):
+                return last
+            if elapsed >= POST_ACTION_SETTLE_SECONDS + 1:
+                return self.observe(session_id)
+            if s.cancelled.wait(0.05) or s.input_hold.is_set():
+                raise ComputerError("input stopped before the result was captured")
+
     def _execute(self, s, a, frame, monitors):
         kind = a["type"]
         if kind in {"move", "click", "double_click", "scroll"}:
@@ -639,18 +861,18 @@ class ComputerController:
         if kind in {"click", "double_click"}:
             button = {"left": 1, "middle": 2, "right": 3}[a.get("button", "left")]
             for _ in range(2 if kind == "double_click" else 1):
-                if s.cancelled.is_set():
-                    raise ComputerError("input cancelled")
+                if self._input_cancelled(s):
+                    raise ComputerError(self._cancel_reason(s))
                 self.desktop.button(button, True)
                 self.desktop.button(button, False)
-                if kind == "double_click":
-                    s.cancelled.wait(0.07)
+                if kind == "double_click" and self._hold_wait(s, 0.07):
+                    raise ComputerError(self._cancel_reason(s))
         elif kind == "scroll":
             for axis, negative, positive in (("scroll_y", 4, 5), ("scroll_x", 6, 7)):
                 value = a.get(axis, 0)
                 for _ in range(math.ceil(abs(value) / 100)):
-                    if s.cancelled.is_set():
-                        raise ComputerError("input cancelled")
+                    if self._input_cancelled(s):
+                        raise ComputerError(self._cancel_reason(s))
                     button = positive if value > 0 else negative
                     self.desktop.button(button, True)
                     self.desktop.button(button, False)
@@ -661,7 +883,7 @@ class ComputerController:
             self.desktop.button(button, True)
             try:
                 for p in path[1:]:
-                    if s.cancelled.wait(0.02) or self._input_cancelled(s):
+                    if self._hold_wait(s, 0.02):
                         raise ComputerError("drag cancelled")
                     self.desktop.move(*self._point(frame, **p, monitors=monitors))
             finally:
@@ -669,21 +891,41 @@ class ComputerController:
         elif kind == "keypress":
             try:
                 for key in a["keys"]:
-                    if s.cancelled.is_set():
-                        raise ComputerError("keypress cancelled")
+                    if self._input_cancelled(s):
+                        raise ComputerError(self._cancel_reason(s))
                     self.desktop.key(key, True)
             finally:
                 self.desktop.release()
         elif kind == "type":
             self.desktop.type_text(a["text"], lambda: self._input_cancelled(s))
-        elif kind == "wait" and s.cancelled.wait(a.get("seconds", 0.5)):
+        elif kind == "wait" and self._hold_wait(s, a.get("seconds", 0.5)):
             raise ComputerError("wait cancelled")
+        elif kind == "launch":
+            self.launcher(a["app"], a.get("url"))
+
+    def _hold_wait(self, s, seconds):
+        """Sleep, returning True as soon as the batch must stop."""
+        deadline = time.monotonic() + seconds
+        while (left := deadline - time.monotonic()) > 0:
+            if s.cancelled.wait(min(left, 0.02)) or self._input_cancelled(s):
+                return True
+        return self._input_cancelled(s)
 
     @staticmethod
     def _input_cancelled(s):
-        return s.cancelled.is_set() or (
-            s.action_deadline > 0 and time.monotonic() >= s.action_deadline
+        return (
+            s.cancelled.is_set()
+            or s.input_hold.is_set()
+            or (s.action_deadline > 0 and time.monotonic() >= s.action_deadline)
         )
+
+    @staticmethod
+    def _cancel_reason(s):
+        if s.cancelled.is_set():
+            return "input cancelled"
+        if s.input_hold.is_set():
+            return "Raghav took over; input stopped. After resume, observe before continuing"
+        return "input batch deadline reached; inspect the partial result"
 
     def close(self):
         self.stop("computer service stopped")
