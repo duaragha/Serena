@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -29,13 +30,30 @@ FORM = b"""<!doctype html><title>Setup</title>
  (document.querySelector('[name=analytics]').checked?' with':' without')+' analytics is ready</p>')">Continue</button>
 <a href="/popup" target="_blank">Open docs</a>"""
 
+# Hacker News shape: every row has its own "4 comments" link.
+LIST = b"""<!doctype html><title>List</title><table>
+<tr><td><a href="/item?id=1">Story one</a></td><td><a href="/item?id=1">4 comments</a></td></tr>
+<tr><td><a href="/item?id=2">Story two</a></td><td><a href="/item?id=2">4 comments</a></td></tr>
+</table>"""
+
 
 class Pages(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
     def do_GET(self):
-        body = FORM if self.path == "/" else b"<title>Docs</title><h1>Docs page</h1>"
+        if self.path == "/slow.png":
+            # An item page still fetching this when she goes back.
+            time.sleep(3)
+        if self.path == "/":
+            body = FORM
+        elif self.path == "/list":
+            body = LIST
+        elif self.path.startswith("/item?id="):
+            number = self.path.rsplit("=", 1)[1]
+            body = f"<title>Item</title><h1>Item {number}</h1><img src='/slow.png'>".encode()
+        else:
+            body = b"<title>Docs</title><h1>Docs page</h1>"
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
@@ -109,6 +127,12 @@ def test_one_call_runs_a_whole_form_flow_and_reads_the_result(chromium):
     assert result["ok"], result["steps"]
     assert result["steps"][-1]["detail"] == "Project Locket Push on Blaze without analytics is ready"
     assert elapsed < 5  # machine speed: no model call between steps
+    # A ref from the snapshot clicks at once and is recorded by role and name.
+    ref = re.search(r'button "Continue" (?:\[\w+\] )*\[ref=(e\d+)\]', web.snapshot()["snapshot"])[1]
+    started = time.monotonic()
+    by_ref = web.run([{"click": {"ref": ref}}], cancelled=lambda: False)
+    assert by_ref["ok"] and time.monotonic() - started < 3, by_ref["steps"]
+    assert by_ref["_recipe_steps"] == [{"click": {"role": "button", "name": "Continue", "exact": True}}]
     popup = web.run([{"click": {"text": "Open docs"}}, {"wait_for": {"text": "Docs page"}}], cancelled=lambda: False)
     assert popup["ok"] and popup["url"].endswith("/popup") and len(popup["tabs"]) == 2, {k: popup[k] for k in ("ok", "steps", "url", "tabs")}
     back = web.run([{"tab": {"title_contains": "Setup"}}], cancelled=lambda: False)
@@ -141,12 +165,50 @@ def test_failures_stop_the_batch_and_password_fields_refuse_fill(chromium):
     assert not held["ok"] and "held" in held["steps"][0]["detail"]
 
 
+def test_ambiguous_targets_name_their_matches_and_lists_navigate_by_link(chromium):
+    web, base = chromium
+    listed = web.run([{"goto": f"{base}/list"}], cancelled=lambda: False)
+    assert listed["ok"] and "/url: /item?id=2" in listed["snapshot"]  # links show their targets
+    ambiguous = web.run([{"click": {"text": "4 comments"}}], cancelled=lambda: False)
+    failure = ambiguous["steps"][0]
+    assert not ambiguous["ok"] and "nth" in failure["detail"]
+    matches = failure["matches"]
+    assert [m["nth"] for m in matches] == [0, 1]
+    assert [m["url"] for m in matches] == ["/item?id=1", "/item?id=2"]
+    assert all(m["role"] == "link" and m["name"] == "4 comments" for m in matches)
+    assert all(f"[ref={m['ref']}]" in ambiguous["snapshot"] for m in matches)
+    by_ref = web.run(
+        [{"click": {"ref": matches[0]["ref"]}}, {"wait_for": {"text": "Item 1"}}], cancelled=lambda: False
+    )
+    assert by_ref["ok"] and by_ref["url"].endswith("/item?id=1"), by_ref["steps"]
+    # The item page is still fetching its image; back must not wait on that.
+    started = time.monotonic()
+    back = web.run([{"back": True, "timeout": 1}], cancelled=lambda: False)
+    assert back["ok"] and back["url"].endswith("/list"), back["steps"]
+    assert time.monotonic() - started < 3
+    picked = web.run(
+        [{"click": {"text": "4 comments", "nth": 1}}, {"wait_for": {"text": "Item 2"}}],
+        cancelled=lambda: False,
+    )
+    assert picked["ok"] and picked["url"].endswith("/item?id=2"), picked["steps"]
+    # A snapshot's link path goes straight there: no click, read, back loop.
+    direct = web.run(
+        [{"goto": "/item?id=2"}, {"read": {"role": "heading"}}, {"goto": "/item?id=1"}, {"read": {"role": "heading"}}],
+        cancelled=lambda: False,
+    )
+    assert direct["ok"] and [s["detail"] for s in direct["steps"][1::2]] == ["Item 2", "Item 1"]
+    assert direct["_recipe_steps"][0]["goto"] == f"{base}/item?id=2"  # replays start elsewhere
+
+
 @pytest.mark.parametrize(
     "steps",
     [
         [],
         [{"click": {"ref": "12"}}],
         [{"goto": "file:///etc/passwd"}],
+        [{"goto": "javascript:alert(1)"}],
+        [{"goto": "item?id=1 x"}],
+        [{"click": {"text": "a", "nth": -1}}],
         [{"fill": {"label": "x"}}],
         [{"click": {"text": "a"}, "goto": "https://x.test"}],
         [{"wait_for": {"text": "a", "url": "b"}}],
@@ -182,6 +244,19 @@ def test_shell_returns_output_and_exit_code_as_text(shell):
         shell.run("sleep 5 &")
 
 
+def test_shell_runs_a_multi_line_script_as_one_command(shell, tmp_path):
+    shell.scripts = tmp_path / "scripts"
+    looped = shell.run("for n in 1 2 3; do\n  echo line-$n\ndone\nexit 3", timeout=10)
+    assert looped["status"] == "done" and looped["exit_code"] == 3
+    assert looped["output"].splitlines()[-3:] == ["line-1", "line-2", "line-3"]
+    heredoc = shell.run("python3 - <<'PY'\nprint(6 * 7)\nPY\n", timeout=10)
+    assert heredoc["exit_code"] == 0 and heredoc["output"].splitlines()[-1] == "42"
+    assert (tmp_path / "scripts").stat().st_mode & 0o777 == 0o700
+    assert not list((tmp_path / "scripts").iterdir())  # each script deleted itself
+    with pytest.raises(ComputerError, match="one foreground command"):
+        shell.run("echo start\nsleep 5 &")
+
+
 def test_shell_finds_output_when_a_narrow_window_wraps_long_commands(shell):
     # His terminal window attaching shrinks the pane; long commands then wrap.
     shell.ensure()
@@ -205,6 +280,17 @@ class FakeWeb:
     def run(self, steps, cancelled):
         self.runs.append(steps)
         return {"ok": True, "steps": [{"step": 1, "ok": True}], "url": "https://x.test", "snapshot": "page text"}
+
+
+class AmbiguousWeb(FakeWeb):
+    def run(self, steps, cancelled):
+        failure = {
+            "step": 1,
+            "ok": False,
+            "detail": "strict mode violation: resolved to 2 elements\n  1) <a>page text</a>",
+            "matches": [{"nth": 0, "name": "page text", "url": "/item?id=1"}],
+        }
+        return {"ok": False, "steps": [failure], "url": "https://x.test", "snapshot": "page text"}
 
 
 class FakeTerminal:
@@ -248,6 +334,14 @@ def test_structured_input_is_authorized_idempotent_and_kept_out_of_events(contro
     assert c.browser_snapshot(sid)["url"] == "https://x.test"
     finished = [e for e in c.events if e["type"] == "action_finished"]
     assert finished and all("snapshot" not in e and "output" not in e for e in finished)
+    c.stop()
+    c.web = AmbiguousWeb()
+    sid, _ = begin(c)
+    result = c.browser(sid, [{"click": {"text": "4 comments"}}], request_id="web-batch-09", intent="open")
+    assert not result["ok"] and result["steps"][0]["matches"][0]["url"] == "/item?id=1"
+    finished = [e for e in c.events if e["type"] == "action_finished"][-1]
+    assert finished["failed_step"] == {"step": 1, "detail": "strict mode violation: resolved to 2 elements"}
+    assert "page text" not in str(finished) and "matches" not in str(finished)
     c.stop()
     sid, _ = begin(c, mode="watch")
     with pytest.raises(ComputerError, match="cannot send input"):

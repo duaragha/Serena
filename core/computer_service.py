@@ -49,7 +49,11 @@ def _isolated_tools(runtime, info):
     from core.computer_web import HerBrowser
 
     web = HerBrowser(runtime.profile, prepare=runtime.ensure_debuggable)
-    terminal = HerShell(runtime.shell_env(info), show=lambda: runtime.launch("terminal"))
+    terminal = HerShell(
+        runtime.shell_env(info),
+        show=lambda: runtime.launch("terminal"),
+        scripts=runtime.directory / "shell",
+    )
     return web, terminal
 
 

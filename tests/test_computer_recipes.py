@@ -222,10 +222,16 @@ def test_snapshot_refs_are_frozen_without_blocking_normal_input(missing):
     async def state(*args):
         return {"snapshot": "fresh"}
 
-    async def aria_snapshot(*args, **kwargs):
+    async def snapshot_text(*args):
+        return ""
+
+    async def element_handle(*args, **kwargs):
         if missing:
             raise RuntimeError("old ref vanished")
-        return '- button "Continue"'
+        return "handle"
+
+    async def evaluate(expression, arg=None, **kwargs):
+        return arg == "handle" if arg is not None else {"label": "", "text": "Continue"}
 
     async def count():
         return 1
@@ -233,8 +239,11 @@ def test_snapshot_refs_are_frozen_without_blocking_normal_input(missing):
     async def step(*args):
         calls.append(args)
 
-    web._current, web._state, web._step = current, state, step
-    web._locator = lambda *args: SimpleNamespace(aria_snapshot=aria_snapshot, count=count)
+    web._current, web._state, web._step, web._snapshot_text = current, state, step, snapshot_text
+    web.last_snapshot = "" if missing else '- button "Continue" [ref=e12] [cursor=pointer]'
+    web._locator = lambda *args: SimpleNamespace(
+        element_handle=element_handle, evaluate=evaluate, count=count
+    )
     steps = [{"click": {"ref": "e12"}}]
     result = asyncio.run(web._run(steps, lambda: False))
     assert result["ok"] and len(calls) == 1
@@ -259,9 +268,12 @@ def test_hold_during_semantic_resolution_stops_before_input():
     async def state(*args):
         return {"snapshot": "fresh"}
 
-    async def aria_snapshot(*args, **kwargs):
+    async def element_handle(*args, **kwargs):
         held.append(True)
-        return '- button "Continue"'
+        return "handle"
+
+    async def evaluate(expression, arg=None, **kwargs):
+        return arg == "handle" if arg is not None else {"label": "", "text": ""}
 
     async def count():
         return 1
@@ -270,7 +282,10 @@ def test_hold_during_semantic_resolution_stops_before_input():
         calls.append(args)
 
     web._current, web._state, web._step = current, state, step
-    web._locator = lambda *args: SimpleNamespace(aria_snapshot=aria_snapshot, count=count)
+    web.last_snapshot = '- button "Continue" [ref=e12]'
+    web._locator = lambda *args: SimpleNamespace(
+        element_handle=element_handle, evaluate=evaluate, count=count
+    )
     result = asyncio.run(web._run([{"click": {"ref": "e12"}}], lambda: bool(held)))
     assert held and not calls
     assert not result["ok"] and result["steps"] == [
@@ -360,18 +375,23 @@ def test_partial_recipe_never_records_or_replays_past_unresolved_target(controll
 
 def test_semantic_target_label_fallback_and_ambiguity():
     web = object.__new__(HerBrowser)
+    web.last_snapshot = "- generic [ref=e1]"  # no accessible name to record
 
-    async def snapshot(**kwargs):
-        return "- generic"
+    async def snapshot_text(*args):
+        return ""
 
-    async def evaluate(*args, **kwargs):
-        return {"label": "Project name", "text": ""}
+    async def element_handle(*args, **kwargs):
+        return "handle"
+
+    async def evaluate(expression, arg=None, **kwargs):
+        return arg == "handle" if arg is not None else {"label": "Project name", "text": ""}
 
     async def count():
         return 1
 
-    locator = SimpleNamespace(aria_snapshot=snapshot, evaluate=evaluate, count=count)
+    locator = SimpleNamespace(element_handle=element_handle, evaluate=evaluate, count=count)
     web._locator = lambda *args: locator
+    web._snapshot_text = snapshot_text
     assert asyncio.run(web._recipe_target(None, {"ref": "e1"}, 100)) == {
         "label": "Project name", "exact": True,
     }

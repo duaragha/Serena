@@ -155,8 +155,10 @@ def _shell_tool(controller, session_id):
         name="shell",
         description=(
             "Your own desktop's terminal as text. Prefer this over typing into the terminal window "
-            "for anything a command can do. command runs one foreground command (chain with && or ;) "
-            "and returns its output and exit code; timeout is seconds to wait (default 30, max 600). "
+            "for anything a command can do. command is one foreground command (chain with && or ;) "
+            "or a whole multi-line script (loops, heredocs such as python3 - <<'PY'), which runs as "
+            "its own bash process, so its cd and export do not carry over; never end with &. "
+            "Returns output and exit code; timeout is seconds to wait (default 30, max 600). "
             "If it is still running (status running), read later or answer its prompt with send "
             "(text, then Enter unless enter=false). Raghav watches the same terminal in the viewer. "
             "URLs that commands open go to your own browser. Never send passwords or codes: hand off. "
@@ -190,15 +192,18 @@ def _browser_tools(controller, session_id):
     target = (
         "a target is {ref:'e12'} from the latest page snapshot, or {role:'button', name:'Continue'}, "
         "{label:'Email'}, {placeholder:'Search'}, {text:'Add project'} or {selector:'css'}; "
-        "add nth:0 when several match"
+        "add nth (0-based) to pick one of several matches. A target that matches several elements "
+        "fails with matches listing each one's nth, ref, role, name and url: retry once with one "
+        "of those, never a new guess"
     )
     return [
         SimpleNamespace(
             name="page",
             description=(
                 "Read your browser's current page as text: URL, tabs, and an accessibility snapshot "
-                "in which every element has a ref like e12. Far faster than a screenshot; use it for "
-                "any web page, and use observe only for visual content or to check how it looks."
+                "in which every element has a ref like e12 and every link shows its target on a "
+                "/url: line. Far faster than a screenshot; use it for any web page, and use observe "
+                "only for visual content or to check how it looks."
             ),
             input_schema={"type": "object", "properties": {}},
             handler=page,
@@ -207,7 +212,7 @@ def _browser_tools(controller, session_id):
             name="browser",
             description=(
                 "Run a whole sequence of steps in your browser in ONE call; they execute locally and "
-                "stop at the first failure. Steps: {goto:url}, {click:T}, {fill:T, value}, "
+                "stop at the first failure. Steps: {goto:url or a /url: link path}, {click:T}, {fill:T, value}, "
                 "{select:T, value}, {check:T}, {uncheck:T}, {press:'Enter'}, {read:T}, "
                 "{wait_for:{text|url|target|gone}}, {tab:{index|url_contains|title_contains}}, "
                 "{back:true}; any step takes timeout seconds (default 5). "
@@ -217,7 +222,10 @@ def _browser_tools(controller, session_id):
                 "one call, targeting pages you have not seen by the labels the task gives or by role "
                 "(e.g. {role:'combobox'} when there is likely one). Add wait_for only for text you "
                 "already know will appear, such as the task's success message; never guess a page's "
-                "wording. A click that opens a tab continues in it. Returns each step's result, the "
+                "wording. To go through several items of a list page (results, stories, rows), take "
+                "each link's /url from the snapshot and send goto+read pairs for all of them in one "
+                "call; never click, read and go back one item per call. "
+                "A click that opens a tab continues in it. Returns each step's result, the "
                 "URL, tabs and a fresh snapshot; after a failure, continue from that snapshot. "
                 "Password fields refuse fill: hand off."
             ),

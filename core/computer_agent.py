@@ -210,7 +210,10 @@ class ComputerAgent:
                     "and browser for web pages, where one browser call runs a whole sequence of "
                     "steps (actions wait for their own targets); observe/act screenshots only for "
                     "visual content or apps those cannot reach. When the task already lists the "
-                    "steps, send them as one browser call instead of deciding each click. To open "
+                    "steps, send them as one browser call instead of deciding each click. On a "
+                    "list page, take each item's /url from the snapshot and batch goto+read steps "
+                    "for all of them in one call, not a click, read and back per item. A shell "
+                    "command may be a whole multi-line script. To open "
                     "a window, end an act batch with launch {app: browser|terminal, url}."
                 )
             if resumed:

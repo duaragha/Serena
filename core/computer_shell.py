@@ -12,8 +12,11 @@ on her desktop rather than in his browser.
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -24,6 +27,8 @@ SOCKET = "serena-desktop"
 SESSION = "serena"
 MAX_OUTPUT = 12000
 MAX_COMMAND = 4000
+MAX_SCRIPT = 16000
+STALE_SCRIPT_SECONDS = 3600
 
 
 class ShellError(ComputerError):
@@ -41,8 +46,10 @@ def browser_opener(directory, profile, binary):
 
 
 class HerShell:
-    def __init__(self, env, *, show=None, browser=None):
+    def __init__(self, env, *, show=None, browser=None, scripts=None):
         self.env = dict(env)
+        # Private directory for multi-line scripts; created on first use.
+        self.scripts = Path(scripts) if scripts else None
         if browser:
             self.env["BROWSER"] = browser
             # Desktop-specific openers would hand URLs to his session's browser.
@@ -94,12 +101,46 @@ class HerShell:
         text = self._tmux("capture-pane", "-p", "-J", "-t", SESSION, "-S", "-", "-E", "-")
         return text.splitlines()[start:]
 
+    def _script(self, text):
+        """A multi-line script as one command: `bash <private file>`.
+
+        Typing lines into the pane would run each as it arrives, with no single
+        exit status. The file is 0600 in a 0700 directory and deletes itself
+        once bash has it open, so a running script leaves nothing behind.
+        """
+        if self.scripts is None:
+            self.scripts = Path(tempfile.mkdtemp(prefix="serena-shell-"))
+        self.scripts.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.scripts.chmod(0o700)
+        now = time.time()
+        for old in self.scripts.glob("script-*.sh"):
+            # A script whose command never reached bash (the pane was busy).
+            try:
+                if now - old.stat().st_mtime > STALE_SCRIPT_SECONDS:
+                    old.unlink()
+            except OSError:
+                pass
+        fd, path = tempfile.mkstemp(prefix="script-", suffix=".sh", dir=self.scripts)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write('rm -f -- "$0"\n' + text + "\n")
+        return f"bash {shlex.quote(path)}"
+
     def run(self, command, *, timeout=30.0, cancelled=lambda: False):
-        if not isinstance(command, str) or not command.strip() or len(command) > MAX_COMMAND:
+        if not isinstance(command, str) or not command.strip():
             raise ShellError(f"a command needs 1-{MAX_COMMAND} characters")
-        if "\n" in command or command.rstrip().endswith("&"):
-            raise ShellError("send one foreground command per call; chain with && or ;")
+        command = command.replace("\r\n", "\n").strip("\n")
+        script = "\n" in command
+        if len(command) > (MAX_SCRIPT if script else MAX_COMMAND):
+            raise ShellError(
+                f"a script needs at most {MAX_SCRIPT} characters" if script
+                else f"a command needs 1-{MAX_COMMAND} characters"
+            )
+        if command.rstrip().endswith("&"):
+            raise ShellError("run one foreground command; a background job never reports back")
         self.ensure()
+        if script:
+            command = self._script(command)
         token = uuid.uuid4().hex[:12]
         marker = f"__SERENA_DONE_{token}_"
         self._tmux("send-keys", "-t", SESSION, "-l", f"{command}; printf '\\n{marker}%s__\\n' \"$?\"")
