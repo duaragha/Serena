@@ -1231,6 +1231,25 @@ body.pane-dragging * {
 .session-row.needs-attention .session-title {
   color: #ffb84d;
 }
+/* A linked row's group stripe is also an inset shadow and is declared later;
+   the extra class keeps "finished" on top of it. */
+.session-row.needs-attention.has-group {
+  box-shadow: inset 4px 0 0 0 #f5a623;
+}
+.term-pane.needs-attention::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 2px solid #f5a623;
+  border-radius: 3px;
+  pointer-events: none;
+  z-index: 5;
+  animation: attention-pane-pulse 2.4s ease-in-out infinite;
+}
+@keyframes attention-pane-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
 @keyframes attention-pulse {
   0%, 100% { background-color: transparent; }
   50%      { background-color: rgba(245, 166, 35, 0.08); }
@@ -1861,6 +1880,15 @@ body.pane-dragging * {
 .toast.visible { opacity: 1; transform: translateY(0); }
 .toast.success { border-color: var(--green); color: var(--green); }
 .toast.error   { border-color: #f85149; color: #f85149; }
+.toast.finished { border-color: #f5a623; cursor: pointer; }
+.toast.finished::before {
+  content: '';
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f5a623;
+}
 .toast-spinner {
   width: 12px; height: 12px;
   border: 2px solid var(--border-bright);
@@ -6265,35 +6293,94 @@ const _activeMeta = new Map();    // sid -> { cwd, activatedAt } for /clear migr
 const _pseudoSessions = [];       // synthetic rows for brand-new chats (temp ids)
 const _resolvedPseudoSids = new Map(); // stale UI events can still resolve after migration
 // === ATTENTION === (sids of chats that finished a turn since user last
-// looked at them — visual glow on sidebar entry + split-view VTE)
+// looked at them — glow on the sidebar entry and its pane, plus a toast
+// naming the chat and the agent that finished)
 const _attentionSids = new Set();
 let _attentionPollTimer = null;
+let _attentionSeq = null;          // null until the first poll: its backlog is not news
+let _attentionPolling = false;
+const _pendingFinishToasts = [];   // finished while the window was hidden
 function _startAttentionPoll() {
   if (_attentionPollTimer) return;
-  const tick = async () => {
-    try {
-      const r = await fetch('/api/chat-attention');
-      if (!r.ok) return;
-      const data = await r.json();
-      const fresh = new Set(Object.keys(data.sessions || {}));
-      // Only re-render if the set actually changed
-      let changed = fresh.size !== _attentionSids.size;
-      if (!changed) {
-        for (const s of fresh) { if (!_attentionSids.has(s)) { changed = true; break; } }
-      }
-      if (changed) {
-        _attentionSids.clear();
-        for (const s of fresh) _attentionSids.add(s);
-        renderSessionList();
-        _applyAttentionToSplitView();
-      }
-    } catch(e) {}
-  };
-  tick();
-  _attentionPollTimer = setInterval(tick, 2000);
+  _pollAttention();
+  _attentionPollTimer = setInterval(_pollAttention, 2000);
+  document.addEventListener('visibilitychange', _flushFinishToasts);
+  window.addEventListener('focus', _flushFinishToasts);
 }
-function _clearAttention(sid) {
-  if (!_attentionSids.has(sid)) return;
+async function _pollAttention() {
+  if (_attentionPolling) return;
+  _attentionPolling = true;
+  try {
+    const url = '/api/chat-attention' + (_attentionSeq === null ? '' : '?since=' + _attentionSeq);
+    const r = await fetch(url);
+    if (!r.ok) return;
+    const data = await r.json();
+    if (Number.isInteger(data.seq)) _attentionSeq = data.seq;
+    const fresh = new Set(Object.keys(data.sessions || {}));
+    for (const event of (Array.isArray(data.events) ? data.events : [])) {
+      if (_isWatchingChat(event.sid)) {
+        // He watched it finish. A flag on the chat he is looking at is noise,
+        // and clearing it clears its thread on the server too.
+        for (const sid of [event.sid, ..._linkedGroupSids(event.sid, { liveOnly: false })]) fresh.delete(sid);
+        _clearAttention(event.sid, { force: true });
+        continue;
+      }
+      _queueFinishToast(event);
+    }
+    // Only re-render if the set actually changed
+    let changed = fresh.size !== _attentionSids.size;
+    if (!changed) {
+      for (const s of fresh) { if (!_attentionSids.has(s)) { changed = true; break; } }
+    }
+    if (changed) {
+      _attentionSids.clear();
+      for (const s of fresh) _attentionSids.add(s);
+      renderSessionList();
+      _applyAttentionToSplitView();
+    }
+    _flushFinishToasts();
+  } catch(e) {
+  } finally {
+    _attentionPolling = false;
+  }
+}
+function _isWatchingChat(sid) {
+  if (!sid || document.hidden || !document.hasFocus() || currentTab !== 'chats') return false;
+  if (!currentSessionId) return false;
+  return convMode === 'live' ? activeTermSid === sid : currentSessionId === sid;
+}
+function _queueFinishToast(event) {
+  const sid = event && event.sid;
+  if (!sid) return;
+  const local = _findClientSession(sid);
+  if (!local && !event.indexed) return;  // not a chat he has: headless jobs, scratch runs
+  if (event.quiet || _isFleetSession(local) || _isSerenaVoiceSession(local || sid)) return;
+  if (_pendingFinishToasts.some(item => item.sid === sid)) return;
+  const agent = (local && local.agent) || event.agent || 'claude';
+  let title = String((local && local.display_title) || event.title || '').trim() || sid.slice(0, 8);
+  if (title.length > 60) title = title.slice(0, 59) + '…';
+  _pendingFinishToasts.push({ sid, text: title + ' has finished (' + _agentLabel(agent) + ')' });
+}
+function _flushFinishToasts() {
+  if (document.hidden || !_pendingFinishToasts.length) return;
+  // Whatever he opened while the window was hidden has been seen already.
+  const due = _pendingFinishToasts.splice(0).filter(item => _attentionSids.has(item.sid));
+  const shown = due.length > 4 ? due.slice(-3) : due;
+  for (const item of shown) {
+    const toast = showToast(item.text, { variant: 'finished', duration: 6000 });
+    toast.el.title = 'Open this chat';
+    toast.el.addEventListener('click', () => {
+      toast.dismiss();
+      _clearAttention(item.sid);
+      openConv(item.sid);
+    });
+  }
+  if (due.length > shown.length) {
+    showToast((due.length - shown.length) + ' more chats finished', { variant: 'finished', duration: 6000 });
+  }
+}
+function _clearAttention(sid, opts) {
+  if (!_attentionSids.has(sid) && !(opts && opts.force)) return;
   _attentionSids.delete(sid);
   fetch('/api/chat-attention/clear', {
     method: 'POST',
@@ -6304,6 +6391,11 @@ function _clearAttention(sid) {
   _applyAttentionToSplitView();
 }
 function _applyAttentionToSplitView() {
+  // The panes of a linked split carry the same flag as their sidebar rows, so
+  // the half that finished while he worked in the other half says so.
+  for (const [sid, runtime] of termSessions) {
+    if (runtime && runtime.mount) runtime.mount.classList.toggle('needs-attention', _attentionSids.has(sid));
+  }
   if (!window.__nativeTerminalBridge) return;
   const flagged = Array.from(_attentionSids);
   window.gtkSend({ type: 'attention-state', sids: flagged });
@@ -13130,8 +13222,35 @@ def api_multiplex_status():
 # ─────────────────────────────────────────────────────────────────────────────
 @app.route("/api/chat-attention", methods=["GET"])
 def api_chat_attention():
+    """Flagged chats, plus finish events after `?since=<seq>` for the toast.
+
+    Each event carries what the toast needs from the index, because the page
+    only holds the sessions of the project it is showing.
+    """
     from core import chat_attention
-    return jsonify({"sessions": chat_attention.list_active()})
+
+    raw_since = request.args.get("since", "").strip()
+    since = int(raw_since) if raw_since.isdigit() else None
+    events, seq = chat_attention.events_since(since)
+    for event in events:
+        event.update(_finish_event_details(event["sid"]))
+    return jsonify({"sessions": chat_attention.list_active(), "events": events, "seq": seq})
+
+
+def _finish_event_details(sid: str) -> dict:
+    try:
+        session = get_session(sid)
+    except ValueError:
+        session = None
+    if not session:
+        return {"indexed": False}
+    return {
+        "indexed": True,
+        "agent": (session.get("agent") or "claude").lower(),
+        "title": session.get("display_title") or "",
+        # Run history and her permanent conversation are not chats he waits on.
+        "quiet": bool(_fleet_worker_marker(session["session_id"])) or _is_serena_voice_session(session),
+    }
 
 
 @app.route("/api/chat-finished", methods=["POST"])
@@ -14200,7 +14319,28 @@ def api_terminal_runtime_turn_start(tid):
     del active
     if not pty_terminal.mark_turn_started(tid, version):
         return jsonify({"ok": False, "error": "Terminal not found"}), 404
+    _watch_codex_turn(tid)
     return jsonify({"ok": True})
+
+
+def _watch_codex_turn(tid: str) -> None:
+    """Tail this Codex chat's own rollout for the end of the turn just sent.
+
+    The watcher's ambient scan covers only today's and yesterday's rollout
+    folders, and a resumed chat keeps writing to the folder of the day it was
+    created, so its finish would otherwise never be seen.
+    """
+    terminal = pty_terminal.get(tid)
+    sid = terminal.session_id if terminal else None
+    if not sid or (terminal.agent or "").lower() != "codex" or sid.startswith("new-"):
+        return
+    try:
+        from core import codex_attention_watcher
+
+        session = get_session(sid) or {}
+        codex_attention_watcher.watch(sid, session.get("file_path"))
+    except Exception as error:
+        print(f"[runtime] codex completion watch failed for {sid[:8]}: {error}", flush=True)
 
 
 @app.route("/api/terminal-runtime/migrate", methods=["POST"])
@@ -15130,6 +15270,16 @@ def run_web(host="0.0.0.0", port=8080, open_browser=False):
     # not be the thing creating this.
     for _stranded in pty_terminal.sweep_stranded_agents():
         print(f"[serena] reaped stranded agent process {_stranded}", file=sys.stderr)
+
+    # Codex has no Stop hook: finished turns are read from its rollouts. Only
+    # the retired GTK app ever started this, so Codex chats stopped lighting
+    # up in the sidebar when the desktop moved to Electron.
+    try:
+        from core import codex_attention_watcher
+
+        codex_attention_watcher.start()
+    except Exception as error:
+        print(f"[codex-watcher] not started: {error}", file=sys.stderr)
 
     atexit.register(_shutdown_owned_runtimes)
 

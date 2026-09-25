@@ -59,6 +59,16 @@ def _muse_owner(**kwargs):
     return MuseWorkspace(**kwargs)
 
 
+def _mark_turn_finished(sid):
+    """Light up the chat in the sidebar and announce it, like a Stop hook would."""
+    try:
+        from core import chat_attention
+
+        chat_attention.mark(sid)
+    except Exception:
+        pass
+
+
 class WorkspaceHost:
     def __init__(self, *, journal: WorkspaceJournal, resolve: Callable, factories=None, register_fork=None,
                  delete_catalog=None):
@@ -2199,6 +2209,8 @@ class WorkspaceHost:
         decorated = await asyncio.to_thread(self.uploads.decorate_event, sid, event)
         await asyncio.to_thread(self.journal.append, sid, decorated)
         method = event.get("method")
+        if method == "turn/completed" and event.get("params", {}).get("turn", {}).get("status") in {"completed", "failed"}:
+            await asyncio.to_thread(_mark_turn_finished, sid)
         if method == "account/login/completed":
             await self._settle_codex_account_login(sid, event.get("params", {}))
         elif method == "workspace/transportClosed":
