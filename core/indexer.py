@@ -1610,6 +1610,15 @@ def _delete_unowned_session(session: dict, *, source: str) -> str:
             "deleted_at": datetime.now().astimezone().isoformat(),
             "deleted_via": source,
             "metadata": meta_sync.get_meta(sid),
+            # What the trash bin lists, so it can name the chat without
+            # reparsing a transcript the index no longer knows.
+            "session": {
+                "title": session.get("custom_title") or session.get("title") or "",
+                "agent": session.get("agent") or "",
+                "project_dir": session.get("project_dir") or "",
+                "cwd": session.get("cwd") or "",
+                "last_timestamp": session.get("last_timestamp") or "",
+            },
         }
         (recovery_dir / "recovery.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
@@ -1643,6 +1652,39 @@ def _delete_unowned_session(session: dict, *, source: str) -> str:
     meta_sync.delete_meta(sid)
 
     return str(file_path)
+
+
+def index_session_file(agent: str, file_path: Path, project_dir: str = "") -> str | None:
+    """Index one transcript now, without waiting for the next full scan.
+
+    Used when a chat comes back from the trash so it reappears in the sidebar
+    straight away. Returns the indexed session id, or None when the parser
+    rejected the file.
+    """
+    file_path = Path(file_path)
+    if agent == "claude":
+        meta = parse_metadata(file_path, project_dir or file_path.parent.name)
+    elif agent == "codex":
+        meta = parse_codex_metadata(file_path)
+    elif agent == "gemini":
+        meta = parse_gemini_metadata(file_path)
+    elif agent == "muse":
+        meta = parse_muse_metadata(file_path)
+    elif agent == "locket":
+        meta = parse_locket_metadata(file_path)
+    else:
+        return None
+    if meta is None:
+        return None
+    with _index_update_lock():
+        conn = _get_db()
+        try:
+            _upsert_session(conn, meta, agent=agent)
+            _hide_internal_sessions(conn)
+            conn.commit()
+        finally:
+            conn.close()
+    return meta.session_id
 
 
 def drop_index():

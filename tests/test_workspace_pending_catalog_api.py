@@ -1,6 +1,7 @@
 """Exercise the production sessions route without starting the global web host."""
 
 import ast
+import time
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,7 @@ def test_owned_delete_reports_conflict_and_bulk_keeps_other_results():
     source = Path(__file__).resolve().parents[1] / "ui/web.py"
     selected = [node for node in ast.parse(source.read_text(encoding="utf-8")).body if isinstance(node, ast.FunctionDef)
                 and node.name in {"api_delete_session", "api_bulk_delete", "_delete_workspace_session"}]
-    namespace = {"app": app, "request": request, "jsonify": jsonify,
+    namespace = {"app": app, "request": request, "jsonify": jsonify, "time": time,
                  "get_session": lambda sid: {"session_id": sid}, "delete_session": delete,
                  "_is_serena_voice_session": lambda row: False, "_fleet_worker_marker": lambda sid: None}
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(source), "exec"), namespace)
