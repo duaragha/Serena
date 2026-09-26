@@ -202,6 +202,47 @@ the session with "serena needs you: …" on the HUD. It uses this for passwords,
 passcodes, MFA and payment details, which it never types. You type them in the
 viewer, press resume, and it continues.
 
+## His apps, beside him
+
+On his own screen, `apps` and `app` let her work in his real windows while he
+keeps using the computer. They go through the session's AT-SPI accessibility
+bus, the one screen readers use. Every GTK, Qt and LibreOffice window publishes
+its widgets there: role, name, state, text, value, and the actions a screen
+reader can invoke. Pressing a button, replacing a field's text or picking a list
+item that way reaches the widget directly. His pointer never moves, his typing
+is never interrupted, and his keyboard focus stays where it is.
+
+- `apps` with no window lists his windows (`w3`, app, title). With a window (a
+  ref, or words from its title or app), it lists that window's visible widgets,
+  each with a ref (`a12`) valid until the next snapshot.
+- `app` runs up to 25 steps in one call and stops at the first failure:
+  `press`, `set_text`, `check`/`uncheck`, `select` (combo boxes, lists),
+  `set_value`, `read`, `menu` (a path of names) and `wait_for`. Targets are a
+  ref, or a role (`button`, `textbox`, `checkbox`, `combobox`, … or an AT-SPI
+  role) and a name.
+- A dialog the app raises is its own window, addressed by its title. If a step
+  makes the app take focus while he was in another app, his focus goes straight
+  back and the dialog stays open behind, still taking steps.
+- Password fields refuse text, like the browser's.
+- Only windows on his display within the session's scope are visible. Her own
+  desktop's apps share the bus but are filtered out. Chromium stamps its process
+  title over its environment, so for those processes the check is which display
+  holds their windows.
+- Chromium and Electron apps (Edge, VS Code, the Serena app) publish nothing
+  unless started with `--force-renderer-accessibility`. Their windows are listed
+  with "contents hidden", and the worker uses screenshots for them.
+- A hung app answers each accessibility call within 1 s and is then skipped for
+  five minutes, so the first listing after the helper starts can take a few
+  seconds. The helper warms it in the background.
+
+With app steps available, his input no longer pauses a session on his screen:
+she is not using his mouse or keyboard. It still pauses her while her own
+screenshot `act` batch runs and for 2 s after it. Before such a batch she waits
+for his hands to rest for 1 s (up to 10 s), and she refuses a screenshot taken
+before his last input. Tests drive a real GTK app on a private display while a
+second window receives typing throughout. The steps land, and his window keeps
+its focus, every keystroke and the pointer position.
+
 ## CLI agent integration
 
 Ask the connected chat to watch a selected screen or complete a specific GUI

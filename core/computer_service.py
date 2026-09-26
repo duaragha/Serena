@@ -39,6 +39,28 @@ GUIDANCE = (
 )
 
 
+def _his_apps(desktop):
+    """Accessibility access to his windows, or None where the bus is missing."""
+    if getattr(desktop, "name", "") != "x11":
+        return None
+    try:
+        from core.computer_apps import HisApps
+
+        apps = HisApps(desktop.env)
+        if not apps.available():
+            apps.close()
+            return None
+    except Exception:
+        return None
+    def warm():
+        # The first listing waits out any hung app once; pay it before a task does.
+        with contextlib.suppress(Exception):
+            apps.list()
+
+    threading.Thread(target=warm, name="computer-apps-warm", daemon=True).start()
+    return apps
+
+
 def _isolated_x11(env):
     return X11Desktop(env, role="isolated")
 
@@ -573,6 +595,7 @@ def serve():
             )
 
     controller = ComputerController(desktop, publish=publish)
+    controller.apps = _his_apps(desktop)
     from core.computer_conversation import ConversationStore
     from core.computer_nested import IsolatedDesktop
 

@@ -66,7 +66,10 @@ def visual_tools(controller, session_id):
             handler=zoom,
         ),
     ]
-    control = controller.current(session_id).mode == "control"
+    session = controller.current(session_id)
+    control = session.mode == "control"
+    if controller.apps is not None and session.desk == "host":
+        tools.extend(_apps_tools(controller, session_id, control))
     if control and controller.terminal is not None:
         tools.append(_shell_tool(controller, session_id))
     if control and controller.web is not None:
@@ -242,3 +245,64 @@ def _browser_tools(controller, session_id):
             handler=browser,
         ),
     ]
+
+
+def _apps_tools(controller, session_id, control):
+    async def apps(args):
+        return _text(await asyncio.to_thread(controller.apps_view, session_id, args.get("window")))
+
+    async def app(args):
+        return _text(await asyncio.to_thread(controller.apps_run, session_id, **args))
+
+    tools = [
+        SimpleNamespace(
+            name="apps",
+            description=(
+                "Read Raghav's open windows as text through accessibility, without touching his "
+                "mouse or keyboard. No window: lists windows with refs like w3, app and title. "
+                "window (a ref, or words from its title or app): that window's widgets, each with a "
+                "ref like a12, role, name, value and state (checked, disabled, focused…). Far faster "
+                "than a screenshot. A window marked contents hidden is a Chromium/Electron app with "
+                "accessibility off: use screenshots for it."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"window": {"type": "string"}},
+                "additionalProperties": False,
+            },
+            handler=apps,
+        )
+    ]
+    if control:
+        tools.append(SimpleNamespace(
+            name="app",
+            description=(
+                "Work in one of Raghav's windows while he keeps using his computer: steps go "
+                "straight to the widgets, so his pointer never moves, his typing is never "
+                "interrupted, and a dialog the app raises does not take his focus. Runs up to 25 "
+                "steps in ONE call and stops at the first failure. Steps: {press:T} (buttons, "
+                "links, menu items, tabs, list items), {set_text:T, text} (replaces a field's "
+                "text), {check:T}, {uncheck:T}, {select:T, option:'Pro'} (combo boxes, lists), "
+                "{set_value:T, value:5} (sliders, spin buttons), {read:T}, {menu:['File','Save "
+                "As…']}, {wait_for:{target:T}|{gone:T}}; any step takes timeout seconds (default "
+                "2). Read the window with apps first unless you already know its widgets; never "
+                "guess names. T is {ref:'a12'} from the window's latest apps snapshot, or {role:'button', "
+                "name:'Save'} (roles: button, textbox, checkbox, radio, combobox, menuitem, tab, "
+                "listitem, or an AT-SPI role); add nth for one of several matches, exact:true for "
+                "an exact name. A dialog is its own window: address it by its title. Password "
+                "fields refuse text: hand off. Returns each step's result and a fresh snapshot."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "window": {"type": "string"},
+                    "steps": {"type": "array", "minItems": 1, "maxItems": 25, "items": {"type": "object"}},
+                    "request_id": {"type": "string"},
+                    "intent": {"type": "string"},
+                },
+                "required": ["window", "steps", "request_id", "intent"],
+                "additionalProperties": False,
+            },
+            handler=app,
+        ))
+    return tools
