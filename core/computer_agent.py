@@ -216,6 +216,16 @@ class ComputerAgent:
                     "command may be a whole multi-line script. To open "
                     "a window, end an act batch with launch {app: browser|terminal, url}."
                 )
+            if s.desk == "host" and c.apps is not None:
+                prompt += (
+                    "\nThis is Raghav's own screen and he may be working on it right now. Use apps "
+                    "and app for every window they can read: they press buttons, fill fields, pick "
+                    "options and read text straight through accessibility, without his mouse or "
+                    "keyboard and without taking his focus, so he keeps working. Send a window's "
+                    "whole sequence of steps as one app call. Use observe/act only for windows "
+                    "whose contents are hidden or for purely visual work; act waits until his "
+                    "hands are still, and his input during it pauses you."
+                )
             if resumed:
                 prompt += (
                     "\nRaghav had the mouse and keyboard and has handed control back. The screen may "

@@ -32,6 +32,12 @@ POST_ACTION_SETTLE_SECONDS = 1.0
 POST_ACTION_QUIET_SECONDS = 0.45
 LIVE_STATES = frozenset({"active", "paused", "resuming"})
 RELEASE_WAIT_SECONDS = 5.0
+# On his screen with accessibility steps available, her pixel input waits for
+# his hands to rest this long, and his input pauses her only while she is
+# using the mouse or keyboard and for this grace period after.
+HANDS_QUIET_SECONDS = 1.0
+HANDS_WAIT_SECONDS = 10.0
+PIXEL_GRACE_SECONDS = 2.0
 
 
 class EventBus:
@@ -76,6 +82,8 @@ class Session:
     pauses: int = 0
     resume_requested_at: float | None = None
     last_physical_at: float = 0
+    # Until this monotonic time her pixel input shares his mouse and keyboard.
+    pixel_until: float = 0
     input_hold: threading.Event = field(default_factory=threading.Event)
     last_timing: dict | None = None
     frame_delivered_at: float = 0
@@ -126,6 +134,8 @@ class ComputerController:
         # exist only on her own desktop (see computer_web / computer_shell).
         self.web = None
         self.terminal = None
+        # His desktop apps through accessibility (computer_apps); host desk only.
+        self.apps = None
         self.lock = threading.RLock()
         self.capture_lock = threading.Lock()
         self.action_lock = threading.Lock()
@@ -368,13 +378,35 @@ class ComputerController:
         return self.status()
 
     def physical_input(self):
-        """His real input pauses a control session; watch sessions ignore it."""
+        """His real input pauses a control session; watch sessions ignore it.
+
+        With accessibility steps on his screen she works beside him, so his
+        input pauses her only while her own pixel input shares his mouse and
+        keyboard.
+        """
         s = self.session
         if not s or s.mode != "control" or s.state not in LIVE_STATES:
             return
         s.last_physical_at = self.clock()
-        if s.state == "active":
+        if s.state == "active" and (not self._beside_him(s) or time.monotonic() < s.pixel_until):
             self.pause(s.id, "you took over with the mouse or keyboard")
+
+    def _beside_him(self, s):
+        return s.desk == "host" and self.apps is not None
+
+    def _wait_for_his_hands(self, s, frame):
+        """Pixel input on his screen only while his hands rest, on a frame taken after."""
+        deadline = time.monotonic() + HANDS_WAIT_SECONDS
+        while self.clock() - s.last_physical_at < HANDS_QUIET_SECONDS:
+            if self._input_cancelled(s):
+                raise ComputerError(self._cancel_reason(s))
+            if time.monotonic() >= deadline:
+                raise ComputerError(
+                    "Raghav is using his mouse and keyboard; use app steps, or act again once he stops"
+                )
+            time.sleep(0.1)
+        if s.last_physical_at > frame["captured_at"]:
+            raise ComputerError("Raghav used his screen after this screenshot; observe again")
 
     def pause(self, session_id, reason, *, by_agent=False):
         """Hold input without ending the task; its lease and context survive."""
@@ -812,6 +844,10 @@ class ComputerController:
             if s.mode != "control":
                 raise ComputerError("this session can watch but cannot send input")
             frame = self.frame(session_id, frame_id)
+            if self._beside_him(s):
+                self._wait_for_his_hands(s, frame)
+                # From here his input is a collision, and pauses her.
+                s.pixel_until = float("inf")
             _, monitors, geometry = self.geometry(s.target)
             if geometry != frame["geometry"]:
                 raise ComputerError("display/window geometry changed; observe again")
@@ -925,7 +961,52 @@ class ComputerController:
             )
             return {**receipt, **({"frame": post_frame} if post_frame else {})}
         finally:
+            current = self.session
+            if current is not None and current.pixel_until == float("inf"):
+                current.pixel_until = time.monotonic() + PIXEL_GRACE_SECONDS
             self.action_lock.release()
+
+    # -- his desktop apps through accessibility --------------------------------
+    def apps_view(self, session_id, window=None):
+        """His windows, or one window's widgets as text with refs."""
+        s = self.current(session_id)
+        if self.apps is None:
+            raise ComputerError("app access exists only on his screen, with accessibility on")
+        self._scope_apps(s)
+        result = self.apps.snapshot(window) if window else self.apps.list()
+        s.frame_delivered_at = time.monotonic()
+        return result
+
+    def apps_run(self, session_id, window, steps, *, request_id, intent, confirmation_id=""):
+        """Press, fill, pick and read in his apps without his mouse or keyboard."""
+        if self.apps is None:
+            raise ComputerError("app access exists only on his screen, with accessibility on")
+        from core.computer_apps import MAX_STEP_TIMEOUT, validate_steps
+
+        validate_steps(steps)
+        budget = sum(float(step.get("timeout", 5)) for step in steps) + 15
+
+        def execute(s):
+            self._scope_apps(s)
+            return self.apps.run(window, steps, cancelled=lambda: self._input_cancelled(s))
+
+        return self._structured_batch(
+            session_id,
+            request_id=request_id,
+            intent=intent,
+            payload=["apps", window, steps],
+            budget=min(budget, len(steps) * MAX_STEP_TIMEOUT + 15),
+            execute=execute,
+            confirmation_id=confirmation_id,
+        )
+
+    def _scope_apps(self, s):
+        """Only windows inside the session's scope: a display, a window, or all."""
+        if s.target == "desktop":
+            self.apps.scope = None
+            return
+        rect, _, _ = self.geometry(s.target)
+        self.apps.scope = (rect.x, rect.y, rect.width, rect.height)
 
     # -- structured input on her own desktop ---------------------------------
     def browser_snapshot(self, session_id):
