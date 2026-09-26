@@ -45,7 +45,7 @@ INTERACTIVE = frozenset({
     "push button", "toggle button", "check box", "radio button", "menu item",
     "check menu item", "radio menu item", "combo box", "entry", "password text",
     "spin button", "slider", "link", "list item", "page tab", "tree item",
-    "menu", "table cell", "tool bar item", "switch", "toggle", "terminal",
+    "menu", "table cell", "tool bar item", "switch", "toggle", "terminal", "editbar",
 })
 TEXTUAL = frozenset({
     "label", "heading", "static", "paragraph", "text", "status bar", "alert",
@@ -55,7 +55,7 @@ TEXTUAL = frozenset({
 # Browser-style role words the worker already uses, mapped to AT-SPI roles.
 ROLE_ALIASES = {
     "button": {"push button", "toggle button"},
-    "textbox": {"entry", "text", "password text", "terminal", "document text"},
+    "textbox": {"entry", "text", "password text", "terminal", "document text", "editbar"},
     "checkbox": {"check box", "check menu item", "switch"},
     "radio": {"radio button", "radio menu item"},
     "combobox": {"combo box"},
@@ -417,7 +417,7 @@ class HisApps:
                 number = self._number(node)
                 if number is not None:
                     return f"{number:g}"
-            if role in {"entry", "text", "combo box", "document text", "terminal"} or self._has(
+            if role in {"entry", "text", "combo box", "document text", "terminal", "editbar"} or self._has(
                 node, "EDITABLE"
             ):
                 content = self._text(node, tail=role == "terminal", limit=VALUE_CHARS * 3)
@@ -451,8 +451,12 @@ class HisApps:
                 count = node.get_child_count()
             except Exception:
                 continue
+            if not name and role in TEXTUAL:
+                # Labels often carry their words only as text content.
+                with contextlib.suppress(Exception):
+                    name = _clean(self._text(node, limit=NAME_CHARS * 2))
             keep = node is window or role in INTERACTIVE or (name and role in TEXTUAL)
-            if not keep and role in {"entry", "text"} and self._has(node, "EDITABLE"):
+            if not keep and role in {"entry", "text"} and "EditableText" in self._ifaces(node):
                 keep = True
             indent = depth
             if keep:
