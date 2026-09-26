@@ -34,9 +34,8 @@ GUIDANCE = (
     "only; control needs a specific requested GUI task. "
     "Control defaults to target=isolated: Serena's own desktop with its own mouse, keyboard, browser "
     "and terminal, so the user keeps working meanwhile. Use a window:ID/display:NAME target only when "
-    "the task needs the user's own open windows. Physical input pauses a control session on his "
-    "desktop; on hers, the indicator's take over button does. computer_resume continues it from a "
-    "fresh screenshot."
+    "the task needs the user's own open windows. Physical input pauses a control session on that "
+    "desktop; computer_resume continues it from a fresh screenshot."
 )
 
 
@@ -240,19 +239,6 @@ class ComputerServer(ThreadingHTTPServer):
                 target = paused[0]
             target.resume(session_id or None)
             return self.status()
-        if method == "takeover":
-            # The indicator's button: the explicit way to take her desktop,
-            # since the viewer drops his input while she drives.
-            if not operator:
-                raise ComputerError("take over from the local operator surface")
-            c = self.isolated
-            s = c.session if c else None
-            if not s or s.state != "active" or s.mode != "control":
-                raise ComputerError("serena is not driving her desktop")
-            c.pause(s.id, "you took over from the indicator")
-            with contextlib.suppress(ComputerError, subprocess.SubprocessError):
-                self.isolated_runtime.show()
-            return self.status()
         if method == "steer":
             session_id = params.get("session_id")
             running = (
@@ -330,10 +316,6 @@ class ComputerServer(ThreadingHTTPServer):
                 launcher=runtime.launch,
             )
             c.conversations = self.conversations
-            if hasattr(runtime, "set_interactive"):
-                c.viewer_mode = runtime.set_interactive
-                # Idle: the viewer is his, e.g. to sign in to a site for her.
-                c._his_input(True)
             if self.isolated_tools is not None:
                 try:
                     c.web, c.terminal = self.isolated_tools(runtime, info)
@@ -460,7 +442,7 @@ class ComputerServer(ThreadingHTTPServer):
             if self.isolated is not None and time.monotonic() - runtime_checked >= 1:
                 runtime_checked = time.monotonic()
                 if not self.isolated_runtime.running():
-                    # Her X server exited; closing the viewer never does this.
+                    # Closing the viewer window closes her desktop.
                     with self.isolated_lock:
                         self._drop_isolated("serena's desktop was closed")
 

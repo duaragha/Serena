@@ -351,11 +351,6 @@ class ComputerIndicator:
         with suppress(Exception):
             self.client.call("resume", session_id=(self._session or {}).get("id", ""))
 
-    def takeover(self):
-        self.resume_button.configure(text="taking over…")
-        with suppress(Exception):
-            self.client.call("takeover", session_id=(self._session or {}).get("id", ""))
-
     def view(self):
         with suppress(Exception):
             self.client.call("desktop", action="show")
@@ -428,11 +423,7 @@ class ComputerIndicator:
         if state == "paused":
             observation = (
                 session.get("paused_reason") or "you took over"
-            ) + (
-                " · the viewer is yours; press resume to hand it back"
-                if getattr(self, "desk", "host") == "isolated"
-                else " · press resume when your hands are off"
-            )
+            ) + " · press resume when your hands are off"
         elif state == "resuming":
             observation = "resuming · keep your hands off for a moment…"
         last_ms = session.get("last_model_ms")
@@ -504,18 +495,8 @@ class ComputerIndicator:
         self.context_label.configure(text=f"{focus}  ·  scope {target}")
         self.meta_label.configure(text=f"{model}   ·   {timing}")
         self.stop_button.configure(text="stop")
-        # On her own desktop the viewer drops his input while she drives, so
-        # taking over is this button rather than a click inside the viewer.
-        takeover = (
-            getattr(self, "desk", "host") == "isolated"
-            and session.get("mode") == "control"
-            and session.get("state") == "active"
-        )
-        if state == "paused" or takeover:
-            if state == "paused":
-                self.resume_button.configure(text="resume", command=self.resume)
-            else:
-                self.resume_button.configure(text="take over", command=self.takeover)
+        if state == "paused":
+            self.resume_button.configure(text="resume")
             if not self.resume_button.winfo_manager():
                 self.resume_button.pack(side="right", padx=(6, 0), before=self.stop_button)
         elif self.resume_button.winfo_manager():
