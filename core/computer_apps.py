@@ -69,6 +69,9 @@ ROLE_ALIASES = {
 PREFERRED_ACTIONS = ("click", "press", "activate", "jump", "toggle", "open", "select")
 KINDS = ("press", "set_text", "check", "uncheck", "select", "set_value", "read", "wait_for", "menu")
 STOPPED = "stopped: input is held or the session ended"
+# A widget that is not there yet (a dialog opening) gets this long by default;
+# a guessed name that never exists should not cost more.
+DEFAULT_STEP_TIMEOUT = 2.0
 
 
 class AppsError(ComputerError):
@@ -109,7 +112,7 @@ def validate_steps(steps):
         extra = set(step) - {kind, "text", "option", "value", "timeout"}
         if extra:
             raise AppsError(f"{where} has unknown keys: {', '.join(sorted(extra))}")
-        timeout = step.get("timeout", 5)
+        timeout = step.get("timeout", DEFAULT_STEP_TIMEOUT)
         if not isinstance(timeout, (int, float)) or not 0 <= timeout <= MAX_STEP_TIMEOUT:
             raise AppsError(f"{where} timeout must be 0-{MAX_STEP_TIMEOUT:g} seconds")
         body = step[kind]
@@ -533,6 +536,20 @@ class HisApps:
         # Exact names first, then substring matches, each in tree order.
         return [node for _partial, node in sorted(found, key=lambda item: item[0])]
 
+    def _nearby(self, window, target):
+        """What the window does have, so one retry can pick a real name."""
+        if not target.get("role") or not target.get("name"):
+            return ""
+        names = []
+        with contextlib.suppress(Exception):
+            for node in self._search(window, {"role": target["role"]}):
+                label = _clean(node.get_name(), 30)
+                if label and label not in names:
+                    names.append(label)
+                if len(names) >= 25:
+                    break
+        return f"; {target['role']} names here: " + ", ".join(names) if names else ""
+
     def _resolve(self, window, target):
         if "ref" in target:
             node = self.refs.get(target["ref"])
@@ -542,7 +559,7 @@ class HisApps:
         matches = self._search(window, target)
         nth = target.get("nth", 0)
         if not matches:
-            raise AppsError("no element matches " + _describe(target))
+            raise AppsError("no element matches " + _describe(target) + self._nearby(window, target))
         if len(matches) > 1 and "nth" not in target:
             names = [f"{m.get_role_name()} \"{_clean(m.get_name(), 40)}\"" for m in matches[:5]]
             raise AppsError(
@@ -667,7 +684,7 @@ class HisApps:
 
     def _step(self, window, step, kind):
         body = step[kind]
-        timeout = float(step.get("timeout", 5))
+        timeout = float(step.get("timeout", DEFAULT_STEP_TIMEOUT))
         if kind == "menu":
             return {"did": self._menu(window, body)}
         if kind == "wait_for":
@@ -751,7 +768,7 @@ class HisApps:
     def run(self, window, steps, *, cancelled=lambda: False):
         validate_steps(steps)
         return self.call(self._run, window, steps, cancelled,
-                         timeout=sum(float(s.get("timeout", 5)) for s in steps) + 30)
+                         timeout=sum(float(s.get("timeout", DEFAULT_STEP_TIMEOUT)) for s in steps) + 30)
 
 
 def _describe(target):

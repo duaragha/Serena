@@ -981,10 +981,10 @@ class ComputerController:
         """Press, fill, pick and read in his apps without his mouse or keyboard."""
         if self.apps is None:
             raise ComputerError("app access exists only on his screen, with accessibility on")
-        from core.computer_apps import MAX_STEP_TIMEOUT, validate_steps
+        from core.computer_apps import DEFAULT_STEP_TIMEOUT, MAX_STEP_TIMEOUT, validate_steps
 
         validate_steps(steps)
-        budget = sum(float(step.get("timeout", 5)) for step in steps) + 15
+        budget = sum(float(step.get("timeout", DEFAULT_STEP_TIMEOUT)) for step in steps) + 15
 
         def execute(s):
             self._scope_apps(s)
