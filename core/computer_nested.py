@@ -1,11 +1,9 @@
-"""Serena's own desktop: a headless X server with its own pointer, keyboard and focus.
+"""Serena's own desktop: a nested X server with its own pointer, keyboard and focus.
 
 XTest input sent to this display never reaches Raghav's cursor or keyboard focus,
-so he keeps working while she drives her own browser and terminal. Nothing of it
-is on his screen until he opens the viewer: a VNC window onto the display, served
-by x11vnc on a private Unix socket. The server is view-only while she drives, so
-no click or key of his can land there by accident; it accepts his input only
-while she is paused or idle. Closing the viewer only stops watching.
+so he keeps working while she drives her own browser and terminal. The Xephyr
+window on his screen is the live viewer. Clicking or typing inside it is an
+explicit takeover; closing it closes her desktop.
 
 X clients authenticate with a per-start cookie. The server reads it from a
 private file and clients find it in his normal Xauthority file, keyed by display
@@ -30,12 +28,6 @@ from core.computer_client import state_dir
 from core.computer_platform import ComputerError, desktop_environment
 
 TITLE = "Serena's desktop"
-# TigerVNC titles its window "<desktop name> - TigerVNC"; x11vnc names it TITLE.
-VIEWER_TITLE = f"^{TITLE} - TigerVNC$"
-VIEWERS = ("xtigervncviewer", "vncviewer")
-SOCKET_NAME = "vnc.sock"
-# sockaddr_un holds 108 bytes; a longer path makes x11vnc abort.
-MAX_SOCKET_PATH = 100
 TERMINAL_APP_ID = "org.serena.IsolatedDesktop"
 FIRST_DISPLAY = 70
 LAST_DISPLAY = 99
@@ -121,7 +113,7 @@ class IsolatedDesktop:
 
     def running(self):
         info = self._read()
-        if not info or not _alive(info.get("server_pid"), "Xvfb"):
+        if not info or not _alive(info.get("xephyr_pid"), "Xephyr"):
             return None
         if not Path(f"/tmp/.X11-unix/X{info['number']}").exists():
             return None
@@ -164,7 +156,6 @@ class IsolatedDesktop:
             "size": info["size"],
             "started_at": info["started_at"],
             "viewer_window": self.viewer_window(),
-            "viewer": "interactive" if info.get("interactive") else "view-only",
             "browser_profile": str(self.profile),
         }
 
@@ -231,16 +222,10 @@ class IsolatedDesktop:
                 if not _alive(info.get("wm_pid"), info.get("wm", "")):
                     info["wm"], info["wm_pid"] = self._start_wm(self.env(info))
                     self._write(info)
-                if not _alive(info.get("vnc_pid"), "x11vnc"):
-                    self._start_vnc(info)
-                    self._write(info)
                 return info
-            self._retire(self._read())
-            missing = [name for name in ("Xvfb", "x11vnc") if not shutil.which(name)]
-            if missing:
-                raise ComputerError(
-                    "serena's desktop needs " + " and ".join(missing) + ": sudo apt install xvfb x11vnc"
-                )
+            self._forget(self._read())
+            if not shutil.which("Xephyr"):
+                raise ComputerError("serena's desktop needs Xephyr: sudo apt install xserver-xephyr")
             number = self._free_display()
             display = f":{number}"
             cookie = secrets.token_hex(16)
@@ -250,17 +235,20 @@ class IsolatedDesktop:
             server_auth.chmod(0o600)
             self._run("xauth", "-f", self._xauthority(), "add", display, "MIT-MAGIC-COOKIE-1", cookie)
             width, height = self.size
-            server = self._spawn(
+            xephyr = self._spawn(
                 [
-                    "Xvfb",
+                    "Xephyr",
                     display,
                     "-auth",
                     str(server_auth),
                     "-screen",
-                    "0",
-                    f"{width}x{height}x24",
+                    f"{width}x{height}",
+                    "-no-host-grab",
+                    "-title",
+                    TITLE,
                     "-nolisten",
                     "tcp",
+                    "-br",
                     "-noreset",
                 ],
                 self.host_env,
@@ -268,21 +256,19 @@ class IsolatedDesktop:
             info = {
                 "display": display,
                 "number": number,
-                "server_pid": server.pid,
+                "xephyr_pid": xephyr.pid,
                 "size": f"{width}x{height}",
                 "started_at": time.time(),
-                "interactive": False,
             }
             try:
                 self._connect(display, 5).close()
                 info["wm"], info["wm_pid"] = self._start_wm(self.env(info))
-                self._start_vnc(info)
                 self._write(info)
             except Exception:
-                _terminate(info.get("vnc_pid"), "x11vnc")
-                _terminate(server.pid, "Xvfb")
+                _terminate(xephyr.pid, "Xephyr")
                 self._forget(info)
                 raise
+        self._place_viewer()
         for app in ("terminal", "browser"):
             with contextlib.suppress(ComputerError, OSError, subprocess.SubprocessError):
                 self.launch(app)
@@ -306,84 +292,6 @@ class IsolatedDesktop:
             connection.close()
         return name, process.pid
 
-    def _socket(self, info):
-        path = self.directory / SOCKET_NAME
-        if len(str(path)) > MAX_SOCKET_PATH:
-            runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
-            path = runtime / f"serena-desktop-{info['number']}.sock"
-        return path
-
-    def _start_vnc(self, info):
-        """Serve the display on a private Unix socket, view-only until told otherwise.
-
-        No TCP port and no password: the socket lives in her 0700 state directory
-        (or his runtime directory), so only his user can connect. x11vnc's own
-        clipboard sync is off because the clipboard bridge owns that job.
-        """
-        path = self._socket(info)
-        path.unlink(missing_ok=True)
-        process = self._spawn(
-            [
-                "x11vnc",
-                "-display",
-                info["display"],
-                "-rfbport",
-                "0",
-                "-unixsock",
-                str(path),
-                "-forever",
-                "-shared",
-                "-viewonly",
-                "-nosel",
-                "-nopw",
-                "-nobell",
-                "-quiet",
-                "-desktop",
-                TITLE,
-            ],
-            self.env(info),
-        )
-        deadline = time.monotonic() + 5
-        while not path.exists():
-            if process.poll() is not None or time.monotonic() >= deadline:
-                _terminate(process.pid, "x11vnc")
-                raise ComputerError("serena's desktop viewer server did not start")
-            time.sleep(0.05)
-        info.update(vnc_pid=process.pid, socket=str(path), interactive=False)
-
-    def set_interactive(self, interactive):
-        """Accept his viewer input (True) or drop it at the server (False)."""
-        info = self.running()
-        if not info:
-            return
-        if not _alive(info.get("vnc_pid"), "x11vnc"):
-            self._start_vnc(info)
-        # Shutting him out waits (-sync, ~0.2 s) until the server has applied
-        # it, so nothing of his lands after her first input. Letting him back
-        # in can arrive a moment late.
-        args = ["-sync", "-R", "viewonly"] if not interactive else ["-R", "noviewonly"]
-        self._run("x11vnc", "-display", info["display"], *args, env=self.env(info), timeout=5)
-        info["interactive"] = bool(interactive)
-        self._write(info)
-
-    def _retire(self, info):
-        """Stop what a dead or older desktop left behind, then forget it."""
-        if info:
-            # Her desktop was a visible Xephyr window before it went headless.
-            _terminate(info.get("xephyr_pid"), "Xephyr")
-            _terminate(info.get("server_pid"), "Xvfb")
-            _terminate(info.get("vnc_pid"), "x11vnc")
-            _terminate(info.get("viewer_pid"), "vncviewer")
-            _terminate(info.get("terminal_pid"), TERMINAL_APP_ID)
-            _terminate(info.get("wm_pid"), info.get("wm", "") or "\0")
-            # Her browser exits with its X server; a new one on the same profile
-            # would otherwise open as a tab in the dying one.
-            deadline = time.monotonic() + 5
-            with contextlib.suppress(Exception):
-                while self._browser_processes() and time.monotonic() < deadline:
-                    time.sleep(0.1)
-        self._forget(info)
-
     def _forget(self, info):
         """Drop a dead desktop's cookie and runtime record."""
         if info and info.get("display"):
@@ -395,13 +303,10 @@ class IsolatedDesktop:
         info = self._read()
         if not info:
             return self.status()
-        # Her apps exit when their X server goes away; the WM, terminal server,
-        # VNC server and viewer are ours by recorded pid, so nothing else is
-        # ever signalled.
-        _terminate(info.get("viewer_pid"), "vncviewer")
-        _terminate(info.get("vnc_pid"), "x11vnc")
+        # Her apps exit when their X server goes away; the WM and terminal
+        # server are ours by recorded pid, so nothing else is ever signalled.
         _terminate(info.get("terminal_pid"), TERMINAL_APP_ID)
-        _terminate(info.get("server_pid") or info.get("xephyr_pid"), "Xvfb" if info.get("server_pid") else "Xephyr")
+        _terminate(info.get("xephyr_pid"), "Xephyr")
         _terminate(info.get("wm_pid"), info.get("wm", "") or "\0")
         self._forget(info)
         return self.status()
@@ -557,86 +462,52 @@ class IsolatedDesktop:
 
     def viewer_window(self):
         with contextlib.suppress(ComputerError, subprocess.SubprocessError):
-            found = self._run("xdotool", "search", "--name", VIEWER_TITLE, timeout=2)
+            found = self._run("xdotool", "search", "--name", f"^{TITLE}$", timeout=2)
             return found.splitlines()[-1] if found else None
         return None
 
-    def _viewer_position(self):
-        """His rightmost secondary monitor when there is one, else none."""
+    def _place_viewer(self):
+        """Put the viewer on his rightmost secondary monitor when there is one."""
         if not self.host_monitors:
-            return None
+            return
         with contextlib.suppress(Exception):
             monitors = self.host_monitors()
             others = [m for m in monitors if not m.get("primary")] or monitors
             rect = max(others, key=lambda m: m["rect"]["x"])["rect"]
             width, height = self.size
-            x = rect["x"] + max(0, (rect["width"] - width) // 2)
-            y = rect["y"] + max(0, (rect["height"] - height) // 2)
-            return x, y
-        return None
-
-    def _open_viewer(self, info):
-        binary = next((item for item in VIEWERS if shutil.which(item)), None)
-        if not binary:
-            raise ComputerError("watching serena's desktop needs a VNC viewer: sudo apt install tigervnc-viewer")
-        if not _alive(info.get("vnc_pid"), "x11vnc"):
-            self._start_vnc(info)
-        width, height = self.size
-        position = self._viewer_position()
-        geometry = f"{width}x{height}" + (f"+{position[0]}+{position[1]}" if position else "")
-        process = self._spawn(
-            [
-                binary,
-                "-Shared=1",
-                "-RemoteResize=0",
-                # The clipboard bridge carries text both ways; the viewer's own
-                # sync would race it.
-                "-AcceptClipboard=0",
-                "-SendClipboard=0",
-                "-SendPrimary=0",
-                "-SetPrimary=0",
-                "-AlertOnFatalError=0",
-                "-ReconnectOnError=0",
-                "-geometry",
-                geometry,
-                info["socket"],
-            ],
-            self.host_env,
-        )
-        info["viewer_pid"] = process.pid
-        self._write(info)
-        window = None
-        deadline = time.monotonic() + 5
-        while not window:
-            if process.poll() is not None or time.monotonic() >= deadline:
-                raise ComputerError("serena's desktop viewer did not open")
-            time.sleep(0.05)
-            window = self.viewer_window()
-        return window
+            window = None
+            deadline = time.monotonic() + 2
+            while not window and time.monotonic() < deadline:
+                window = self.viewer_window()
+                time.sleep(0.05)
+            if window:
+                x = rect["x"] + max(0, (rect["width"] - width) // 2)
+                y = rect["y"] + max(0, (rect["height"] - height) // 2)
+                self._run("xdotool", "windowmove", window, str(x), str(y), timeout=2)
 
     def release_keys(self, names):
-        """Release keys his viewer left held on her display.
+        """Release keys the nested server still thinks his keyboard holds.
 
-        His viewer input reaches her display through x11vnc's XTest device, so
-        an XTest key-up there releases it. Only called before her own input,
-        and only while the server drops his, so nothing he holds is released.
+        Sent to the viewer window as synthetic key-ups, which Xephyr forwards.
+        Only called before her own input, and his real typing in the viewer
+        pauses her first, so a key he is actually holding is never released.
         """
-        info = self.running()
-        if not info:
+        window = self.viewer_window()
+        if not window:
             return
         with contextlib.suppress(ComputerError, subprocess.SubprocessError):
-            self._run("xdotool", "keyup", *names, env=self.env(info), timeout=2)
+            self._run("xdotool", "keyup", "--window", window, *names, timeout=2)
 
     def show(self):
-        info = self.running()
-        if not info:
-            raise ComputerError("serena's desktop is not running")
-        window = self.viewer_window() or self._open_viewer(info)
+        window = self.viewer_window()
+        if not window:
+            raise ComputerError("serena's desktop viewer is not open")
         self._run("xdotool", "windowactivate", window, timeout=2)
         return self.status()
 
     def hide(self):
         window = self.viewer_window()
-        if window:
-            self._run("xdotool", "windowminimize", window, timeout=2)
+        if not window:
+            raise ComputerError("serena's desktop viewer is not open")
+        self._run("xdotool", "windowminimize", window, timeout=2)
         return self.status()

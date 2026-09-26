@@ -18,29 +18,17 @@ chats computer stop
 
 ## Serena's own desktop
 
-`run` defaults to `--target isolated`: Serena's own desktop, a headless X
-server (Xvfb) with its own pointer, keyboard, focus, browser profile and
-terminal. Her XTest input goes to that server, so your cursor and keyboard focus
-never move and you keep working while a GUI task runs. Nothing of it is on your
-screen until you open the viewer, a TigerVNC window served by x11vnc on a
-private Unix socket in her 0700 state directory (no TCP port). The helper places
-it on your rightmost secondary monitor. Minimizing or closing the viewer only
-stops watching; she keeps working.
-
-The viewer is **view-only while she drives**: x11vnc drops your clicks and keys
-at the server, so nothing you do, on your screen or inside the viewer, can
-interrupt her. It is yours whenever she is not driving: idle, paused, handed
-off, or in a watch session. That is how you sign in to a site for her. Taking
-over mid-task is the **take over** button on her HUD card. The switch to
-view-only waits for x11vnc to confirm it (about 0.2 s) before her first input.
-A desktop started before this change (a visible Xephyr window) is retired and
-replaced on the next start; her browser profile carries over.
-
-Packages: `sudo apt install xvfb x11vnc tigervnc-viewer`.
+`run` defaults to `--target isolated`: Serena's own desktop, a nested X server
+(Xephyr) with its own pointer, keyboard, focus, browser profile and terminal.
+Her XTest input goes to that server, so your cursor and keyboard focus never
+move and you keep working while a GUI task runs. The Xephyr window on your
+screen is the live viewer; the helper places it on your rightmost secondary
+monitor. Minimizing it does not stop her. Closing it closes her desktop and
+stops any task there.
 
 ```bash
 chats computer desktop open       # start or adopt it, with a browser and terminal
-chats computer desktop show|hide  # open/raise or minimize the viewer
+chats computer desktop show|hide  # raise or minimize the viewer
 chats computer desktop launch browser https://example.com
 chats computer desktop launch terminal
 chats computer desktop close      # browser logins survive in its own profile
@@ -116,7 +104,7 @@ display, running as you.
 Use `window:ID` or `display:NAME` only when the task needs your own open windows.
 A watch session on your screen and a control session on her desktop can run at
 the same time. Each has its own HUD card; hers sits below yours and has a
-**view** button that opens the viewer and, while she drives, **take over**. `status` lists both under `sessions`,
+**view** button that raises the viewer. `status` lists both under `sessions`,
 and `session` is the first one still running.
 
 X clients reach her display with a per-start cookie: the server reads it from a
@@ -196,12 +184,11 @@ bind Shift+Ctrl+Alt+Escape there, so her display relies on the host grab.
 
 ### Takeover pauses, resume continues
 
-Taking over **pauses** the session instead of ending it. On your screen any
-mouse movement, click or key does it. On her desktop your input cannot reach
-her while she drives, so it is the HUD's **take over** button, which also
-opens the viewer and makes it interactive. The pause holds input at once,
-including mid-batch, clears frames taken before the takeover, and keeps the
-lease, task and model thread.
+Physical input on the desktop being controlled **pauses** the session instead
+of ending it: on your screen any mouse movement, click or key; on her desktop a
+click or key inside the viewer (your pointer merely crossing it does not
+count). The pause holds input at once, including mid-batch, clears frames taken
+before the takeover, and keeps the lease, task and model thread.
 
 Resume with the HUD's **resume** button, `chats computer resume`, MCP
 `computer_resume`, or the resident brain's `resume` operation. Input returns

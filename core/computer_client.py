@@ -41,7 +41,7 @@ class ComputerClient:
             port = int(info["port"])
             token = (
                 info["operator_token"]
-                if method in {"begin", "run", "confirm", "resume", "takeover", "desktop"}
+                if method in {"begin", "run", "confirm", "resume", "desktop"}
                 else info["token"]
             )
             request = urllib.request.Request(
