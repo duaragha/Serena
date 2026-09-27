@@ -298,3 +298,36 @@ def test_she_works_in_his_app_while_he_types_in_another(display, tmp_path):
         assert _x(env, "getmouselocation") == pointer
     finally:
         apps.close()
+
+
+@_needs("Xvfb", "metacity", "xdotool", "xauth", "/usr/bin/python3")
+def test_focus_guard_hands_his_focus_back_even_when_the_app_takes_it_late(display, tmp_path):
+    from core import computer_apps
+    from core.computer_apps import _FocusGuard
+
+    env, processes = display
+    _launch(env, processes, tmp_path / "app.json")
+    _launch(env, processes, tmp_path / "his.json", "other")
+    deadline = time.monotonic() + 10
+    while _x(env, "getactivewindow", "getwindowname") != "His other app":
+        assert time.monotonic() < deadline, "his window never took focus"
+        time.sleep(0.1)
+    his = _x(env, "getactivewindow")
+    app_window = _x(env, "search", "--name", "^Serena apps test$").split()[-1]
+    app_pid = int(_x(env, "getwindowpid", app_window))
+
+    guard = _FocusGuard(env, app_pid).start()
+    guard.finish()  # the batch has returned; the guard lingers for a late dialog
+    time.sleep(0.3)
+    _x(env, "windowactivate", app_window)  # the app takes his focus afterwards
+    deadline = time.monotonic() + 1
+    while _x(env, "getactivewindow") != his:
+        assert time.monotonic() < deadline, "his focus was not handed back"
+        time.sleep(0.02)
+    assert guard.kept
+
+    # Once the linger ends it stops guarding: focusing the app is then his choice.
+    time.sleep(computer_apps.FOCUS_LINGER_SECONDS)
+    _x(env, "windowactivate", app_window)
+    time.sleep(0.4)
+    assert _x(env, "getactivewindow") == app_window
