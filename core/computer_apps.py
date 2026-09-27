@@ -41,6 +41,14 @@ READ_CHARS = 3000
 DEAD_APP_SECONDS = 300.0
 # An app that takes this long just to give its name and pid is hung or gone.
 SLOW_APP_SECONDS = 0.7
+# Every app is pinged at once with this deadline before any is walked: a hung
+# registration costs the whole listing this much once, not a second or more
+# per call. Healthy apps answer in milliseconds.
+PROBE_SECONDS = 0.3
+PROBE_WORKERS = 16
+# A skipped app is tried again after this long, doubling while it keeps
+# missing, up to DEAD_APP_SECONDS: a busy app comes back, a hung one stays out.
+RETRY_SECONDS = 30.0
 WINDOW_ROLES = frozenset({"frame", "dialog", "window", "alert", "file chooser", "color chooser"})
 INTERACTIVE = frozenset({
     "push button", "toggle button", "check box", "radio button", "menu item",
@@ -213,8 +221,11 @@ class HisApps:
         self.ref_window = None
         self.next_ref = 0
         self.dead = {}
+        self.strikes = {}
         self.displays = {}
         self.atspi = None
+        self.a11y = None
+        self.prober = None
         self.scope = None
 
     # -- plumbing ----------------------------------------------------------
@@ -245,6 +256,107 @@ class HisApps:
 
     def close(self):
         self.executor.shutdown(wait=False, cancel_futures=True)
+        if self.prober is not None:
+            self.prober.shutdown(wait=False, cancel_futures=True)
+
+    # -- liveness ------------------------------------------------------------
+    def _a11y_connection(self):
+        """Our own connection to the accessibility bus, for pings libatspi can't bound."""
+        if self.a11y is None:
+            from gi.repository import Gio, GLib
+
+            address = os.environ.get("AT_SPI_BUS_ADDRESS")
+            if not address:
+                session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+                address = session.call_sync(
+                    "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus", "GetAddress", None,
+                    GLib.VariantType("(s)"), Gio.DBusCallFlags.NONE, 1000, None,
+                ).unpack()[0]
+            self.a11y = Gio.DBusConnection.new_for_address_sync(
+                address,
+                Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT
+                | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+                None,
+                None,
+            )
+        return self.a11y
+
+    @staticmethod
+    def _ping(connection, bus, path):
+        """True when the app answers at all; False when it is hung or gone."""
+        from gi.repository import Gio, GLib
+
+        try:
+            connection.call_sync(
+                bus, path, "org.freedesktop.DBus.Properties", "Get",
+                GLib.Variant("(ss)", ("org.a11y.atspi.Accessible", "ChildCount")),
+                None, Gio.DBusCallFlags.NONE, int(PROBE_SECONDS * 1000), None,
+            )
+            return True
+        except GLib.Error as exc:
+            silent = {
+                (Gio.io_error_quark(), Gio.IOErrorEnum.TIMED_OUT),
+                (Gio.io_error_quark(), Gio.IOErrorEnum.CLOSED),
+                (Gio.DBusError.quark(), Gio.DBusError.TIMEOUT),
+                (Gio.DBusError.quark(), Gio.DBusError.TIMED_OUT),
+                (Gio.DBusError.quark(), Gio.DBusError.NO_REPLY),
+                (Gio.DBusError.quark(), Gio.DBusError.SERVICE_UNKNOWN),
+                (Gio.DBusError.quark(), Gio.DBusError.NAME_HAS_NO_OWNER),
+                (Gio.DBusError.quark(), Gio.DBusError.UNKNOWN_OBJECT),
+            }
+            # Any other error is still an answer: the app is alive.
+            return not any(exc.matches(domain, code) for domain, code in silent)
+
+    def _responsive(self, apps):
+        """The apps that answer a ping within PROBE_SECONDS, all asked at once.
+
+        None when the ping itself is unavailable, or when it says nobody is
+        alive (a connection to the wrong bus looks exactly like that): the
+        listing then tries every app, still bounded by the short call timeout.
+        """
+        targets = {}
+        for app in apps:
+            with contextlib.suppress(Exception):
+                targets[app] = (app.app.bus_name, app.path)
+        if not targets:
+            return None
+        try:
+            connection = self._a11y_connection()
+        except Exception:
+            return None
+        if self.prober is None:
+            self.prober = concurrent.futures.ThreadPoolExecutor(
+                PROBE_WORKERS, thread_name_prefix="computer-apps-ping"
+            )
+        futures = {
+            self.prober.submit(self._ping, connection, bus, path): app
+            for app, (bus, path) in targets.items()
+        }
+        done, _late = concurrent.futures.wait(futures, timeout=PROBE_SECONDS + 0.1)
+        alive = set()
+        for future in done:
+            with contextlib.suppress(Exception):
+                if future.result():
+                    alive.add(futures[future])
+        if not alive:
+            # A closed connection (he logged out and in) is reopened next time.
+            self.a11y = None
+            return None
+        # An app without a bus identity cannot be pinged; libatspi decides it.
+        return alive | {app for app in apps if app not in targets}
+
+    @staticmethod
+    def _key(app):
+        with contextlib.suppress(Exception):
+            return app.app.bus_name, app.path
+        return app
+
+    def _skip(self, app, now):
+        """Leave an unresponsive app out, for longer each time it misses again."""
+        key = self._key(app)
+        strikes = self.strikes.get(key, 0) + 1
+        self.strikes[key] = strikes
+        self.dead[key] = now + min(DEAD_APP_SECONDS, RETRY_SECONDS * 2 ** (strikes - 1))
 
     def _display_of(self, pid):
         if pid not in self.displays:
@@ -359,27 +471,49 @@ class HisApps:
         Atspi = self._bus()
         desktop = Atspi.get_desktop(0)
         now = time.monotonic()
-        found = []
+        apps = []
         for index in range(desktop.get_child_count()):
             try:
                 app = desktop.get_child_at_index(index)
             except Exception:
                 continue
-            if app is None or self.dead.get(app, 0) > now:
-                continue
-            probed = time.monotonic()
-            try:
-                pid = app.get_process_id()
-                count = app.get_child_count()
-                name = app.get_name() or ""
-            except Exception:
-                self.dead[app] = now + DEAD_APP_SECONDS
-                continue
-            if count <= 0 and time.monotonic() - probed > SLOW_APP_SECONDS:
-                self.dead[app] = now + DEAD_APP_SECONDS
-                continue
-            if count <= 0 or not self._mine(pid):
-                continue
+            if app is not None and self.dead.get(self._key(app), 0) <= now:
+                apps.append(app)
+        responsive = self._responsive(apps)
+        healthy = []
+        # App-level questions get the ping's short deadline too, in case an
+        # app hangs between the ping and here; windows get the normal one.
+        Atspi.set_timeout(int(PROBE_SECONDS * 1000), 3000)
+        try:
+            for app in apps:
+                if responsive is not None and app not in responsive:
+                    self._skip(app, now)
+                    continue
+                probed = time.monotonic()
+                try:
+                    pid = app.get_process_id()
+                    count = app.get_child_count()
+                except Exception:
+                    self._skip(app, now)
+                    continue
+                if count <= 0:
+                    # libatspi reports a failed call as -1 rather than raising.
+                    if count < 0 or time.monotonic() - probed > SLOW_APP_SECONDS:
+                        self._skip(app, now)
+                    continue
+                if not self._mine(pid):
+                    continue
+                try:
+                    name = app.get_name() or ""
+                except Exception:
+                    self._skip(app, now)
+                    continue
+                self.strikes.pop(self._key(app), None)
+                healthy.append((app, name, pid, count))
+        finally:
+            Atspi.set_timeout(1000, 3000)
+        found = []
+        for app, name, pid, count in healthy:
             for child in range(min(count, 30)):
                 try:
                     window = app.get_child_at_index(child)

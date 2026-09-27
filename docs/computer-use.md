@@ -240,9 +240,15 @@ is never interrupted, and his keyboard focus stays where it is.
 - Chromium and Electron apps (Edge, VS Code, the Serena app) publish nothing
   unless started with `--force-renderer-accessibility`. Their windows are listed
   with "contents hidden", and the worker uses screenshots for them.
-- A hung app answers each accessibility call within 1 s and is then skipped for
-  five minutes, so the first listing after the helper starts can take a few
-  seconds. The helper warms it in the background.
+- Before walking any app, a listing pings every registered app at once over
+  its own connection to the accessibility bus, with a 0.3 s deadline. A hung
+  or stopped app (which costs libatspi a second or more per call) is left out
+  of that listing, and app-level calls use the same short timeout in case an
+  app hangs after its ping. A skipped app is retried after 30 s, doubling while
+  it keeps missing, up to five minutes, so a busy app comes back and a dead one
+  stays out. With three stopped apps registered, a cold listing went from
+  about 8 s to 0.4 s on his desktop, with the same windows listed. The helper
+  still warms the first listing in the background.
 
 With app steps available, his input no longer pauses a session on his screen:
 she is not using his mouse or keyboard. It still pauses her while her own
