@@ -195,6 +195,14 @@ test('console and failed requests are kept per tab for the agents to read', asyn
   assert.equal(logs.network[0].error, 'ERR_NAME_NOT_RESOLVED');
 });
 
+// Owner-only files are a POSIX permission. Windows has no mode bits for Node
+// to report (a writable file always reads back as 0o666); there the profile
+// directory's ACL is what keeps them private.
+function assertPrivate(file) {
+  if (process.platform === 'win32') return;
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+}
+
 test('a popup opens as another in-app tab instead of a window', async () => {
   const { browser } = harness();
   await browser.run('open', { url: 'localhost:3000' });
@@ -213,7 +221,7 @@ test('screenshots are written privately and only the last few are kept', async (
     shot = await browser.run('screenshot', {});
   }
   assert.ok(fs.existsSync(shot.path));
-  assert.equal(fs.statSync(shot.path).mode & 0o777, 0o600);
+  assertPrivate(shot.path);
   assert.equal(fs.readdirSync(path.join(userDataDir, 'app-browser', 'shots')).length, 20);
 });
 
@@ -240,7 +248,7 @@ test('the control server answers only its token holder, never a web page', async
     const control = JSON.parse(fs.readFileSync(browser.controlFile, 'utf8'));
     assert.equal(control.port, port);
     assert.equal(control.channel, 'dev');
-    assert.equal(fs.statSync(browser.controlFile).mode & 0o777, 0o600);
+    assertPrivate(browser.controlFile);
     assert.equal((await post(port, '/browser/tabs')).status, 401);
     assert.equal((await post(port, '/browser/tabs', { token: 'wrong' })).status, 401);
     const page = await post(port, '/browser/tabs', { token: control.token, origin: 'http://evil.test' });
@@ -263,7 +271,7 @@ test('tabs come back after a restart, unloaded until used', async () => {
   await first.browser.run('open', { url: 'localhost:4000', newTab: true });
   await new Promise((resolve) => setTimeout(resolve, 600));
   const saved = path.join(first.userDataDir, 'app-browser', 'tabs.json');
-  assert.equal(fs.statSync(saved).mode & 0o777, 0o600);
+  assertPrivate(saved);
   const second = harness({ userDataDir: first.userDataDir });
   const port = await second.browser.start();
   try {
