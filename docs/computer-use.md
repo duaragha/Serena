@@ -222,7 +222,16 @@ is never interrupted, and his keyboard focus stays where it is.
   role) and a name.
 - A dialog the app raises is its own window, addressed by its title. If a step
   makes the app take focus while he was in another app, his focus goes straight
-  back and the dialog stays open behind, still taking steps.
+  back and the dialog stays open behind, still taking steps. A guard watches
+  the active window every 40 ms for the whole batch and 1.5 s after it, so a
+  dialog that maps late is caught too. If he moves to another window himself,
+  that window becomes the one it guards. It hands focus back at most three
+  times per batch and never touches the pointer.
+- Verified live on Cinnamon (Muffin), 2026-09-26, with xed's File > Open... run
+  through accessibility while he was in Edge. Muffin's focus-stealing
+  prevention usually kept the file dialog from taking focus at all. On the run
+  where it did take it, and on a forced steal, his window was back before a
+  100 ms trace could see the change. The pointer stayed where it was.
 - Password fields refuse text, like the browser's.
 - Only windows on his display within the session's scope are visible. Her own
   desktop's apps share the bus but are filtered out. Chromium stamps its process

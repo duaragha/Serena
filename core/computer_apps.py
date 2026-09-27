@@ -21,6 +21,7 @@ import contextlib
 import os
 import re
 import subprocess
+import threading
 import time
 import warnings
 from pathlib import Path
@@ -72,6 +73,10 @@ STOPPED = "stopped: input is held or the session ended"
 # A widget that is not there yet (a dialog opening) gets this long by default;
 # a guessed name that never exists should not cost more.
 DEFAULT_STEP_TIMEOUT = 2.0
+FOCUS_POLL_SECONDS = 0.04
+# A dialog the last step opens can map a moment after the batch returns.
+FOCUS_LINGER_SECONDS = 1.5
+MAX_HANDBACKS = 3
 
 
 class AppsError(ComputerError):
@@ -136,6 +141,62 @@ def validate_steps(steps):
             raise AppsError(f"{where} select needs the option's name")
         if kind == "set_value" and not isinstance(step.get("value"), (int, float)):
             raise AppsError(f"{where} set_value needs a number")
+
+
+class _FocusGuard:
+    """Hands his focus back the moment the app she is driving takes it.
+
+    It watches the active window for the whole batch and a moment after, so a
+    dialog that maps late is caught too. The check it replaced ran once per
+    step, missed those, and cost every step a fixed sleep. On Cinnamon (Muffin)
+    a dialog opened through accessibility usually never takes focus at all,
+    because focus-stealing prevention refuses it. When an app does take focus,
+    his window is back within about 0.1 s.
+    """
+
+    def __init__(self, env, app_pid):
+        self.env = env
+        self.app_pid = str(app_pid or "")
+        self.his = ""
+        self.kept = False
+        self.handbacks = 0
+        self.stop_at = float("inf")
+
+    def _x(self, *args):
+        return subprocess.run(
+            ["xdotool", *args], env=self.env, capture_output=True, text=True, timeout=2
+        ).stdout.strip()
+
+    def start(self):
+        try:
+            self.his = self._x("getactivewindow")
+            his_pid = self._x("getwindowpid", self.his) if self.his else ""
+        except (OSError, subprocess.SubprocessError):
+            return self
+        # Unknown, or he is working in that app himself: nothing to guard.
+        if self.his and self.app_pid and his_pid != self.app_pid:
+            threading.Thread(target=self._watch, name="computer-apps-focus", daemon=True).start()
+        return self
+
+    def finish(self):
+        self.stop_at = time.monotonic() + FOCUS_LINGER_SECONDS
+
+    def _watch(self):
+        last = self.his
+        while time.monotonic() < self.stop_at and self.handbacks < MAX_HANDBACKS:
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                active = self._x("getactivewindow")
+                if active and active != last:
+                    last = active
+                    if self._x("getwindowpid", active) == self.app_pid:
+                        self._x("windowactivate", self.his)
+                        self.handbacks += 1
+                        self.kept = True
+                        last = self.his
+                    else:
+                        # He moved to another window himself: guard that one.
+                        self.his = active
+            time.sleep(FOCUS_POLL_SECONDS)
 
 
 class HisApps:
@@ -656,32 +717,6 @@ class HisApps:
             node = matches[0]
         return self._press(node)
 
-    def _active(self):
-        try:
-            window = subprocess.run(
-                ["xdotool", "getactivewindow"], env=self.env, capture_output=True, text=True, timeout=2
-            ).stdout.strip()
-            pid = subprocess.run(
-                ["xdotool", "getwindowpid", window], env=self.env, capture_output=True, text=True, timeout=2
-            ).stdout.strip()
-            return window, int(pid) if pid.isdigit() else None
-        except (OSError, subprocess.SubprocessError, ValueError):
-            return None, None
-
-    def _keep_focus(self, before, app_pid):
-        """Hand his focus back if her step made the target app raise a window."""
-        window, pid = before
-        if not window or pid == app_pid:
-            return False
-        time.sleep(0.15)
-        after, after_pid = self._active()
-        if after and after != window and after_pid == app_pid:
-            subprocess.run(
-                ["xdotool", "windowactivate", window], env=self.env, capture_output=True, timeout=2
-            )
-            return True
-        return False
-
     def _step(self, window, step, kind):
         body = step[kind]
         timeout = float(step.get("timeout", DEFAULT_STEP_TIMEOUT))
@@ -735,26 +770,26 @@ class HisApps:
             app_pid, title = window.get_process_id(), _clean(window.get_name(), 120)
         results = []
         ok = True
-        kept = False
-        for index, step in enumerate(steps, 1):
-            if cancelled():
-                results.append({"step": index, "ok": False, "detail": STOPPED})
-                ok = False
-                break
-            kind = next(key for key in step if key in KINDS)
-            before = self._active() if kind not in {"read", "wait_for"} else (None, None)
-            try:
-                detail = self._step(window, step, kind)
-                results.append({"step": index, "ok": True, **detail})
-            except Exception as exc:
-                results.append({"step": index, "ok": False, "detail": str(exc).split("\n")[0][:400]})
-                ok = False
-                break
-            finally:
-                if before[0]:
-                    kept = self._keep_focus(before, app_pid) or kept
+        guard = _FocusGuard(self.env, app_pid).start()
+        try:
+            for index, step in enumerate(steps, 1):
+                if cancelled():
+                    results.append({"step": index, "ok": False, "detail": STOPPED})
+                    ok = False
+                    break
+                kind = next(key for key in step if key in KINDS)
+                try:
+                    detail = self._step(window, step, kind)
+                    results.append({"step": index, "ok": True, **detail})
+                except Exception as exc:
+                    results.append({"step": index, "ok": False, "detail": str(exc).split("\n")[0][:400]})
+                    ok = False
+                    break
+        finally:
+            # It keeps watching for a moment, for a dialog that maps late.
+            guard.finish()
         result = {"ok": ok, "steps": results, "window": title}
-        if kept:
+        if guard.kept:
             result["focus"] = "the app raised a window; his focus was handed back"
         try:
             window.get_role_name()
