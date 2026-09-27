@@ -338,3 +338,15 @@ def test_hook_installation_preserves_existing_hooks_and_is_idempotent(tmp_path):
     handler = codex["hooks"]["UserPromptSubmit"][0]["hooks"][0]
     assert handler["additionalContextLimit"] == 0
     assert handler["command"].startswith("'/python path/bin/python' '/repo path/cli.py'")
+
+
+def test_login_autostart_starts_the_helper_where_graphical_session_never_activates(tmp_path):
+    from core.computer_cli import write_login_autostart
+
+    path = write_login_autostart(home=tmp_path)
+    assert path == tmp_path / ".config/autostart/serena-computer.desktop"
+    text = path.read_text()
+    assert "systemctl --user start serena-computer.service" in text
+    assert "import-environment DISPLAY XAUTHORITY" in text
+    # Rewriting it is harmless.
+    assert write_login_autostart(home=tmp_path).read_text() == text
