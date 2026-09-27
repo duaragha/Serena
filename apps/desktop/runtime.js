@@ -171,6 +171,18 @@ function backendLaunch({ isPackaged, appDir, resourcesPath, port, platform = pro
   };
 }
 
+// Chromium sets these for the Electron process itself. Passed on to the
+// backend, NO_AT_BRIDGE hid every GTK app it or its panes launched from the
+// accessibility bus, and CHROME_DESKTOP made a browser they start claim
+// Serena's launcher.
+const CHROMIUM_PROCESS_ENV = ['NO_AT_BRIDGE', 'CHROME_DESKTOP'];
+
+function backendEnv(base) {
+  const env = { ...base };
+  for (const key of CHROMIUM_PROCESS_ENV) delete env[key];
+  return env;
+}
+
 function childExited(child) {
   return child.exitCode !== null || child.signalCode !== null;
 }
@@ -212,6 +224,7 @@ async function terminateProcessTree(child, graceMs = 2500) {
 module.exports = {
   LOOPBACK_HOST,
   SHARED_BACKEND_PORT,
+  backendEnv,
   backendLaunch,
   findExistingBackend,
   findFreePort,

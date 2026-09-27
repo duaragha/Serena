@@ -253,6 +253,9 @@ def _spawn_windows_process(
     )
 
 
+CHROMIUM_PROCESS_ENV = ("NO_AT_BRIDGE", "CHROME_DESKTOP")
+
+
 def _terminal_environment(environ: dict[str, str]) -> dict[str, str]:
     """Describe our interactive renderer, not the service or agent launching it."""
 
@@ -262,6 +265,12 @@ def _terminal_environment(environ: dict[str, str]) -> dict[str, str]:
     # Automation hosts disable color for captured output. Their children here
     # have a real PTY and xterm renderer; those output policies do not apply.
     for key in ("NO_COLOR", "CLICOLOR", "FORCE_COLOR", "CLICOLOR_FORCE"):
+        env.pop(key, None)
+    # Chromium sets these for its own process only (the desktop app is
+    # Electron), and they leaked through its backend into every pane.
+    # NO_AT_BRIDGE=1 hid each GTK app launched from a pane from the
+    # accessibility bus, so computer use could not see or drive it.
+    for key in CHROMIUM_PROCESS_ENV:
         env.pop(key, None)
     home = env.get("HOME") or env.get("USERPROFILE") or os.path.expanduser("~")
     user_dirs = [

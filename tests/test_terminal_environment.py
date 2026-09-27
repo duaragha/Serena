@@ -33,6 +33,20 @@ def test_interactive_terminal_capabilities_are_owned_by_the_pane(monkeypatch, wi
     assert inherited["NO_COLOR"] == "1"
 
 
+def test_panes_drop_what_chromium_set_for_its_own_process():
+    # The Electron desktop app sets these for itself; its backend passed them on.
+    inherited = {
+        "PATH": os.environ.get("PATH", ""),
+        "NO_AT_BRIDGE": "1",
+        "CHROME_DESKTOP": "serena-desktop.desktop",
+        "DISPLAY": ":0",
+    }
+    env = pty_terminal._terminal_environment(inherited)
+    assert "NO_AT_BRIDGE" not in env and "CHROME_DESKTOP" not in env
+    assert env["DISPLAY"] == ":0"
+    assert inherited["NO_AT_BRIDGE"] == "1"
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX PTY integration")
 def test_real_pty_has_color_and_its_own_dimensions(monkeypatch, tmp_path):
     monkeypatch.setattr(pty_terminal, "_scope_supported", False)
