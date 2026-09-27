@@ -155,6 +155,14 @@
         "tests/test_terminal_peer_sleep.py", "tests/test_terminal_peer_sleep_ui.py",
         "tests/test_visible_panes_never_sleep.py"
       ]
+    },
+    {
+      "id": "handoff-same-agent",
+      "title": "Hand off to the agent you are in spawns a second chat of it",
+      "devTag": "v0.3.10-dev.16",
+      "commit": "fa55e7327ecfddd049f45f09f26c3f743ed286cd",
+      "requires": [],
+      "paths": ["ui/web.py", "tests/workspace-handoff.test.mjs"]
     }
   ]
 }
