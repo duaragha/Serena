@@ -239,7 +239,9 @@ is never interrupted, and his keyboard focus stays where it is.
   holds their windows.
 - Chromium and Electron apps (Edge, VS Code, the Serena app) publish nothing
   unless started with `--force-renderer-accessibility`. Their windows are listed
-  with "contents hidden", and the worker uses screenshots for them.
+  with "contents hidden", and the worker uses screenshots for them, until
+  `chats computer accessibility apply` has run and the app has restarted (see
+  below).
 - Before walking any app, a listing pings every registered app at once over
   its own connection to the accessibility bus, with a 0.3 s deadline. A hung
   or stopped app (which costs libatspi a second or more per call) is left out
@@ -257,6 +259,58 @@ for his hands to rest for 1 s (up to 10 s), and she refuses a screenshot taken
 before his last input. Tests drive a real GTK app on a private display while a
 second window receives typing throughout. The steps land, and his window keeps
 its focus, every keystroke and the pointer position.
+
+### Chromium and Electron apps
+
+```bash
+chats computer accessibility status   # which launchers carry the flag
+chats computer accessibility apply    # add it; re-run after an app update rewrites a launcher
+chats computer accessibility undo     # put every launcher back, delete the copies apply made
+```
+
+`apply` (`core/app_accessibility.py`) adds `--force-renderer-accessibility`
+right after the executable on every `Exec=` line, action entries included:
+
+- his local launchers under `~/.local/share/applications`, plus local copies
+  of `/usr/share/applications` launchers that have none, which shadow the
+  system ones and survive package updates;
+- `~/.config/autostart/unified.desktop`;
+- for VS Code, the `force-renderer-accessibility` key in `~/.vscode/argv.json`,
+  a switch VS Code accepts on Linux. That covers every way VS Code starts,
+  `code` in a terminal included.
+
+It never restarts a running app, so each one publishes its tree from its next
+start. What `apply` created is recorded in
+`~/.config/serena/app-accessibility.json` so `undo` deletes only those. Unified
+rewrites its autostart entry only when its "open at login" setting is toggled,
+and Edge rewrites a web app's launcher when that web app is reinstalled. Re-run
+`apply` after either. The flag costs those apps some CPU and memory on busy
+pages, which is Chromium's accessibility mode doing its work.
+
+Applied on the laptop on 2026-09-26. The launch lines before the change:
+
+| Launcher | Original `Exec=` |
+|---|---|
+| `~/.local/share/applications/microsoft-edge.desktop` | `/usr/bin/microsoft-edge-stable --max-old-space-size=2048 --renderer-process-limit=5 %U`, plus the plain and `--inprivate` actions |
+| `~/.local/share/applications/com.microsoft.Edge.desktop` | none: created as a copy of the system launcher (`/usr/bin/microsoft-edge-stable %U` and its actions) |
+| `~/.local/share/applications/msedge-*.desktop` (5 Edge web apps) | `/opt/microsoft/msedge/microsoft-edge --profile-directory=… --app-id=…` or `--app=…` |
+| `~/.local/share/applications/serena-desktop.desktop` | `/home/raghav/Applications/Serena.AppImage %U` |
+| `~/.local/share/applications/serena-dev.desktop` | `/home/raghav/Applications/Serena-Dev.AppImage %U` |
+| `~/.local/share/applications/openwhispr.desktop` | `/home/raghav/Documents/Projects/openwhispr/app/dist/linux-unpacked/open-whispr` |
+| `~/.config/autostart/unified.desktop` | `"/usr/lib/unified-inbox/unified" --login-launch` |
+| `~/.local/share/applications/unified-inbox.desktop` | `/usr/bin/unified-inbox %U` |
+| `~/.vscode/argv.json` | no `force-renderer-accessibility` key |
+
+Proof: a throwaway instance of each app ran with the flag and a temporary
+profile on a private Xvfb display. `HisApps` read each window's tree:
+
+| App | Widgets it published |
+|---|---|
+| Edge | 20, including Back, Refresh, and the address bar with its URL |
+| VS Code (argv.json only, no command-line flag) | 47, including the File, Edit, Selection, View and Go menus |
+| Serena | 34, including its File, Edit and View buttons and "Serena chats" |
+| OpenWhispr | its control panel: window buttons and text such as "Welcome to OpenWhispr" and "Cloud Not Configured" |
+| Unified | its pairing screen: headings and paragraphs, such as "Your private inbox needs another try" |
 
 ## CLI agent integration
 

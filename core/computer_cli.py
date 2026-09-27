@@ -149,6 +149,48 @@ def resume(session_id):
 
 
 @computer.group()
+def accessibility():
+    """Make Edge, VS Code, Serena, OpenWhispr and Unified publish their widgets.
+
+    Chromium and Electron apps hide their contents from accessibility unless
+    started with --force-renderer-accessibility, so app steps could not reach
+    them. apply adds it to his launchers and VS Code's argv.json (next start);
+    re-run it after an app update rewrites a launcher. undo puts them back.
+    """
+
+
+def _accessibility(rows):
+    click.echo(json.dumps(rows, indent=2))
+
+
+@accessibility.command("status")
+def accessibility_status():
+    """Which launchers carry the flag."""
+    from core import app_accessibility
+
+    _accessibility(app_accessibility.status())
+
+
+@accessibility.command("apply")
+def accessibility_apply():
+    """Add the flag to every launcher; takes effect when each app next starts."""
+    from core import app_accessibility
+
+    try:
+        _accessibility(app_accessibility.apply())
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@accessibility.command("undo")
+def accessibility_undo():
+    """Restore every launcher apply changed and delete the copies it made."""
+    from core import app_accessibility
+
+    _accessibility(app_accessibility.undo())
+
+
+@computer.group()
 def desktop():
     """Serena's own desktop: its own mouse, keyboard, browser and terminal."""
 
