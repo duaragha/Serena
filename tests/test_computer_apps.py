@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from test_computer_use import Desktop, act, begin
@@ -185,6 +186,118 @@ def test_her_own_desktop_offers_no_app_steps(controller):
     c.desk = "isolated"
     sid, _frame = begin(c)
     assert not {"apps", "app"} & {tool.name for tool in visual_tools(c, sid)}
+
+
+class FakeWindow:
+    def __init__(self, title):
+        self.title = title
+
+    def get_role_name(self):
+        return "frame"
+
+    def get_name(self):
+        return self.title
+
+    def get_state_set(self):
+        return SimpleNamespace(contains=lambda _state: False)
+
+    def get_child_count(self):
+        return 0
+
+
+class FakeApp:
+    def __init__(self, bus, name, *, hung=False):
+        self.app = SimpleNamespace(bus_name=bus)
+        self.path = "/org/a11y/atspi/accessible/root"
+        self.name, self.hung, self.asked = name, hung, 0
+        self.window = FakeWindow(f"{name} window")
+
+    def _answer(self, value):
+        self.asked += 1
+        if self.hung:
+            time.sleep(2)  # what a stopped process costs each libatspi call
+        return value
+
+    def get_process_id(self):
+        return 4_000_000  # no such process: his display cannot be ruled out
+
+    def get_child_count(self):
+        return self._answer(1)
+
+    def get_name(self):
+        return self._answer(self.name)
+
+    def get_child_at_index(self, _index):
+        return self.window
+
+
+def test_a_hung_app_costs_one_short_ping_and_comes_back_once_it_answers(monkeypatch):
+    from core import computer_apps
+
+    healthy = FakeApp(":1.5", "gedit")
+    hung = FakeApp(":1.9", "frozen", hung=True)
+    atspi = SimpleNamespace(
+        get_desktop=lambda _n: SimpleNamespace(
+            get_child_count=lambda: 2, get_child_at_index=lambda i: (healthy, hung)[i]
+        ),
+        set_timeout=lambda *_args: None,
+        StateType=SimpleNamespace(ACTIVE=1, ICONIFIED=2),
+    )
+    pings = []
+
+    def ping(_connection, bus, _path):
+        pings.append(bus)
+        if bus == ":1.9" and hung.hung:
+            time.sleep(2)
+        return True
+
+    apps = HisApps({"DISPLAY": ""})
+    apps.atspi = atspi
+    monkeypatch.setattr(apps, "_a11y_connection", lambda: object())
+    monkeypatch.setattr(apps, "_ping", ping)
+    try:
+        started = time.monotonic()
+        rows = apps.list()["windows"]
+        assert time.monotonic() - started < computer_apps.PROBE_SECONDS + 0.5
+        assert [row["app"] for row in rows] == ["gedit"]
+        assert hung.asked == 0  # libatspi never waited on it
+        # Skipped for the retry window: not even pinged again.
+        pings.clear()
+        assert [row["app"] for row in apps.list()["windows"]] == ["gedit"]
+        assert ":1.9" not in pings
+        # Once it answers and its retry window has passed, it is listed again.
+        hung.hung = False
+        apps.dead[(":1.9", hung.path)] = 0
+        assert sorted(row["app"] for row in apps.list()["windows"]) == ["frozen", "gedit"]
+        assert (":1.9", hung.path) not in apps.strikes
+    finally:
+        apps.close()
+
+
+def test_repeated_misses_back_off_but_never_hide_an_app_for_good():
+    from core import computer_apps
+
+    apps = HisApps({"DISPLAY": ""})
+    app = FakeApp(":1.9", "busy")
+    key = (":1.9", app.path)
+    waits = []
+    for _ in range(6):
+        apps._skip(app, 0.0)
+        waits.append(apps.dead[key])
+    assert waits[0] == computer_apps.RETRY_SECONDS
+    assert waits == sorted(waits) and waits[-1] == computer_apps.DEAD_APP_SECONDS
+    apps.close()
+
+
+def test_a_ping_that_reaches_nobody_is_not_trusted(monkeypatch):
+    apps = HisApps({"DISPLAY": ""})
+    monkeypatch.setattr(apps, "_a11y_connection", lambda: object())
+    monkeypatch.setattr(apps, "_ping", lambda *_args: False)
+    try:
+        # The wrong bus looks like every app is dead: fall back to asking each.
+        assert apps._responsive([FakeApp(":1.5", "a"), FakeApp(":1.6", "b")]) is None
+    finally:
+        apps.close()
 
 
 # -- a real GTK app on a private display ------------------------------------------
