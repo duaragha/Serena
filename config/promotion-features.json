@@ -163,6 +163,14 @@
       "commit": "fa55e7327ecfddd049f45f09f26c3f743ed286cd",
       "requires": [],
       "paths": ["ui/web.py", "tests/workspace-handoff.test.mjs"]
+    },
+    {
+      "id": "app-browser-windows-tests",
+      "title": "In-app browser tests pass on Windows (file modes checked on POSIX only)",
+      "devTag": "v0.3.10-dev.17",
+      "commit": "80674a3b7a1ab5ac2c6f7331b7fbc54c5d388765",
+      "requires": [],
+      "paths": ["apps/desktop/tests/app-browser.test.cjs"]
     }
   ]
 }
