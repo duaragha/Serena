@@ -171,6 +171,20 @@
       "commit": "80674a3b7a1ab5ac2c6f7331b7fbc54c5d388765",
       "requires": [],
       "paths": ["apps/desktop/tests/app-browser.test.cjs"]
+    },
+    {
+      "id": "panes-no-chromium-env",
+      "title": "Apps launched from chat panes are visible to accessibility (panes drop Chromium's NO_AT_BRIDGE)",
+      "devTag": "v0.3.10-dev.18",
+      "commit": "d3b52004801f502caf48b2353ff3e7f429cbd1a6",
+      "requires": [],
+      "paths": [
+        "apps/desktop/main.js",
+        "apps/desktop/runtime.js",
+        "apps/desktop/tests/shell.test.js",
+        "ui/pty_terminal.py",
+        "tests/test_terminal_environment.py"
+      ]
     }
   ]
 }
