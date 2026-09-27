@@ -328,6 +328,29 @@ def events():
     follow(client, session_id=(result.get("session") or {}).get("id"))
 
 
+AUTOSTART = """[Desktop Entry]
+Type=Application
+Name=Serena computer-use helper
+Comment=Starts serena-computer.service once the desktop session is up
+Exec=sh -c 'systemctl --user import-environment DISPLAY XAUTHORITY; systemctl --user start serena-computer.service'
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+"""
+
+
+def write_login_autostart(home=None):
+    """Start the helper at login on desktops that never reach graphical-session.target.
+
+    GNOME activates that target; Cinnamon, MATE and XFCE do not, so the unit
+    stayed dead after every reboot there. Their XDG autostart runs once the X
+    session is up; starting an already-running unit is a no-op.
+    """
+    path = Path(home or Path.home()) / ".config/autostart/serena-computer.desktop"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(AUTOSTART, encoding="utf-8")
+    return path
+
+
 @computer.command()
 def install():
     """Enable the X11 helper at login, without starting a capture session."""
@@ -355,6 +378,7 @@ def install():
         f"ExecStart={command}\nWorkingDirectory={Path(__file__).resolve().parents[1]}\n"
         "Restart=on-failure\nRestartSec=3\nUMask=0077\n[Install]\nWantedBy=graphical-session.target\n"
     , encoding="utf-8")
+    write_login_autostart()
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", "serena-computer.service"], check=True)
     # A detached CLI-started service already owns the desktop: never kill a live lease to install.
