@@ -378,6 +378,51 @@ def test_control_worker_continues_the_same_task_after_takeover(controller, monke
         agent.thread.join(timeout=3)
 
 
+def test_stopping_a_paused_task_ends_the_worker_without_a_crash(controller, monkeypatch):
+    from core import computer_agent
+
+    monkeypatch.setattr(computer_agent, "build_task_pack", lambda request: "")
+    crashes = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: crashes.append(args.exc_type))
+    turning = threading.Event()
+    closed = threading.Event()
+
+    class Model:
+        def __init__(self, **kwargs):
+            self.active_turn_id = None
+
+        async def start(self):
+            pass
+
+        async def turn(self, message, **kwargs):
+            self.active_turn_id = "turn-1"
+            turning.set()
+            await asyncio.Event().wait()  # the task is still in progress when he stops it
+
+        async def interrupt(self):
+            pass
+
+        async def close(self):
+            closed.set()
+            # The SDK's disconnect waits for its CLI to exit, where the stop's
+            # cancellation lands.
+            raise asyncio.CancelledError
+
+    begin(controller)
+    controller.session.driver = "claude"
+    agent = computer_agent.ComputerAgent(controller, client_factory=Model)
+    controller.agent = agent
+    agent.start()
+    assert agent.thread.name == "computer-worker"
+    assert turning.wait(5)
+    controller.pause(controller.session.id, "you took over with the mouse or keyboard")
+    controller.stop("stopped from the desktop indicator")
+    agent.thread.join(timeout=5)
+    assert not agent.thread.is_alive() and closed.is_set()
+    assert crashes == []
+    assert controller.session.reason == "stopped from the desktop indicator"
+
+
 def test_clipboard_bridge_only_takes_her_copies_from_the_viewer():
     from core.computer_clipboard import ClipboardBridge
 

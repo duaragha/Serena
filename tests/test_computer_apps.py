@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import secrets
@@ -128,6 +129,49 @@ def test_app_steps_need_control_and_never_repeat_on_retry(controller):
     with pytest.raises(ComputerError, match="reused"):
         c.apps_run(sid, "notes", [{"press": {"name": "Open"}}], request_id="apps-once-0001",
                    intent="save")
+
+
+def test_a_chat_driving_his_screen_gets_app_tools_through_the_service(controller, monkeypatch):
+    from core import computer_mcp
+    from core.computer_service import ComputerServer
+
+    server = ComputerServer(controller)
+
+    class Client:
+        def ensure_running(self):
+            return server.dispatch("status", {}, operator=False)
+
+        def call(self, method, **params):
+            return server.dispatch(method, params, operator=method in {"begin", "run"})
+
+    monkeypatch.setattr(computer_mcp, "ComputerClient", Client)
+
+    async def scenario():
+        names = {tool.name for tool in await computer_mcp.mcp.list_tools()}
+        assert {"computer_apps", "computer_app"} <= names
+        started = await computer_mcp.computer_start(
+            "save his notes", mode="control", target="display:left", background=False
+        )
+        sid = started["session"]["id"]
+        listed = await computer_mcp.computer_apps(sid)
+        assert listed["windows"][0]["window"] == "w1"
+        snapshot = await computer_mcp.computer_apps(sid, window="notes")
+        assert '"Save"' in snapshot["snapshot"]
+        done = await computer_mcp.computer_app(
+            sid, "notes", [{"press": {"role": "button", "name": "Save"}}], "mcp-save-0001",
+            "save his notes",
+        )
+        assert done["ok"] and controller.apps.runs[-1][0] == "notes"
+        # The chat's app steps never took his input: his typing still does not pause her.
+        controller.physical_input()
+        assert controller.session.state == "active"
+        await computer_mcp.computer_stop()
+        assert controller.session.state == "stopped"
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        server.server_close()
 
 
 def test_her_own_desktop_offers_no_app_steps(controller):
