@@ -233,7 +233,7 @@ class ComputerServer(ThreadingHTTPServer):
                     c.stop("visual worker failed to start")
                     raise
             return c.status()
-        if method in {"observe", "act", "next_frame"}:
+        if method in {"observe", "act", "next_frame", "apps_view", "apps_run"}:
             return getattr(self.owner(params.get("session_id")), method)(**params)
         if method == "events":
             # Every desk writes the same ordered stream; events carry session_id.

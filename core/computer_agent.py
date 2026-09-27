@@ -90,11 +90,15 @@ class ComputerAgent:
         return text
 
     def start(self):
-        self.thread = threading.Thread(target=self._thread_main, name="computer-astra", daemon=True)
+        self.thread = threading.Thread(target=self._thread_main, name="computer-worker", daemon=True)
         self.thread.start()
 
     def _thread_main(self):
-        asyncio.run(self.run())
+        # A stop that lands as the worker finishes cancels a task whose own
+        # cleanup already ran; that is a stop, not a crash. Task errors are
+        # handled inside run().
+        with contextlib.suppress(asyncio.CancelledError):
+            asyncio.run(self.run())
 
     def cancel(self):
         with contextlib.suppress(RuntimeError):
@@ -508,5 +512,8 @@ class ComputerAgent:
                 with contextlib.suppress(asyncio.CancelledError):
                     await self.speech
             if client:
-                with contextlib.suppress(Exception):
+                # Stopping cancels this task, and the cancellation can land
+                # while the SDK still waits for its CLI to exit. The task is
+                # ending either way, so that is not an error.
+                with contextlib.suppress(Exception, asyncio.CancelledError):
                     await client.close()
