@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "version": "v0.3.11",
+  "baseTag": "v0.3.10",
+  "baseCommit": "80f5717898d97010dcfe5e708691dce9993cb40b",
+  "source": "9148d87244197a9765bb829b6b2416ab44af06bc",
+  "request": "49cd1b647433a9d12d9cdde2138d8fe2",
+  "features": [
+    {
+      "id": "sidebar-order",
+      "commit": "f394389723452e869e45bf66a4ed4297d8dcb6c8",
+      "devTag": "v0.3.4-dev.2"
+    },
+    {
+      "id": "sidebar-performance",
+      "commit": "2da23bf6f6aa71f1d32fd6e4904e8ca4aa3b6dc2",
+      "devTag": "v0.3.7-dev.1"
+    },
+    {
+      "id": "sidebar-projects",
+      "commit": "83e6fb68059b29c53f11cf537f249aa8e8cca6a6",
+      "devTag": "v0.3.8-dev.1"
+    },
+    {
+      "id": "sidebar-compact",
+      "commit": "9e5d5d7697c2477a4642b3e286cdd8cfbd7d99b9",
+      "devTag": "v0.3.8-dev.2"
+    },
+    {
+      "id": "sidebar-utilities",
+      "commit": "dbe304a30c010878ed8e27c303f88b8b65ad66c3",
+      "devTag": "v0.3.8-dev.3"
+    },
+    {
+      "id": "fleet-report-visibility",
+      "commit": "0351f95e3fd52120f16073eeaa78c246ed924306",
+      "devTag": "v0.3.10-dev.2",
+      "base": "f5438e3940ee8d811e297de92d25b90f79e26da5"
+    },
+    {
+      "id": "terminal-status-line",
+      "commit": "75d5f6bcd26eb4fdd8ca4f509fd09fcfb9c573ca",
+      "devTag": "v0.3.10-dev.3"
+    },
+    {
+      "id": "linked-member-removal",
+      "commit": "4db8879cc4752bfb0f6912512e46d68e79d9a2ef",
+      "devTag": "v0.3.10-dev.5"
+    },
+    {
+      "id": "serena-coding-visible",
+      "commit": "59af2d1d010b13946002a36153f89da3829c5aad",
+      "devTag": "v0.3.10-dev.8"
+    },
+    {
+      "id": "durable-chat-unlink",
+      "commit": "c713c2b8a2aaaf1cb46a522aa09277c79c766a32",
+      "devTag": "v0.3.10-dev.13",
+      "base": "e5f44112603a1b8014e1b7e6b7035593122b0014"
+    },
+    {
+      "id": "handoff-same-agent",
+      "commit": "fa55e7327ecfddd049f45f09f26c3f743ed286cd",
+      "devTag": "v0.3.10-dev.16"
+    },
+    {
+      "id": "app-browser-windows-tests",
+      "commit": "80674a3b7a1ab5ac2c6f7331b7fbc54c5d388765",
+      "devTag": "v0.3.10-dev.17"
+    }
+  ],
+  "patches": [
+    {
+      "id": "handoff-same-agent",
+      "sha256": "df53dd5f3940b6f0cc565db3b386042a2104bccfb4d92083aeca7c1eb47989f0"
+    },
+    {
+      "id": "app-browser-windows-tests",
+      "sha256": "bcac6a0416f6b813f054c54c8c72fa2e2dd1d1a6e7e2d3eb1caffc74e9638259"
+    }
+  ]
+}

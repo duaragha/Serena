@@ -5001,9 +5001,9 @@ function showSessionContextMenu(evt, idx) {
   }
   // === HANDOFF FEATURE START === (remove this block to unwire the menu items)
   if (!inMultiSelect && !isReadOnlyTranscript) {
-    // Both directions, always. Each jumps to that agent's chat in the thread
+    // Both directions, always. Another agent lands on its chat in the thread
     // (reuse the linked one if it exists; spin one up if it doesn't). Handing off
-    // to the agent you're already on just refocuses it — no dup, no nag.
+    // to the agent you're already on spins up a second chat of that agent.
     items.push({ sep: true });
     for (const agent of _HANDOFF_AGENTS) {
       items.push({
@@ -9243,17 +9243,21 @@ async function handoffSession(srcSid, targetAgent) {
     members = _pool.filter(s => s.group === srcChat.group);
   }
   const _byRecent = (a, b) => (b.last_timestamp || '').localeCompare(a.last_timestamp || '');
+  // Handing off to the agent you are already in means "carry this chat into a
+  // fresh one": landing back in the same chat did nothing useful. It spawns a
+  // second chat of that agent, briefed from this one and linked into the thread.
+  const srcAgent = ((srcChat || _findClientSession(srcSid) || {}).agent || 'claude').toLowerCase();
+  const sameAgent = srcAgent === targetAgent;
   // Where we LAND: the thread's chat of the requested agent (most recent).
-  const targetChat = members
+  const targetChat = sameAgent ? null : members
     .filter(s => (s.agent || 'claude').toLowerCase() === targetAgent)
     .sort(_byRecent)[0] || null;
   // What we BRIEF FROM: the latest work on the OTHER side of the thread (that's
-  // what you're handing over). No other-agent chat → brief from the chat you're
-  // in. This is why "→ Claude" on the claude-rep row still does something useful:
-  // it carries the codex's progress into claude.
-  let briefFrom = members
+  // what you're handing over). No other-agent chat, or a same-agent handoff →
+  // brief from the chat you're in.
+  let briefFrom = (sameAgent ? null : members
     .filter(s => (s.agent || 'claude').toLowerCase() !== targetAgent)
-    .sort(_byRecent)[0] || srcChat || null;
+    .sort(_byRecent)[0]) || srcChat || null;
   let briefSid = briefFrom ? briefFrom.session_id : srcSid;
   try {
     briefSid = await _resolveHandoffSid(briefSid, 15000);
