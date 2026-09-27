@@ -37,3 +37,54 @@ for(const mounted of [true,false])for(const target of ['claude','codex','gemini'
   assert.equal(context._pseudoSessions[0].pending_group_link_with,'source');
   assert.match(calls.at(-1)[1],mounted?/Ready to create/:/Could not open.*Handoff was not sent/);
 });
+
+function linkedThread(target, {structured=true}={}){
+  const calls=[];
+  const fetched=[];
+  const termSessions=new Map();
+  const claude={session_id:'source',agent:'claude',group:'g1',display_title:'Named chat',last_timestamp:'2026-09-26T10:00:00Z'};
+  const codex={session_id:'sibling',agent:'codex',group:'g1',display_title:'Named chat',last_timestamp:'2026-09-26T11:00:00Z'};
+  const pool=[claude,codex];
+  const context=vm.createContext({
+    window:{SERENA:{structuredWorkspace:structured}},
+    document:{getElementById:()=>({classList:{add(){},remove(){}},textContent:''})},
+    showToast:()=>({update:(...args)=>calls.push(['toast',...args])}),
+    _resolveHandoffSid:async sid=>sid,
+    _findClientSession:sid=>pool.find(s=>s.session_id===sid),
+    sessionSource:pool,sessions:pool,
+    fetch:async(url,init)=>{fetched.push(JSON.parse(init.body));return {ok:true,json:async()=>({ok:true,prompt:'Brief',cwd:'/project'})};},
+    _agentLabel:agent=>agent,
+    _pseudoSessions:[],
+    setSessionSource(){},_applyClientGroup(){},_markActive(){},setTermStatus(){},_startPseudoReconciler(){},
+    openConv:sid=>calls.push(['open',sid]),
+    _gtkSplitActive:false,_gtkSplitSids:[],_activeTerms:new Set(),
+    startLiveTerminal:async(sid,options)=>{calls.push(['create',options]);termSessions.set(sid,{structured:true});},
+    _feedTerminalWhenReady:async sid=>{calls.push(['feed',sid]);return true;},
+    termSessions,
+  });
+  vm.runInContext(source.slice(start,end),context);
+  return {context,calls,fetched};
+}
+
+test('handing off to the agent you are in spawns a second chat of it, briefed from this one', async()=>{
+  const {context,calls,fetched}=linkedThread('claude');
+  await context.handoffSession('source','claude');
+  const create=calls.find(call=>call[0]==='create');
+  assert.ok(create,'a new chat must be spawned');
+  assert.equal(create[1].agent,'claude');
+  assert.equal(create[1].isNew,true);
+  assert.deepEqual(fetched,[{source_sid:'source',target_agent:'claude'}]);
+  assert.ok(!calls.some(call=>call[0]==='open'),'must not land back in the same chat');
+  const pseudo=context._pseudoSessions[0];
+  assert.equal(pseudo.agent,'claude');
+  assert.equal(pseudo.pending_group_link_with,'source');
+  assert.deepEqual([...pseudo.pending_group_member_sids].sort(),['sibling','source']);
+});
+
+test('handing off to another agent still lands on its chat in the thread', async()=>{
+  const {context,calls,fetched}=linkedThread('codex',{structured:false});
+  await context.handoffSession('source','codex');
+  assert.ok(!calls.some(call=>call[0]==='create'),'an existing sibling is reused');
+  assert.deepEqual(calls.find(call=>call[0]==='open'),['open','sibling']);
+  assert.deepEqual(fetched,[{source_sid:'source',target_agent:'codex'}]);
+});
