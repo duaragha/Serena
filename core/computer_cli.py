@@ -239,6 +239,24 @@ def desktop_launch(app, url):
     _desktop("launch", app=app, url=url)
 
 
+@desktop.command("sign-in")
+@click.argument("url", required=False)
+def desktop_sign_in(url):
+    """Let a site accept your sign-in in her browser (optionally opening URL).
+
+    Google and Shopify refuse logins while her browser's automation port is
+    open, so it restarts without it, tabs restored. Her page and browser steps
+    wait until `chats computer desktop signed-in`. Then run `desktop show`.
+    """
+    _desktop("sign_in", **({"url": url} if url else {}))
+
+
+@desktop.command("signed-in")
+def desktop_signed_in():
+    """Hand her browser back: it restarts with its automation port, logins kept."""
+    _desktop("signed_in")
+
+
 @computer.command()
 @click.argument("task")
 @click.option("--mode", type=click.Choice(["watch", "control"]), default="watch")

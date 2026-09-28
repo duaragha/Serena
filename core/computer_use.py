@@ -38,6 +38,13 @@ RELEASE_WAIT_SECONDS = 5.0
 HANDS_QUIET_SECONDS = 1.0
 HANDS_WAIT_SECONDS = 10.0
 PIXEL_GRACE_SECONDS = 2.0
+# A handoff whose reason reads like a sign-in puts her browser in sign-in mode:
+# Google and Shopify refuse logins while its automation port is open.
+SIGN_IN_REASON = re.compile(
+    r"\b(sign(?:[ -]?in|[ -]?up)|log[ -]?in|password|passcode|passkey|2fa|mfa|two[- ]factor|"
+    r"verification code|one[- ]time code|otp|captcha|oauth|consent)\b",
+    re.I,
+)
 
 
 class EventBus:
@@ -84,6 +91,8 @@ class Session:
     last_physical_at: float = 0
     # Until this monotonic time her pixel input shares his mouse and keyboard.
     pixel_until: float = 0
+    # Her browser went into sign-in mode for this session's handoff.
+    signing_in: bool = False
     input_hold: threading.Event = field(default_factory=threading.Event)
     last_timing: dict | None = None
     frame_delivered_at: float = 0
@@ -136,6 +145,10 @@ class ComputerController:
         self.terminal = None
         # His desktop apps through accessibility (computer_apps); host desk only.
         self.apps = None
+        # Her desktop's sign-in mode (computer_nested): sign_in() relaunches her
+        # browser without its automation port, signed_in(restart=) returns it.
+        self.sign_in = None
+        self.signed_in = None
         self.lock = threading.RLock()
         self.capture_lock = threading.Lock()
         self.action_lock = threading.Lock()
@@ -330,6 +343,15 @@ class ComputerController:
         )
         return self.status()
 
+    def _enter_sign_in(self, s):
+        if not s.signing_in:
+            return  # he already resumed or stopped
+        try:
+            self.sign_in()
+            self.event("sign_in_mode", session_id=s.id)
+        except Exception as exc:
+            self.event("sign_in_mode_failed", session_id=s.id, error=str(exc)[:200])
+
     def _releasing(self):
         return self.action_lock.locked() or bool(
             self.agent and self.agent.thread and self.agent.thread.is_alive()
@@ -362,7 +384,12 @@ class ComputerController:
             s.state = "stopped"
             s.reason = str(reason)[:300]
             s.frames.clear()
+            leave_sign_in, s.signing_in = s.signing_in, False
         self.desktop.release()
+        if leave_sign_in and self.signed_in is not None:
+            # The handoff ended with the task; the port returns on next use.
+            with contextlib.suppress(Exception):
+                self.signed_in(restart=False)
         if s.grant_id:
             self.authority.revoke_grant(s.grant_id, reason=reason)
         if (reason == "visual task finished" and s.mode == "control"
@@ -442,6 +469,14 @@ class ComputerController:
                 raise ComputerError("Serena's emergency stop is engaged")
             s.state = "resuming"
             s.resume_requested_at = self.clock()
+            leave_sign_in, s.signing_in = s.signing_in, False
+        if leave_sign_in and self.signed_in is not None:
+            # Only the flag: the next page or browser step brings the port back,
+            # so resume never waits on a browser restart.
+            try:
+                self.signed_in(restart=False)
+            except Exception as exc:
+                self.event("sign_in_mode_failed", session_id=s.id, error=str(exc)[:200])
         self.event("resuming", session_id=s.id)
         return self.status()
 
@@ -927,6 +962,13 @@ class ComputerController:
                 self.pause(
                     s.id, "serena needs you: " + actions[-1]["reason"].strip(), by_agent=True
                 )
+                if (s.desk == "isolated" and self.sign_in is not None
+                        and SIGN_IN_REASON.search(actions[-1]["reason"])):
+                    s.signing_in = True
+                    # Restarting her browser takes seconds; the receipt does not wait.
+                    threading.Thread(
+                        target=self._enter_sign_in, args=(s,), name="computer-sign-in", daemon=True
+                    ).start()
                 receipt.update(
                     status="handed_off",
                     next=(
