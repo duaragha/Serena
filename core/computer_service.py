@@ -233,7 +233,8 @@ class ComputerServer(ThreadingHTTPServer):
                     c.stop("visual worker failed to start")
                     raise
             return c.status()
-        if method in {"observe", "act", "next_frame", "apps_view", "apps_run"}:
+        if method in {"observe", "act", "next_frame", "apps_view", "apps_run", "browser_snapshot",
+                      "browser", "shell"}:
             return getattr(self.owner(params.get("session_id")), method)(**params)
         if method == "events":
             # Every desk writes the same ordered stream; events carry session_id.
@@ -292,6 +293,7 @@ class ComputerServer(ThreadingHTTPServer):
         runtime = self.isolated_runtime
         if runtime is None:
             raise ComputerError("serena's own desktop is unavailable in this helper")
+        action = str(action).replace("-", "_")
         if action == "status":
             return runtime.status()
         if action == "open":
@@ -313,7 +315,19 @@ class ComputerServer(ThreadingHTTPServer):
                 raise ComputerError("launch url must be one http(s) URL")
             self.isolated_controller()
             return runtime.launch(app, url)
-        raise ComputerError("desktop action must be status, open, close, show, hide, or launch")
+        if action == "sign_in":
+            if url is not None and not (
+                isinstance(url, str) and url.startswith(("http://", "https://")) and len(url) <= 2048
+            ):
+                raise ComputerError("sign-in url must be one http(s) URL")
+            self.isolated_controller()
+            return runtime.sign_in(url)
+        if action == "signed_in":
+            self.isolated_controller()
+            return runtime.signed_in()
+        raise ComputerError(
+            "desktop action must be status, open, close, show, hide, launch, sign_in, or signed_in"
+        )
 
     def isolated_controller(self):
         """The controller for her own desktop, starting or adopting it on demand."""
@@ -338,6 +352,8 @@ class ComputerServer(ThreadingHTTPServer):
                 launcher=runtime.launch,
             )
             c.conversations = self.conversations
+            if hasattr(runtime, "sign_in"):
+                c.sign_in, c.signed_in = runtime.sign_in, runtime.signed_in
             if self.isolated_tools is not None:
                 try:
                     c.web, c.terminal = self.isolated_tools(runtime, info)

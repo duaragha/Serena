@@ -101,6 +101,28 @@ running browser's profile, so sign in there once, in the viewer, for each site
 she needs. Her terminal is a separate `gnome-terminal-server` instance on her
 display, running as you.
 
+**Sign-in mode.** Her browser normally runs with a loopback automation port for
+her page and browser steps. Google ("This browser or app may not be secure") and
+Shopify (accounts.shopify.com bouncing back to the email step) refuse human
+sign-ins while that port is open.
+
+- `chats computer desktop sign-in [URL]` (MCP: `computer_desktop action=sign_in`)
+  restarts her browser without the port, with its tabs restored (URL, if given,
+  opens as a tab), and records `signing_in` in `runtime.json`. A browser already
+  running without the port is adopted, never restarted under you.
+- While in this mode, nothing restarts it: page and browser steps refuse with
+  "Raghav is signing in … hand back first".
+- `chats computer desktop signed-in` (MCP: `action=signed_in`) restarts it with
+  the port and `--restore-last-session`. Your logins stay in the profile.
+- A worker handoff on her desktop whose reason names a sign-in, login, password,
+  code or MFA enters sign-in mode by itself. Resuming, or stopping the task,
+  clears the flag, and the next page step brings the port back, so resume never
+  waits on a browser restart.
+
+A chat driving her desktop directly (`background=false`) has the same fast paths
+as the worker: `computer_page` (snapshot), `computer_browser` (a step batch) and
+`computer_shell` (command, send or read), next to observe/act/zoom.
+
 Use `window:ID` or `display:NAME` only when the task needs your own open windows.
 A watch session on your screen and a control session on her desktop can run at
 the same time. Each has its own HUD card; hers sits below yours and has a

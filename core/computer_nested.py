@@ -5,6 +5,11 @@ so he keeps working while she drives her own browser and terminal. The Xephyr
 window on his screen is the live viewer. Clicking or typing inside it is an
 explicit takeover; closing it closes her desktop.
 
+Her browser normally runs with a loopback automation port, which her page and
+browser steps attach to. Google and Shopify refuse human sign-ins in a browser
+with that port open, so sign-in mode relaunches it without the port (restoring
+its tabs) until he hands back; her logins then persist in the profile.
+
 X clients authenticate with a per-start cookie. The server reads it from a
 private file and clients find it in his normal Xauthority file, keyed by display
 number, so Xlib, PIL and the xdotool/xinput subprocesses all connect without
@@ -21,6 +26,7 @@ import secrets
 import shutil
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -42,6 +48,10 @@ BROWSERS = (
     "chromium-browser",
 )
 APPS = frozenset({"browser", "terminal"})
+SIGNING_IN = (
+    "Raghav is signing in to a site in her browser, which runs without its automation port "
+    "meanwhile; hand back first (chats computer desktop signed-in, or resume after a handoff)"
+)
 
 
 def _size():
@@ -85,6 +95,9 @@ class IsolatedDesktop:
         self.host_env = dict(host_env or desktop_environment())
         self.host_monitors = host_monitors
         self.size = size or _size()
+        # Restarting her browser (sign-in mode, the automation port) is one
+        # thing at a time: a second restart would kill the first one's window.
+        self.browser_lock = threading.RLock()
 
     # -- state -----------------------------------------------------------
     @property
@@ -157,6 +170,7 @@ class IsolatedDesktop:
             "started_at": info["started_at"],
             "viewer_window": self.viewer_window(),
             "browser_profile": str(self.profile),
+            "signing_in": bool(info.get("signing_in")),
         }
 
     # -- lifecycle -------------------------------------------------------
@@ -320,7 +334,11 @@ class IsolatedDesktop:
             raise ComputerError("serena's desktop is not running")
         env = self.shell_env(info)
         if app == "browser":
-            self._spawn_browser(info, env, [url or "about:blank"])
+            # In sign-in mode this opens a tab in the portless browser, and a
+            # new browser must not bring the port back under him either.
+            self._spawn_browser(
+                info, env, [url or "about:blank"], debuggable=not info.get("signing_in")
+            )
         else:
             from core.computer_shell import SESSION, SOCKET
 
@@ -348,7 +366,7 @@ class IsolatedDesktop:
             )
         return {"ok": True, "app": app}
 
-    def _spawn_browser(self, info, env, extra):
+    def _spawn_browser(self, info, env, extra, *, debuggable=True):
         binary = self.browser_binary()
         if not binary:
             raise ComputerError("no Chromium-family browser is installed")
@@ -360,7 +378,7 @@ class IsolatedDesktop:
                 f"--user-data-dir={self.profile}",
                 # A loopback DevTools port, written to DevToolsActivePort in her
                 # profile; attach checks that the listener is this profile's.
-                "--remote-debugging-port=0",
+                *(["--remote-debugging-port=0"] if debuggable else []),
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--start-maximized",
@@ -385,24 +403,7 @@ class IsolatedDesktop:
                 found.append(process)
         return found
 
-    def ensure_debuggable(self):
-        """Her Edge running with its automation port; restart it once if not.
-
-        An Edge started before the port existed keeps running without one, and
-        a second launch only opens a tab in it. Restarting restores its tabs.
-        """
-        from core.computer_browser import BrowserError, _active_port, _verify_profile_listener
-
-        info = self.running()
-        if not info:
-            raise ComputerError("serena's desktop is not running")
-        port = _active_port(self.profile / "DevToolsActivePort")
-        if port:
-            try:
-                _verify_profile_listener(port, self.profile)
-                return port
-            except BrowserError:
-                pass
+    def _stop_browser(self):
         for process in self._browser_processes():
             with contextlib.suppress(Exception):
                 process.terminate()
@@ -410,16 +411,87 @@ class IsolatedDesktop:
         while self._browser_processes() and time.monotonic() < deadline:
             time.sleep(0.1)
         (self.profile / "DevToolsActivePort").unlink(missing_ok=True)
-        self._spawn_browser(info, self.shell_env(info), ["--restore-last-session"])
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
+
+    def _has_port(self, processes):
+        return any(
+            any(str(arg).startswith("--remote-debugging-port") for arg in (process.info.get("cmdline") or []))
+            for process in processes
+        )
+
+    def ensure_debuggable(self):
+        """Her Edge running with its automation port; restart it once if not.
+
+        An Edge started before the port existed keeps running without one, and
+        a second launch only opens a tab in it. Restarting restores its tabs.
+        Never while he is signing in: that browser is his until he hands back.
+        """
+        from core.computer_browser import BrowserError, _active_port, _verify_profile_listener
+
+        with self.browser_lock:
+            info = self.running()
+            if not info:
+                raise ComputerError("serena's desktop is not running")
+            if info.get("signing_in"):
+                raise ComputerError(SIGNING_IN)
             port = _active_port(self.profile / "DevToolsActivePort")
             if port:
-                with contextlib.suppress(BrowserError):
+                try:
                     _verify_profile_listener(port, self.profile)
                     return port
-            time.sleep(0.1)
-        raise ComputerError("her browser did not open its automation port")
+                except BrowserError:
+                    pass
+            self._stop_browser()
+            self._spawn_browser(info, self.shell_env(info), ["--restore-last-session"])
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                port = _active_port(self.profile / "DevToolsActivePort")
+                if port:
+                    with contextlib.suppress(BrowserError):
+                        _verify_profile_listener(port, self.profile)
+                        return port
+                time.sleep(0.1)
+            raise ComputerError("her browser did not open its automation port")
+
+    def sign_in(self, url=None):
+        """Her browser without its automation port, so sites accept his sign-in.
+
+        A browser already running without the port (a sign-in under way) is
+        kept, never restarted under him; a url then opens as a tab in it.
+        Otherwise it restarts portless with its last session restored.
+        """
+        with self.browser_lock:
+            info = self.running()
+            if not info:
+                raise ComputerError("serena's desktop is not running")
+            processes = self._browser_processes()
+            env = self.shell_env(info)
+            if processes and not self._has_port(processes):
+                if url:
+                    self._spawn_browser(info, env, [url], debuggable=False)
+            else:
+                self._stop_browser()
+                self._spawn_browser(
+                    info, env, ["--restore-last-session", *([url] if url else [])], debuggable=False
+                )
+            info["signing_in"] = True
+            self._write(info)
+        return self.status()
+
+    def signed_in(self, *, restart=True):
+        """Back from sign-in mode; restart with the automation port now or on next use.
+
+        --restore-last-session brings his tabs back, and the logins he made are
+        in the profile. Without restart, the next page or browser step restarts it.
+        """
+        with self.browser_lock:
+            info = self.running()
+            if not info:
+                raise ComputerError("serena's desktop is not running")
+            info.pop("signing_in", None)
+            self._write(info)
+            if restart:
+                self.ensure_debuggable()
+        return self.status()
 
     def _ensure_terminal_server(self, info, env):
         if _alive(info.get("terminal_pid"), TERMINAL_APP_ID):
