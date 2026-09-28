@@ -48,6 +48,15 @@ if __name__ == "__main__" and sys.argv[1:] == ["--fleet-peer-mcp"]:
     mcp.run()
     raise SystemExit(0)
 
+if __name__ == "__main__" and sys.argv[1:] == ["--index-refresh"]:
+    # The sidebar's background index refresh. Packaged, sys.executable is this
+    # binary, which cannot run `python -c` code, so ui.web launches it with this
+    # flag instead; without it no refresh after startup ever indexed a new chat.
+    from core.indexer import update_index
+
+    update_index(skip_if_running=True)
+    raise SystemExit(0)
+
 if __name__ == "__main__" and sys.argv[1:2] == ["computer"]:
     from core.computer_cli import computer
 

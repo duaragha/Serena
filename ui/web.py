@@ -114,11 +114,21 @@ def _spawn_terminal_with_recovery(*args, **kwargs) -> str:
         return pty_terminal.spawn(*args, **kwargs)
 
 
-def _launch_index_refresh_process() -> subprocess.Popen:
+def _index_refresh_argv() -> list[str]:
+    if getattr(sys, "frozen", False):
+        # Packaged, sys.executable is the desktop sidecar binary, which has no
+        # `-c`: it loaded the whole UI and exited on an argument error, so the
+        # sidebar never indexed a chat created after startup. A handoff's new
+        # chat then never resolved, and its link to the source chat never ran.
+        return [sys.executable, "--index-refresh"]
     command = (
         "from core.indexer import update_index; "
         "update_index(skip_if_running=True)"
     )
+    return [sys.executable, "-c", command]
+
+
+def _launch_index_refresh_process() -> subprocess.Popen:
     kwargs = {
         "cwd": str(Path(__file__).resolve().parents[1]),
         "stdin": subprocess.DEVNULL,
@@ -128,7 +138,7 @@ def _launch_index_refresh_process() -> subprocess.Popen:
     }
     if sys.platform == "win32":
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    return subprocess.Popen([sys.executable, "-c", command], **kwargs)
+    return subprocess.Popen(_index_refresh_argv(), **kwargs)
 
 
 def _schedule_index_refresh() -> bool:
