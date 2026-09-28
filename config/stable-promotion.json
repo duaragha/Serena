@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "version": "v0.3.11",
-  "baseTag": "v0.3.10",
-  "baseCommit": "80f5717898d97010dcfe5e708691dce9993cb40b",
-  "source": "9148d87244197a9765bb829b6b2416ab44af06bc",
-  "request": "49cd1b647433a9d12d9cdde2138d8fe2",
+  "version": "v0.3.12",
+  "baseTag": "v0.3.11",
+  "baseCommit": "b045799b9f1f8202e0179edfd0bcbe21cf0c98e1",
+  "source": "9da6f8e0a51701a5bd91a9c181ddc8a942ff3b61",
+  "request": "90605e3e95fc888dc7d83fd81df59c40",
   "features": [
     {
       "id": "sidebar-order",
@@ -67,16 +67,17 @@
       "id": "app-browser-windows-tests",
       "commit": "80674a3b7a1ab5ac2c6f7331b7fbc54c5d388765",
       "devTag": "v0.3.10-dev.17"
+    },
+    {
+      "id": "packaged-index-refresh",
+      "commit": "0fe6ec58a588a05b42bddb24b92c34f30e08c411",
+      "devTag": "v0.3.10-dev.19"
     }
   ],
   "patches": [
     {
-      "id": "handoff-same-agent",
-      "sha256": "df53dd5f3940b6f0cc565db3b386042a2104bccfb4d92083aeca7c1eb47989f0"
-    },
-    {
-      "id": "app-browser-windows-tests",
-      "sha256": "bcac6a0416f6b813f054c54c8c72fa2e2dd1d1a6e7e2d3eb1caffc74e9638259"
+      "id": "packaged-index-refresh",
+      "sha256": "dbdeaf8b3e83a61487bbf6f2eedfbc949a01ad936d020200f4f5a3999d66922b"
     }
   ]
 }
