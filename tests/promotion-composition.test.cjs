@@ -31,7 +31,42 @@ function historyFixture(t) {
 const adoptedStable = (catalog.adoptedStable || []).at(-1) || null;
 const shippedInAdopted = new Set(adoptedStable ? adoptedStable.features : []);
 
-function composeEverySubset(t, { features, stable, installed }) {
+// Every subset doubles with each registered feature: eight after v0.3.10 took
+// the promotion's prepare job past its ten-minute limit and cancelled a publish.
+// Check the selections that matter instead: each feature with only what it
+// requires, all of them together, and all but one, which still catches a
+// feature that silently leans on another one's changes.
+function selectionsToCheck(features, installed) {
+  const ids = features.map(f => f.id);
+  const byId = new Map(catalog.features.map(f => [f.id, f]));
+  const withRequirements = id => {
+    const chosen = new Set();
+    const walk = x => {
+      if (chosen.has(x) || installed.includes(x)) return;
+      chosen.add(x);
+      for (const required of byId.get(x).requires) walk(required);
+    };
+    walk(id);
+    return chosen;
+  };
+  const candidates = [
+    ...ids.map(withRequirements),
+    new Set(ids),
+    ...ids.map(left => new Set(ids.filter(id => id !== left))),
+  ];
+  const seen = new Set();
+  const out = [];
+  for (const chosen of candidates) {
+    const selected = catalog.features.map(f => f.id).filter(id => chosen.has(id));
+    const key = selected.join(',');
+    if (!selected.length || seen.has(key)) continue;
+    seen.add(key);
+    out.push(selected);
+  }
+  return out;
+}
+
+function composeSelections(t, { features, stable, installed }) {
   const fixture = historyFixture(t);
   const source = fixture.source;
   if (stable !== catalog.initialStable) {
@@ -39,8 +74,7 @@ function composeEverySubset(t, { features, stable, installed }) {
     if (git(['tag', '--list', next], fixture.root)) git(['tag', '-d', next], fixture.root);
   }
   let count = 0;
-  for (let bits = 1; bits < 2 ** features.length; bits++) {
-    const selected = features.filter((_, i) => bits & (1 << i)).map(f => f.id);
+  for (const selected of selectionsToCheck(features, installed)) {
     try { selection(catalog, selected, selected, installed); } catch { continue; }
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'serena-selection-'));
     try {
@@ -67,9 +101,9 @@ function composeEverySubset(t, { features, stable, installed }) {
   t.diagnostic(`${count} valid selections verified onto ${stable}`);
 }
 
-test('every valid feature subset composes onto stable without importing unselected backend changes', t => {
+test('selected features compose onto stable without importing unselected backend changes', t => {
   const features = adoptedStable ? catalog.features.filter(f => shippedInAdopted.has(f.id)) : catalog.features;
-  composeEverySubset(t, { features, stable: catalog.initialStable, installed: [] });
+  composeSelections(t, { features, stable: catalog.initialStable, installed: [] });
 });
 
 test('every feature registered after the adopted stable composes onto it', t => {
@@ -78,7 +112,7 @@ test('every feature registered after the adopted stable composes onto it', t => 
   if (!features.length) return t.skip('nothing registered after the adopted stable');
   try { git(['rev-parse', '--verify', `${adoptedStable.tag}^{commit}`]); }
   catch { return t.skip(`${adoptedStable.tag} is not in this checkout`); }
-  composeEverySubset(t, { features, stable: adoptedStable.tag, installed: adoptedStable.features });
+  composeSelections(t, { features, stable: adoptedStable.tag, installed: adoptedStable.features });
 });
 
 test('a second promotion retains the first release and refuses collisions or stale baselines', t => {
