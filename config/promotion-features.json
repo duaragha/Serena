@@ -185,6 +185,14 @@
         "ui/pty_terminal.py",
         "tests/test_terminal_environment.py"
       ]
+    },
+    {
+      "id": "packaged-index-refresh",
+      "title": "New chats reach the sidebar again (packaged index refresh), so handoffs link",
+      "devTag": "v0.3.10-dev.19",
+      "commit": "0fe6ec58a588a05b42bddb24b92c34f30e08c411",
+      "requires": [],
+      "paths": ["apps/desktop/sidecar.py", "ui/web.py", "tests/test_index_refresh_packaged.py"]
     }
   ]
 }
