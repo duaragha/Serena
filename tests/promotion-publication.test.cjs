@@ -48,6 +48,23 @@ test('workflow never publishes a platform before both builds pass', () => {
   assert.equal(workflow.jobs.finish.permissions.contents, 'write');
 });
 
+test('selected Fleet features require their regression gates on both platforms', () => {
+  const workflow = yaml.load(fs.readFileSync(path.resolve(__dirname, '../.github/workflows/selective-promotion.yml'), 'utf8'));
+  const features = {
+    'fleet-model-routing': ['policy_store', 'comparison_profiles', 'difficult_retry', 'workers', 'supervisor', 'reports', 'autonomy', 'peers', 'process_recovery'],
+    'fleet-checkout-identity': ['checkout', 'shared_learning'],
+  };
+  for (const [feature, checks] of Object.entries(features)) for (const platform of ['linux', 'windows']) {
+    const steps = workflow.jobs[platform].steps;
+    const gate = steps.find(step => step.if === `contains(fromJSON(inputs.selected), '${feature}')`);
+    assert.ok(gate, `${platform} must gate ${feature}`);
+    assert.equal(gate['working-directory'], 'candidate');
+    for (const check of checks) assert.ok(gate.run.includes(`tests/test_fleet_${check}.py`), `${platform}: ${check}`);
+    assert.ok(steps.indexOf(gate) < steps.findIndex(step => step.uses === 'actions/upload-artifact@v4'));
+    if (platform === 'windows') assert.ok(gate.run.includes('$LASTEXITCODE -ne 0'));
+  }
+});
+
 for (const failure of [null, 'incomplete upload', 'baseline changed', 'wrong authorization']) {
   test(`publication stays draft until complete and current: ${failure || 'success'}`, t => {
     const { dir, plan, names } = fixture(t);

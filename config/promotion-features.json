@@ -207,6 +207,31 @@
         "apps/desktop/tests/test_voice_packaging.py",
         "tests/test_desktop_dependencies.py"
       ]
+    },
+    {
+      "id": "fleet-model-routing",
+      "title": "Fleet model routing for Sol 6.1 and Claude 5.5",
+      "devTag": "v0.3.10-dev.21",
+      "commit": "935112c1097bfa53af11950a340d20cb353c20ee",
+      "requires": [],
+      "paths": [
+        "fleet/policy.py", "fleet/retry_policy.py", "fleet/supervisor.py",
+        "config/fleet.example.json", "docs/fleet-runtime.md",
+        "integrations/claude/fleet/SKILL.md", "integrations/codex/fleet/SKILL.md",
+        "tests/test_fleet_autonomy.py", "tests/test_fleet_comparison_profiles.py",
+        "tests/test_fleet_difficult_retry.py", "tests/test_fleet_peers.py",
+        "tests/test_fleet_policy_store.py", "tests/test_fleet_process_recovery.py",
+        "tests/test_fleet_reports.py", "tests/test_fleet_supervisor.py",
+        "tests/test_fleet_workers.py"
+      ]
+    },
+    {
+      "id": "fleet-checkout-identity",
+      "title": "Keep Fleet learning tied to its owned checkout",
+      "devTag": "v0.3.10-dev.21",
+      "commit": "8bfd91bbc1bf4395669a0dd17babe4d22b7a0bea",
+      "requires": [],
+      "paths": ["fleet/project_identity.py", "tests/test_fleet_checkout.py"]
     }
   ]
 }
