@@ -36,6 +36,14 @@ MAX_INTERVAL_SECONDS = 30 * 86_400
 MAX_ACTIONS_PER_TICK = 25
 MAX_CONSECUTIVE_FAILURES = 5
 ACTION_LEASE_SECONDS = 15 * 60
+# A disabled schedule is tried once more, on its own, this long after its last
+# run. Five failures in a row are usually a cause that clears by itself (a
+# duplicate task file that Syncthing resolves an hour later), but nothing ever
+# retried a switched-off schedule: serena.fleet.start stopped on 2026-09-25 and
+# the queue sat idle for four days behind a notice that became background
+# noise. Success turns it back on; failure leaves it off, quietly, until the
+# next window.
+DISABLED_PROBE_SECONDS = 30 * 60
 
 
 def _claim_owner() -> str:
@@ -434,7 +442,7 @@ class SerenaScheduler:
             held = [
                 str(row["schedule_id"])
                 for row in connection.execute(
-                    "SELECT schedule_id FROM schedules WHERE state = 'active' "
+                    "SELECT schedule_id FROM schedules WHERE state IN ('active', 'disabled') "
                     "AND claim_owner IS NOT NULL AND claim_expires_at > ?",
                     (moment,),
                 ).fetchall()
@@ -443,10 +451,12 @@ class SerenaScheduler:
             self._release_dead_claim(schedule_id)
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM schedules WHERE state = 'active' AND next_run_at <= ? "
+                "SELECT * FROM schedules WHERE ((state = 'active' AND next_run_at <= ?) "
+                "OR (state = 'disabled' AND COALESCE(last_run_at, 0) <= ?)) "
                 "AND (claim_expires_at IS NULL OR claim_expires_at <= ?) "
                 "ORDER BY next_run_at LIMIT ?",
-                (moment, moment, min(MAX_ACTIONS_PER_TICK, max(1, int(limit)))),
+                (moment, moment - DISABLED_PROBE_SECONDS, moment,
+                 min(MAX_ACTIONS_PER_TICK, max(1, int(limit)))),
             ).fetchall()
         ready = [_schedule_dict(row) for row in rows]
         return [item for item in ready if self._join_satisfied(item)]
@@ -574,6 +584,9 @@ class SerenaScheduler:
 
         failures = 0 if outcome.ok else int(schedule.get("consecutive_failures") or 0) + 1
         state = str(schedule["state"])
+        if outcome.ok and state == "disabled":
+            # The probe worked: whatever switched it off has cleared.
+            state = "active"
         if failures >= MAX_CONSECUTIVE_FAILURES:
             # A schedule that keeps failing is a broken schedule, not a reason
             # to keep retrying it every interval forever.
@@ -595,7 +608,7 @@ class SerenaScheduler:
             cursor = connection.execute(
                 "UPDATE schedules SET next_run_at = ?, last_run_at = ?, "
                 "consecutive_failures = ?, "
-                "state = CASE WHEN state = 'active' THEN ? ELSE state END, "
+                "state = CASE WHEN state IN ('active', 'disabled') THEN ? ELSE state END, "
                 "last_success_at = CASE WHEN ? THEN ? ELSE last_success_at END, "
                 "last_output_json = CASE WHEN ? THEN ? ELSE last_output_json END, "
                 "claim_token = NULL, "
@@ -632,13 +645,13 @@ class SerenaScheduler:
                 ),
             )
         if state == "disabled" and str(schedule["state"]) == "active":
-            # Switching a schedule off is not a quiet condition. Nothing will
-            # run this action again until someone resumes it, so the task
-            # dispatcher can take itself offline after five transient failures
-            # and the whole queue goes idle looking merely empty. That happened
-            # on 2026-09-18: five "duplicate task id" ticks disabled
-            # serena.fleet.start and serena.fleet.reconcile, and nothing was
-            # dispatched for half an hour with nobody told.
+            # Switching a schedule off is not a quiet condition. Until a probe
+            # succeeds, the task dispatcher can sit offline after five
+            # transient failures and the whole queue goes idle looking merely
+            # empty. That happened on 2026-09-18: five "duplicate task id"
+            # ticks disabled serena.fleet.start and serena.fleet.reconcile, and
+            # nothing was dispatched for half an hour with nobody told. A
+            # failed probe is not announced again: it was already off.
             self._notify(
                 schedule_id,
                 action,
@@ -646,8 +659,9 @@ class SerenaScheduler:
                     "kind": "schedule.disabled",
                     "summary": (
                         f"{action} is switched off after {failures} failures in a "
-                        f"row, and nothing will run it until it is resumed. Last "
-                        f"failure: {_clean(outcome.detail, 200)}"
+                        f"row. It is retried on its own every "
+                        f"{DISABLED_PROBE_SECONDS // 60} minutes and comes back once "
+                        f"that works. Last failure: {_clean(outcome.detail, 200)}"
                     ),
                     "channel": "imessage",
                     "urgency": "normal",
@@ -752,13 +766,16 @@ class SerenaScheduler:
         ]
         if require_due:
             params.append(moment)
+        params.append(moment - DISABLED_PROBE_SECONDS)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 "UPDATE schedules SET claim_token = ?, claim_expires_at = ?, updated_at = ?, "
                 "claim_owner = ? "
-                "WHERE schedule_id = ? AND state = 'active' "
-                "AND (claim_expires_at IS NULL OR claim_expires_at <= ?)" + due_clause,
+                "WHERE schedule_id = ? "
+                "AND (claim_expires_at IS NULL OR claim_expires_at <= ?) "
+                "AND ((state = 'active'" + due_clause + ") "
+                "OR (state = 'disabled' AND COALESCE(last_run_at, 0) <= ?))",
                 tuple(params),
             )
             if not cursor.rowcount:

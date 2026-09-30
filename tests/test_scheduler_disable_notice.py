@@ -9,8 +9,9 @@ anywhere but the schedule row.
 """
 
 from core.serena_scheduler import (
-    ActionOutcome,
+    DISABLED_PROBE_SECONDS,
     MAX_CONSECUTIVE_FAILURES,
+    ActionOutcome,
     SerenaScheduler,
 )
 
@@ -86,6 +87,9 @@ def test_the_notice_fires_once_not_on_every_later_tick(tmp_path):
     scheduler, schedule_id = _scheduler(tmp_path, failing, notifier)
 
     _drive(scheduler, schedule_id, MAX_CONSECUTIVE_FAILURES + 4)
+    # A probe that fails again leaves it off without saying so twice.
+    last = scheduler.require(schedule_id)["last_run_at"]
+    assert len(scheduler.tick(now=last + DISABLED_PROBE_SECONDS)) == 1
 
     assert scheduler.require(schedule_id)["state"] == "disabled"
     assert len([r for r in notifier.sent if r.kind == "schedule.disabled"]) == 1
@@ -102,3 +106,61 @@ def test_a_healthy_schedule_never_announces_anything(tmp_path):
     assert row["state"] == "active"
     assert row["consecutive_failures"] == 0
     assert [r for r in notifier.sent if r.kind == "schedule.disabled"] == []
+
+
+def test_a_disabled_schedule_comes_back_once_its_cause_clears(tmp_path):
+    """2026-09-25: a duplicate task file switched the dispatcher off, Syncthing
+    resolved the duplicate within the hour, and nothing dispatched for four
+    days because a disabled schedule was never tried again."""
+
+    notifier = _Notifier()
+    cause = {"cleared": False}
+
+    def dispatcher(payload):
+        if cause["cleared"]:
+            return ActionOutcome(True, "Fleet run recorded")
+        return ActionOutcome(False, "duplicate task id requires reconciliation")
+
+    scheduler, schedule_id = _scheduler(tmp_path, dispatcher, notifier)
+    row = _drive(scheduler, schedule_id, MAX_CONSECUTIVE_FAILURES)
+    assert row["state"] == "disabled"
+    off_at = row["last_run_at"]
+
+    # Off means off between probes: no run inside the window.
+    assert scheduler.tick(now=off_at + 61) == []
+    assert scheduler.tick(now=off_at + DISABLED_PROBE_SECONDS - 1) == []
+
+    # First probe: the cause still holds, it stays off.
+    first = off_at + DISABLED_PROBE_SECONDS
+    runs = scheduler.tick(now=first)
+    assert [run.ok for run in runs] == [False]
+    assert scheduler.require(schedule_id)["state"] == "disabled"
+    # ...and the window restarts from that probe.
+    assert scheduler.tick(now=first + 61) == []
+
+    cause["cleared"] = True
+    runs = scheduler.tick(now=first + DISABLED_PROBE_SECONDS)
+    assert [run.ok for run in runs] == [True]
+    row = scheduler.require(schedule_id)
+    assert row["state"] == "active"
+    assert row["consecutive_failures"] == 0
+    # Back on its normal interval.
+    assert len(scheduler.tick(now=first + DISABLED_PROBE_SECONDS + 61)) == 1
+
+
+def test_a_paused_schedule_is_never_probed(tmp_path):
+    """Paused is his decision; only a schedule that switched itself off is retried."""
+
+    notifier = _Notifier()
+    calls = []
+
+    def handler(payload):
+        calls.append(payload)
+        return ActionOutcome(True, "ran")
+
+    scheduler, schedule_id = _scheduler(tmp_path, handler, notifier)
+    scheduler.set_state(schedule_id, "paused")
+
+    assert scheduler.tick(now=1_000_000.0 + 10 * DISABLED_PROBE_SECONDS) == []
+    assert calls == []
+    assert scheduler.require(schedule_id)["state"] == "paused"
