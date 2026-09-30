@@ -258,6 +258,8 @@ def _git(
     result = subprocess.run(
         ["git", "-C", str(root), *args],
         capture_output=True,
+        # Repository plumbing must not inherit an MCP server's protocol pipe.
+        stdin=subprocess.DEVNULL,
         text=text,
         check=False,
         env=dict(env) if env is not None else None,
