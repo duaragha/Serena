@@ -973,11 +973,12 @@ def test_rotated_review_waits_for_target_code_and_reviewers_own_prior_phase(
     agent_b_code_started = threading.Event()
     release_agent_b_code = threading.Event()
     agent_a_review_started = threading.Event()
+    coordination_timeout = 15 if os.name == "nt" else 3
 
     def checked_fake(request, *, cancel_requested, on_event):
         if request.phase == "execute" and request.worker_key == "agent:b":
             agent_b_code_started.set()
-            assert release_agent_b_code.wait(timeout=3)
+            assert release_agent_b_code.wait(timeout=30 if os.name == "nt" else 3)
         if request.phase == "execute":
             assert "active co-implementer" in request.prompt
             assert "Do not turn this phase into review-only work" in request.prompt
@@ -1014,13 +1015,15 @@ def test_rotated_review_waits_for_target_code_and_reviewers_own_prior_phase(
         daemon=True,
     )
     thread.start()
-    assert agent_a_code_finished.wait(timeout=3)
-    assert agent_b_code_started.wait(timeout=3)
-    # Agent A reviews Agent B's unit. Its own Code is done, but target Code is
-    # still live, so the review must remain undispatched.
-    assert not agent_a_review_started.wait(timeout=0.2)
-    release_agent_b_code.set()
-    thread.join(timeout=5)
+    try:
+        assert agent_a_code_finished.wait(timeout=coordination_timeout)
+        assert agent_b_code_started.wait(timeout=coordination_timeout)
+        # Agent A reviews Agent B's unit. Its own Code is done, but target Code
+        # is still live, so the review must remain undispatched.
+        assert not agent_a_review_started.wait(timeout=0.2)
+    finally:
+        release_agent_b_code.set()
+        thread.join(timeout=30 if os.name == "nt" else 5)
     assert not thread.is_alive()
     completed = outcome["run"]
     assert completed["state"] == "completed"
