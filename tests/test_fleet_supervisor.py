@@ -1176,7 +1176,7 @@ def test_four_agent_team_uses_four_readers_but_two_writer_waves(
 
     def fake(request, *, cancel_requested, on_event):
         assert cancel_requested() is False
-        sid = request.resume_session_id or f"session-{request.worker_key}"
+        sid = request.resume_session_id or f"session-{request.provider}-{request.attempt_id}"
         on_event("process.started", {"pid": os.getpid(), "event_log_path": "/fake"})
         on_event("session.started", {"session_id": sid})
         with lock:
@@ -1214,7 +1214,7 @@ tasks:
 
     assert completed["state"] == "completed"
     assert completed["agent_count"] == 4
-    assert completed["chat_count"] == 4
+    assert completed["chat_count"] == 8
     assert completed["progress"] == {"completed": 16, "total": 16}
     assert len(completed["work_units"]) == 4
     assert {unit["state"] for unit in completed["work_units"]} == {"completed"}
@@ -1262,6 +1262,7 @@ tasks:
     # Code resumes its Research session, so its own output is already present.
     assert execute_a.resume_session_id is not None
     assert "output-discover-agent:a" not in execute_a.prompt
+    assert all(request.resume_session_id is None for request in requests if request.phase == "verify")
 
     review_a = next(
         request
@@ -1899,33 +1900,37 @@ def test_live_row_retry_restarts_failed_leg_without_waiting_for_sibling(
         daemon=True,
     )
     thread.start()
-    assert agent_a_failed.wait(timeout=3)
-    deadline = time.monotonic() + 3
-    failed_leg = None
-    while time.monotonic() < deadline:
-        snapshot = supervisor.get_run(run["run_id"])
-        failed_leg = next(
-            (
-                leg
-                for leg in snapshot["phases"][0]["legs"]
-                if leg["worker_key"] == "agent:a" and leg["state"] == "failed"
-            ),
-            None,
-        )
-        if failed_leg:
-            break
-        time.sleep(0.02)
-    assert failed_leg is not None
+    try:
+        assert agent_a_failed.wait(timeout=3)
+        deadline = time.monotonic() + 3
+        failed_leg = None
+        while time.monotonic() < deadline:
+            snapshot = supervisor.get_run(run["run_id"])
+            failed_leg = next(
+                (
+                    leg
+                    for leg in snapshot["phases"][0]["legs"]
+                    if leg["worker_key"] == "agent:a" and leg["state"] == "failed"
+                ),
+                None,
+            )
+            if failed_leg:
+                break
+            time.sleep(0.02)
+        assert failed_leg is not None
 
-    queued = supervisor.retry_leg(run["run_id"], failed_leg["leg_id"])
-    queued_leg = next(
-        leg for leg in queued["phases"][0]["legs"] if leg["leg_id"] == failed_leg["leg_id"]
-    )
-    assert queued_leg["state"] == "queued"
-    assert queued_leg["retry_requested"] is False
-    assert agent_a_retried.wait(timeout=3)
-    release_agent_b.set()
-    thread.join(timeout=5)
+        queued = supervisor.retry_leg(run["run_id"], failed_leg["leg_id"])
+        queued_leg = next(
+            leg for leg in queued["phases"][0]["legs"] if leg["leg_id"] == failed_leg["leg_id"]
+        )
+        assert queued_leg["state"] == "queued"
+        assert queued_leg["retry_requested"] is False
+        assert agent_a_retried.wait(timeout=3)
+    finally:
+        release_agent_b.set()
+        # Windows SQLite commits can outlast the retry-order assertion. Drain
+        # this owned scheduler before fake providers and private paths restore.
+        thread.join(timeout=30 if os.name == "nt" else 5)
     assert not thread.is_alive()
     assert outcome["run"]["state"] == "completed"
     assert [call for call in calls if call[:2] == ("discover", "agent:a")] == [
