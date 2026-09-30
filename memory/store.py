@@ -937,6 +937,10 @@ def update_memory(
     new_type = mem_type if mem_type is not None else existing["type"]
     if new_type not in MEMORY_TYPES:
         new_type = existing["type"]
+    if new_type != existing["type"] and _find_path(memory_id, new_type) is not None:
+        # Tasks and notes deliberately share numeric IDs across separate
+        # spaces. A type move must not replace the other space's record.
+        raise AmbiguousMemoryId(f"#{memory_id} already exists as {new_type}; cannot move this record")
     if (v2 := _active_v2_store()) is not None:
         target = f"legacy:{existing['type']}:{memory_id}"
         current = v2.get_record(target)

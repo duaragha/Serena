@@ -338,6 +338,20 @@ def test_task_edit_and_locket_stamp_replace_the_same_path(queue, monkeypatch):
     assert (row["content"], row["state"], row["run_id"], row["locket_id"]) == (BRIEF, "running", "run-a", "42")
 
 
+def test_type_moves_cannot_overwrite_the_other_id_space(queue):
+    task = store.enqueue_task(BRIEF, source_id="original-event")
+    claim = store.claim_next_task("worker")
+    assert store.mark_task_running(task["id"], "worker", claim["lease_token"], "original-run")
+    reference = store.add_memory("Unrelated reference note", "reference", _no_mirror=True)
+    assert task["id"] == reference
+    paths = [store._find_path(reference, kind) for kind in ("task", "reference")]
+    before = [path.read_bytes() for path in paths]
+    for origin, target in (("reference", "task"), ("task", "reference")):
+        with pytest.raises(store.AmbiguousMemoryId, match="already exists"):
+            store.update_memory(reference, content="Must not overwrite", mem_type=target, find_type=origin)
+    assert [path.read_bytes() for path in paths] == before
+
+
 def test_conflicting_ids_leave_other_dispatch_and_reconciliation_working(queue):
     conflicted = store.enqueue_task(BRIEF, source_id="conflicted-event")
     path = store._find_task_path(conflicted["id"])
