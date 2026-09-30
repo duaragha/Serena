@@ -226,8 +226,9 @@ On Windows, npm `.cmd`, `.bat` and `.ps1` launchers resolve to the installed nat
 project-local `node_modules/.bin` installs support nested optional packages,
 hoisted optional packages and the legacy vendor layout. Explicit native paths
 remain valid. An unresolved shim keeps its worker diagnostic path; the capacity
-probe skips it and reports unknown usage rather than launching an unbounded
-wrapper tree or inventing an account outage. These probes never start a model turn.
+probe skips it and uses existing rollout telemetry when available. Missing usage
+stays unknown, without an unbounded wrapper tree or an invented account outage.
+These probes never start a model turn.
 
 ## Read-only process liveness
 
