@@ -193,6 +193,20 @@
       "commit": "0fe6ec58a588a05b42bddb24b92c34f30e08c411",
       "requires": [],
       "paths": ["apps/desktop/sidecar.py", "ui/web.py", "tests/test_index_refresh_packaged.py"]
+    },
+    {
+      "id": "packaged-voice-numpy",
+      "title": "Fix voice loading in desktop apps",
+      "devTag": "v0.3.10-dev.20",
+      "commit": "eeed5441d5bd57fbe3860dc22b92af9a32c531b6",
+      "requires": [],
+      "paths": [
+        "pyproject.toml",
+        "apps/desktop/sidecar.py",
+        "apps/desktop/windows/sidecar-win.py",
+        "apps/desktop/tests/test_voice_packaging.py",
+        "tests/test_desktop_dependencies.py"
+      ]
     }
   ]
 }
