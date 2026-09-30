@@ -375,6 +375,19 @@ second dispatcher, and task leases do not cross Syncthing.
 
 ## Loop
 
+Task edits atomically replace their existing filename. A content change no
+longer publishes a second filename with the same ID before deleting the old
+one. If synchronization still introduces conflicting task IDs, dispatch and
+reconciliation isolate those IDs while other tasks continue. Direct updates
+and retries using an ambiguous ID/source receipt refuse to choose a version;
+the doctor lists both files for reconciliation against their dispatch receipts.
+It never silently renumbers or dispatches either conflicting version.
+
+The doctor records a durable outage episode. A delivered or queued notice for
+unchanged failures stays suppressed across restarts and the transport's hourly
+deduplication expiry. Changed failures or a healthy check followed by a new
+failure start another episode; failed delivery can still retry.
+
 1. Raghav texts his own iMessage thread (`+14168294648`, hub conversation
    `conversation_j0Jwy2qIWvpL71Guxv1tY-flch85Cdjg`): `task: <brief>`,
    `#<id> <answer>`, `retry #<id>`, or `status`.

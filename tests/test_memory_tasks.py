@@ -312,8 +312,117 @@ def test_an_id_naming_both_spaces_refuses_to_resolve(queue):
 def test_duplicate_task_identity_fails_closed(queue):
     path = legacy(queue)
     (path.parent / "001-second.md").write_bytes(path.read_bytes())
-    with pytest.raises(ValueError, match="duplicate task id"):
-        store.claim_next_task("worker")
+    assert store.claim_next_task("worker") is None
+    with pytest.raises(store.AmbiguousMemoryId, match="reconcile duplicate files"):
+        store.get_memory(1, "task")
+
+
+def test_task_edit_and_locket_stamp_replace_the_same_path(queue, monkeypatch):
+    """A slug change must never publish two task files, even briefly."""
+    path = legacy(queue, extra="custom: preserve me\nstate: running\nrun_id: run-a\n")
+    original = store._atomic_text
+    publications = []
+
+    def observe(target, text):
+        if target.parent == path.parent:
+            publications.append(target)
+            assert target == path
+        original(target, text)
+
+    monkeypatch.setattr(store, "_atomic_text", observe)
+    store.update_memory(1, content=BRIEF, find_type="task")
+    store.set_locket_id(1, 42, "task")
+    assert publications == [path, path]
+    assert list(path.parent.glob("*.md")) == [path]
+    row = store.get_memory(1, "task")
+    assert (row["content"], row["state"], row["run_id"], row["locket_id"]) == (BRIEF, "running", "run-a", "42")
+
+
+def test_type_moves_cannot_overwrite_the_other_id_space(queue):
+    task = store.enqueue_task(BRIEF, source_id="original-event")
+    claim = store.claim_next_task("worker")
+    assert store.mark_task_running(task["id"], "worker", claim["lease_token"], "original-run")
+    reference = store.add_memory("Unrelated reference note", "reference", _no_mirror=True)
+    assert task["id"] == reference
+    paths = [store._find_path(reference, kind) for kind in ("task", "reference")]
+    before = [path.read_bytes() for path in paths]
+    for origin, target in (("reference", "task"), ("task", "reference")):
+        with pytest.raises(store.AmbiguousMemoryId, match="already exists"):
+            store.update_memory(reference, content="Must not overwrite", mem_type=target, find_type=origin)
+    assert [path.read_bytes() for path in paths] == before
+
+
+def test_conflicting_ids_leave_other_dispatch_and_reconciliation_working(queue):
+    conflicted = store.enqueue_task(BRIEF, source_id="conflicted-event")
+    path = store._find_task_path(conflicted["id"])
+    copy = path.parent / "manually-renamed-copy.md"
+    copy.write_bytes(path.read_bytes())
+    before = (path.read_bytes(), copy.read_bytes())
+    healthy = store.enqueue_task(BRIEF, source_id="healthy-event")
+    claim = store.claim_next_task("worker")
+    assert claim["id"] == healthy["id"]
+    assert store.mark_task_running(healthy["id"], "worker", claim["lease_token"], "healthy-run")
+    assert [row["id"] for row in store.tasks_in_state("running")] == [healthy["id"]]
+    assert store.finish_task_run(healthy["id"], "healthy-run", "done")
+    assert (path.read_bytes(), copy.read_bytes()) == before
+    # Replaying the conflicted ingress cannot allocate another task or run.
+    with pytest.raises(store.AmbiguousMemoryId, match="source receipt"):
+        store.enqueue_task(BRIEF, source_id="conflicted-event")
+    with pytest.raises(store.AmbiguousMemoryId):
+        store.mark_task_asked(conflicted["id"])
+    assert len(list(path.parent.glob("*.md"))) == 3
+
+
+def test_running_duplicate_is_not_finished_or_requeued(queue):
+    task = store.enqueue_task(BRIEF)
+    claim = store.claim_next_task("worker")
+    assert store.mark_task_running(task["id"], "worker", claim["lease_token"], "run-a")
+    path = store._find_task_path(task["id"])
+    copy = path.parent / "001-sync-conflict.md"
+    copy.write_bytes(path.read_bytes())
+    before = path.read_bytes()
+    assert store.tasks_in_state("running") == []
+    with pytest.raises(store.AmbiguousMemoryId):
+        store.finish_task_run(task["id"], "run-a", "done")
+    assert store.claim_next_task("worker", now=10**10) is None
+    assert path.read_bytes() == copy.read_bytes() == before
+
+
+def test_duplicate_cannot_disable_the_real_fleet_schedule_handlers(queue, monkeypatch):
+    from core import job_cards, scheduler_actions
+    from core.serena_scheduler import MAX_CONSECUTIVE_FAILURES, SerenaScheduler
+    from fleet import supervisor
+
+    monkeypatch.setenv("SERENA_CONTROL_PLANE_DB_PATH", str(queue / "control.sqlite3"))
+    monkeypatch.setenv("SERENA_DISPATCH_CONFIG", str(queue / "no-publication-config.json"))
+    conflicted = store.enqueue_task(BRIEF, source_id="conflicted-event")
+    healthy = store.enqueue_task(BRIEF, source_id="healthy-event")
+    # Put the healthy task into a real run receipt before introducing a
+    # duplicate into the sourced ready task. No model/provider is dispatched.
+    claim = store.claim_next_task("worker")
+    assert claim["id"] == conflicted["id"]
+    assert store.release_task_claim(claim["id"], "worker", claim["lease_token"], state="blocked")
+    claim = store.claim_next_task("worker")
+    assert store.mark_task_running(healthy["id"], "worker", claim["lease_token"], "healthy-run")
+    path = store._find_task_path(conflicted["id"])
+    store._task_metadata(store._parse_file(path), state="ready")
+    (path.parent / "duplicate.md").write_bytes(path.read_bytes())
+    observed = []
+    monkeypatch.setattr(supervisor, "get_run", lambda run_id: observed.append(run_id) or None)
+    monkeypatch.setattr(job_cards, "show", lambda *args, **kwargs: True)
+    monkeypatch.setattr(scheduler_actions, "_task_label", lambda task: "test task")
+    scheduler = SerenaScheduler(queue / "scheduler.sqlite3", handlers={
+        "serena.fleet.start": scheduler_actions.start_ready_fleet_task,
+        "serena.fleet.reconcile": scheduler_actions.reconcile_fleet_tasks,
+    }, notifier=None)
+    schedules = [scheduler.add_schedule(action=action, interval_seconds=60,
+                 actor="test", requires_approval=False, first_run_at=1_000_000)
+                 for action in ("serena.fleet.start", "serena.fleet.reconcile")]
+    for tick in range(MAX_CONSECUTIVE_FAILURES + 2):
+        runs = scheduler.tick(now=1_000_000 + tick * 61)
+        assert len(runs) == 2 and all(run.ok for run in runs)
+    assert observed == ["healthy-run"] * (MAX_CONSECUTIVE_FAILURES + 2)
+    assert all(scheduler.require(s["schedule_id"])["state"] == "active" for s in schedules)
 
 
 @pytest.mark.parametrize("seconds", [0, -1, float("nan"), float("inf"), 86401])

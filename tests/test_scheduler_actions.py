@@ -24,6 +24,7 @@ from core.surface_journal import SurfaceJournal
 def control(tmp_path, monkeypatch):
     store = ControlPlaneStore(tmp_path / "control.sqlite3")
     monkeypatch.setenv("SERENA_CONTROL_PLANE_DB_PATH", str(tmp_path / "control.sqlite3"))
+    monkeypatch.setenv("SERENA_NOTIFICATION_DB_PATH", str(tmp_path / "notifications.sqlite3"))
     return store
 
 
@@ -801,7 +802,7 @@ def test_a_broken_check_reaches_him_once_per_shape(monkeypatch):
     # all day is not an hourly nag and a new or fixed check is heard about.
     # The shape is the failures alone, so a warning flapping on and off does
     # not re-send a failure he has already heard about.
-    assert outcome.notify["dedupe_key"] == "doctor:test-machine:fleet.config"
+    assert outcome.notify["dedupe_key"].startswith("doctor:test-machine:")
     assert outcome.output["failures"] == ["fleet.config"]
     assert outcome.output["warnings"] == ["repo.behind"]
 

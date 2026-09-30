@@ -391,6 +391,58 @@ class NotificationAuthority:
     def pending_approvals(self) -> list[dict[str, Any]]:
         return self.history(decision="pending_approval", limit=100)
 
+    def withdraw(
+        self, notification_id: str, *, reason: str, now: float | None = None
+    ) -> NotificationResult:
+        """Retire an undelivered notice whose condition has cleared.
+
+        Own the same lock as delivery before changing the row. A send already
+        in progress may finish; a delivered receipt is never rewritten.
+        """
+
+        moment = float(time.time() if now is None else now)
+        locks = self.path.resolve().with_name(self.path.name + ".delivery-locks")
+        locks.mkdir(parents=True, exist_ok=True, mode=0o700)
+        name = hashlib.sha256(notification_id.encode()).hexdigest() + ".lock"
+        with (locks / name).open("a+b") as handle, ExitStack() as ownership:
+            try:
+                ownership.enter_context(exclusive_lock(handle, timeout=5))
+            except TimeoutError:
+                with self._connect() as db:
+                    row = db.execute("SELECT * FROM notifications WHERE notification_id = ?",
+                                     (notification_id,)).fetchone()
+                if row is None:
+                    raise KeyError(f"unknown notification {notification_id}") from None
+                return NotificationResult(notification_id, row["decision"], "delivery already owned",
+                                          row["channel"], row["attempts"], row["deliver_after"])
+            with self._connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute("SELECT * FROM notifications WHERE notification_id = ?",
+                                 (notification_id,)).fetchone()
+                if row is None:
+                    raise KeyError(f"unknown notification {notification_id}")
+                if (row["decision"] not in {"deferred", "failed", "pending_approval"}
+                        or row["delivered_at"] is not None):
+                    return _result_from_row(row)
+                explanation = _clean(reason, 1_000) or "condition cleared"
+                db.execute(
+                    "UPDATE notifications SET decision = 'suppressed', reason = ?, "
+                    "deliver_after = NULL, updated_at = ? WHERE notification_id = ?",
+                    (explanation, moment, notification_id),
+                )
+                self._outbox.stage_event(
+                    db, event_type="notice.cancelled", lifecycle_state="cancelled",
+                    delivery_state="not_applicable", event_id=f"notification:{notification_id}:cancelled",
+                    job_id=notification_id, session_id=row["session_id"],
+                    authority="notification_authority",
+                    payload={"summary": row["summary"], "kind": row["kind"],
+                             "channel": row["channel"], "reason": explanation},
+                    occurred_at=moment,
+                )
+            self.flush_control_outbox()
+            return NotificationResult(notification_id, "suppressed", explanation,
+                                      row["channel"], row["attempts"])
+
     # -- internals ----------------------------------------------------------
 
     def _attempt_delivery(
