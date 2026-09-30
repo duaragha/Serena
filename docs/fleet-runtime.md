@@ -220,6 +220,15 @@ cancellation, exact job membership, owner death, command/environment quoting,
 repeated handle lifetimes and rejected startup. Source tests alone do not prove
 these Windows-only behaviors; native and packaged acceptance are required.
 
+Fleet workers and the account-only capacity probe share the Codex binary resolver.
+On Windows, npm `.cmd`, `.bat` and `.ps1` launchers resolve to the installed native
+`codex.exe` for the current x64 or ARM64 architecture. Global npm installs and
+project-local `node_modules/.bin` installs support nested optional packages,
+hoisted optional packages and the legacy vendor layout. Explicit native paths
+remain valid. An unresolved shim keeps its worker diagnostic path; the capacity
+probe skips it and reports unknown usage rather than launching an unbounded
+wrapper tree or inventing an account outage. These probes never start a model turn.
+
 ## Read-only process liveness
 
 Native process retry recognizes explicit Windows crash statuses (access
