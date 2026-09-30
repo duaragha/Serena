@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -304,6 +305,7 @@ def test_codex_capacity_rpc_launches_the_shared_worker_resolver_result(tmp_path,
     resolved = []
     spawned = []
     written = []
+    stdout_eof = threading.Event()
     limits = {"primary": {"usedPercent": 17, "resetsAt": NOW + 900}}
 
     def resolve(provider, source):
@@ -315,15 +317,25 @@ def test_codex_capacity_rpc_launches_the_shared_worker_resolver_result(tmp_path,
             written.append(text)
             return super().write(text)
 
+    class Output(io.StringIO):
+        def readline(self, *args, **kwargs):
+            line = super().readline(*args, **kwargs)
+            if not line:
+                stdout_eof.set()
+            return line
+
     class Process:
         def __init__(self):
             self.stdin = Input()
-            self.stdout = io.StringIO(json.dumps({"id": 2, "result": {"rateLimits": limits}}) + "\n")
+            self.stdout = Output(json.dumps({"id": 2, "result": {"rateLimits": limits}}) + "\n")
 
         def poll(self):
             return 0
 
         def wait(self, **_kwargs):
+            # Model process completion only after the reader can observe EOF,
+            # so fake stdout cannot close between its response and next read.
+            assert stdout_eof.wait(timeout=1)
             return 0
 
     process = Process()

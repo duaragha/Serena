@@ -1411,7 +1411,12 @@ def _windows_codex_native(binary: str) -> str:
     if architecture is None:
         return binary
     package_arch, native_arch = architecture
-    package = Path(binary).parent / "node_modules" / "@openai" / "codex"
+    shim_directory = Path(binary).parent
+    if shim_directory.name.lower() == ".bin" and shim_directory.parent.name.lower() == "node_modules":
+        modules = shim_directory.parent
+    else:
+        modules = shim_directory / "node_modules"
+    package = modules / "@openai" / "codex"
     vendor = Path("vendor") / f"{native_arch}-pc-windows-msvc" / "bin" / "codex.exe"
     candidates = (
         package / "node_modules" / "@openai" / f"codex-win32-{package_arch}" / vendor,

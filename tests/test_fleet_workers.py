@@ -767,8 +767,9 @@ def test_codex_uses_full_access_only_on_windows(tmp_path, monkeypatch, platform_
 ])
 @pytest.mark.parametrize("layout", ["nested_optional", "hoisted_optional", "legacy_vendor"])
 @pytest.mark.parametrize("use_override", [False, True])
+@pytest.mark.parametrize("install_scope", ["global", "project_local"])
 def test_windows_codex_npm_shim_resolves_matching_native_binary(
-    tmp_path, monkeypatch, machine, package_arch, native_arch, layout, use_override
+    tmp_path, monkeypatch, machine, package_arch, native_arch, layout, use_override, install_scope
 ):
     import platform
 
@@ -776,10 +777,12 @@ def test_windows_codex_npm_shim_resolves_matching_native_binary(
 
     monkeypatch.setattr(workers, "_is_windows", lambda: True)
     monkeypatch.setattr(platform, "machine", lambda: machine)
-    shim = tmp_path / "npm" / "codex.cmd"
-    shim.parent.mkdir()
+    shim_directory = tmp_path / "npm" if install_scope == "global" else tmp_path / "project/node_modules/.bin"
+    shim = shim_directory / "codex.cmd"
+    shim.parent.mkdir(parents=True)
     shim.write_text("@echo off\n", encoding="utf-8")
-    packages = shim.parent / "node_modules" / "@openai"
+    modules = tmp_path / "npm/node_modules" if install_scope == "global" else tmp_path / "project/node_modules"
+    packages = modules / "@openai"
     codex_package = packages / "codex"
     if layout == "nested_optional":
         native_package = codex_package / "node_modules" / "@openai" / f"codex-win32-{package_arch}"
