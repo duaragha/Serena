@@ -163,7 +163,7 @@ def check_schedules(now: float | None = None) -> list[Finding]:
 
 
 def check_task_store() -> list[Finding]:
-    """A duplicate id refuses every write, so the phone line can queue nothing."""
+    """Report ambiguous task IDs while unrelated queue work stays available."""
 
     import re
     from collections import defaultdict
@@ -187,9 +187,9 @@ def check_task_store() -> list[Finding]:
         shown = "; ".join(f"#{tid}: {', '.join(names)}" for tid, names in sorted(duplicates.items()))
         return [Finding(
             "tasks.duplicate_ids", False,
-            f"{len(duplicates)} duplicate task id(s). enqueue_task refuses every write "
-            f"while this holds, so nothing he texts can be queued. {shown}",
-            fix="renumber the newer file's `id:` and filename to a free id",
+            f"{len(duplicates)} duplicate task id(s) isolated from dispatch and "
+            f"reconciliation; other tasks continue. {shown}",
+            fix="compare the conflicting files and dispatch receipts before reconciling their IDs",
         )]
     return [Finding("tasks", True, f"{len(by_id)} task(s), ids unique")]
 

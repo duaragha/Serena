@@ -220,18 +220,28 @@ def classify_task(text: str, project_hint: str | None = None) -> str:
 
 
 def _task_rows() -> list[dict]:
+    """Read every task, retaining conflicts for source receipts and diagnosis."""
     rows = []
-    ids = set()
     for index, path in enumerate((MEMORY_DIR / "task").glob("*.md")):
         if index >= MAX_TASKS:
             raise ValueError("task queue capacity exceeded")
         row = _parse_file(path)
         if row and row["type"] == "task":
-            if row["id"] in ids:
-                raise ValueError("duplicate task id requires reconciliation")
-            ids.add(row["id"])
             rows.append(row)
     return rows
+
+
+def _unambiguous_task_rows() -> list[dict]:
+    """Fence conflicting IDs without stopping unrelated queue work.
+
+    A synced copy or interrupted rename is not another dispatch authorization.
+    Leave every version intact for reconciliation; the doctor reports the IDs.
+    """
+    from collections import Counter
+
+    rows = _task_rows()
+    counts = Counter(row["id"] for row in rows)
+    return [row for row in rows if counts[row["id"]] == 1]
 
 
 @_serialized_write
@@ -251,9 +261,11 @@ def enqueue_task(text: str, project_hint: str | None = None,
     if not isinstance(priority, str) or priority not in TASK_PRIORITIES:
         raise ValueError("invalid task priority")
     rows = _task_rows()
-    for row in rows:
-        if source and row["source_id"] == source:
-            return _clean(row)
+    matches = [row for row in rows if source and row["source_id"] == source]
+    if matches:
+        if len(matches) != 1 or sum(row["id"] == matches[0]["id"] for row in rows) != 1:
+            raise AmbiguousMemoryId("task source receipt requires duplicate ID reconciliation")
+        return _clean(matches[0])
     if len(rows) >= MAX_TASKS:
         raise ValueError("task queue capacity exceeded")
     path = _write_file(_next_id("task"), "task", text, task_fields={
@@ -315,7 +327,7 @@ def claim_next_task(owner: str, now=None, lease_seconds=TASK_LEASE_SECONDS) -> d
     moment = _moment(now)
     duration = _lease_seconds(lease_seconds)
     ready = []
-    for row in _task_rows():
+    for row in _unambiguous_task_rows():
         if row["state"] in {"claimed", "running"} and not _lease_alive(row, moment):
             state = "ready" if row["state"] == "claimed" else "blocked"
             row = _task_metadata(row, state=state, assignee="", lease_token="", lease_until="")
@@ -382,7 +394,7 @@ def renew_task_claim(task_id: int, owner: str, token: str, *, now=None,
 def tasks_in_state(*states: str) -> list[dict]:
     """Queue rows in any of the given states, oldest first."""
     wanted = set(states)
-    return [_clean(row) for row in sorted(_task_rows(), key=lambda row: row["id"])
+    return [_clean(row) for row in sorted(_unambiguous_task_rows(), key=lambda row: row["id"])
             if row["state"] in wanted]
 
 
@@ -630,24 +642,22 @@ def _find_path(memory_id: int, mem_type: str | None = None) -> Path | None:
     rather than resolving to whichever type sorts first.
     """
     types = [mem_type] if mem_type else MEMORY_TYPES
-    prefix = f"{memory_id:03d}-"
     hits: list[Path] = []
     for t in types:
         d = MEMORY_DIR / t
         if not d.exists():
             continue
-        for f in d.glob(f"{prefix}*.md"):
-            hits.append(f)
-            break
-    if not hits:
-        # Frontmatter is the authority when a filename was hand-renamed.
-        hits = [m["_path"] for m in _scan_all()
-                if m["id"] == memory_id and (not mem_type or m["type"] == mem_type)]
+        # Frontmatter is the authority, including a hand-renamed or synced
+        # file whose prefix differs. Never choose the first duplicate.
+        for f in d.glob("*.md"):
+            row = _parse_file(f)
+            if row and row["id"] == memory_id and (not mem_type or row["type"] == mem_type):
+                hits.append(f)
     if len(hits) > 1:
         kinds = sorted({h.parent.name for h in hits})
         raise AmbiguousMemoryId(
             f"#{memory_id} names more than one thing ({', '.join(kinds)}); "
-            f"pass a type to say which")
+            + ("pass a type to say which" if len(kinds) > 1 else "reconcile duplicate files"))
     return hits[0] if hits else None
 
 
@@ -696,6 +706,10 @@ def _write_file(mem_id: int, mem_type: str, content: str,
     if mem_type == "task":
         previous_path = _find_path(mem_id, "task")
         previous = _parse_file(previous_path) if previous_path else {}
+        # Keep task filenames stable. Publishing a new slug then deleting the
+        # old file creates a duplicate-ID window for Syncthing and crashes.
+        if previous_path is not None:
+            fpath = previous_path
         fields = {key: (previous or {}).get(key, "") for key in _TASK_FIELDS}
         fields.update(task_fields or {})
         fields["state"] = fields.get("state") or "backlog"
@@ -945,7 +959,8 @@ def update_memory(
             source=_v2_source(action="update", content=new_content),
         )
         return str(_flush_v2_outbox(v2, proposal)["proposal_id"])
-    # Move to new type folder (or rename slug) by writing fresh and removing old
+    # Task edits replace the existing path atomically; type moves and other
+    # memories can still publish a new slug before removing the old path.
     new_path = _write_file(
         memory_id, new_type, new_content,
         created=existing["created_at"],
