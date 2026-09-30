@@ -129,6 +129,13 @@ These paths may be removed once the owning process is stopped. Bootstrap recreat
 
 ## Installed runtime wiring
 
+Both desktop builders run the frozen sidecar's `--workspace-runtime-check`
+before packaging. NumPy is a base dependency because the imported call runtime
+requires it even when local speech models are not installed. The check imports
+the actual call runtime and exercises compiled NumPy code as well as the workspace
+runtime, so missing imported voice dependencies cannot pass merely because the chat UI starts. It does not load
+speech models or open an audio device.
+
 The active brain, mobile host, private work supervisor, and wake listener all execute code directly from this repository. Every supported installed unit is linked to its canonical definition in `systemd/`, so installed copies cannot drift.
 
 The supported always-on services are:

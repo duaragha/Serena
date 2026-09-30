@@ -1,7 +1,7 @@
 """Base desktop installs must include unconditional scheduler dependencies."""
 from pathlib import Path
-import tomllib
 
+import tomllib
 from packaging.requirements import Requirement
 
 
@@ -13,3 +13,13 @@ def test_knowledge_yaml_is_not_hidden_in_an_optional_voice_extra():
     from core.knowledge_store import yaml
 
     assert yaml.safe_load("enabled: true") == {"enabled": True}
+
+
+def test_call_numpy_is_in_the_base_desktop_install():
+    config = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
+    base = {Requirement(value).name.lower() for value in config["project"]["dependencies"]}
+    assert "numpy" in base
+
+    from voice.call import CallRuntime
+
+    assert callable(CallRuntime)
