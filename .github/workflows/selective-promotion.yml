@@ -115,7 +115,7 @@ jobs:
             tests/test_fleet_process_recovery.py tests/test_fleet_capacity.py \
             tests/test_coding_job_contract.py
       - name: Prove selected Fleet checkout identity before packaging
-        if: contains(fromJSON(inputs.selected), 'fleet-checkout-identity')
+        if: contains(fromJSON(inputs.selected), 'fleet-checkout-identity') || contains(fromJSON(inputs.selected), 'fleet-model-routing')
         working-directory: candidate
         run: |
           .venv/bin/python -m pytest -q --tb=short tests/test_fleet_checkout.py tests/test_fleet_shared_learning.py
@@ -190,7 +190,7 @@ jobs:
           ./.venv/Scripts/python.exe -m pytest -q --tb=short tests/test_fleet_policy_store.py tests/test_fleet_comparison_profiles.py tests/test_fleet_difficult_retry.py tests/test_fleet_workers.py tests/test_fleet_supervisor.py tests/test_fleet_reports.py tests/test_fleet_autonomy.py tests/test_fleet_peers.py tests/test_fleet_process_recovery.py tests/test_fleet_capacity.py tests/test_coding_job_contract.py
           if ($LASTEXITCODE -ne 0) { throw 'Fleet model routing tests failed' }
       - name: Prove selected Fleet checkout identity before accepting Windows artifacts
-        if: contains(fromJSON(inputs.selected), 'fleet-checkout-identity')
+        if: contains(fromJSON(inputs.selected), 'fleet-checkout-identity') || contains(fromJSON(inputs.selected), 'fleet-model-routing')
         working-directory: candidate
         shell: pwsh
         run: |

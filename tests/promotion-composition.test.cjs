@@ -11,6 +11,20 @@ const catalog = require('../config/promotion-features.json');
 const root = path.resolve(__dirname, '..');
 const git = (args, cwd = root) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 
+test('Fleet routing requires identity while identity remains independently selectable', () => {
+  const routing = catalog.features.find(f => f.id === 'fleet-model-routing');
+  const identity = catalog.features.find(f => f.id === 'fleet-checkout-identity');
+  assert.deepEqual(routing.requires, [identity.id]);
+  assert.deepEqual(identity.requires, []);
+  assert.ok(catalog.features.indexOf(identity) < catalog.features.indexOf(routing));
+  assert.ok(routing.paths.every(file => !identity.paths.includes(file)));
+  assert.throws(() => selection(catalog, [routing.id], [routing.id]), /requires/);
+  assert.deepEqual(selection(catalog, [identity.id], [identity.id]).added.map(f => f.id), [identity.id]);
+  assert.deepEqual(selection(catalog, [routing.id, identity.id], [routing.id, identity.id]).added.map(f => f.id),
+    [identity.id, routing.id]);
+  assert.deepEqual(selection(catalog, [routing.id], [routing.id], [identity.id]).added.map(f => f.id), [routing.id]);
+});
+
 test('feature pins and reviewed bases remain in the promotion source history', () => {
   const source = git(['rev-parse', 'HEAD']);
   for (const feature of catalog.features) {

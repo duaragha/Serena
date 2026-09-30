@@ -56,7 +56,9 @@ test('selected Fleet features require their regression gates on both platforms',
   };
   for (const [feature, checks] of Object.entries(features)) for (const platform of ['linux', 'windows']) {
     const steps = workflow.jobs[platform].steps;
-    const gate = steps.find(step => step.if === `contains(fromJSON(inputs.selected), '${feature}')`);
+    const condition = `contains(fromJSON(inputs.selected), '${feature}')` +
+      (feature === 'fleet-checkout-identity' ? " || contains(fromJSON(inputs.selected), 'fleet-model-routing')" : '');
+    const gate = steps.find(step => step.if === condition);
     assert.ok(gate, `${platform} must gate ${feature}`);
     assert.equal(gate['working-directory'], 'candidate');
     for (const check of checks) assert.ok(gate.run.includes(`tests/test_fleet_${check}.py`), `${platform}: ${check}`);
