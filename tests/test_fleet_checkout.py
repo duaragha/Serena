@@ -136,13 +136,58 @@ def test_empty_baseline_checkout_cleanup_preserves_source(tmp_path):
 
 def test_learning_identity_requires_matching_checkout_receipt(tmp_path):
     from fleet.learning import project_identity
+    from fleet.project_identity import repository_identity
 
     root, _, store, run = setup_run(tmp_path)
     ensure_run_checkout(store, run["run_id"])
     run = store.get_run(run["run_id"])
-    assert project_identity(run) == str(root.resolve())
+    assert project_identity(run) == repository_identity(str(root))
     foreign = tmp_path / "other-project"
-    assert project_identity({**run, "cwd": str(foreign)}) == str(foreign.resolve())
+    assert project_identity({**run, "cwd": str(foreign)}) == repository_identity(str(foreign))
+    assert project_identity({**run, "cwd": str(foreign)}) != project_identity(run)
+
+
+@pytest.mark.parametrize("receipt", ["mismatched", "pending"])
+def test_database_learning_identity_rejects_foreign_or_pending_checkout_receipts(tmp_path, receipt):
+    from fleet.project_identity import repository_identity, run_identity
+
+    root, _, store, run = setup_run(tmp_path)
+    ensure_run_checkout(store, run["run_id"])
+    with store._connect() as db:
+        assert run_identity(db, run["run_id"]) == repository_identity(str(root))
+
+    foreign = tmp_path / "foreign-project"
+    if receipt == "pending":
+        foreign.mkdir()
+        _git(foreign, "init", "-q")
+        _git(foreign, "config", "remote.origin.url", "https://github.com/example/foreign.git")
+    expected = repository_identity(str(foreign))
+    with store._connect() as db:
+        db.execute("UPDATE fleet_runs SET cwd=? WHERE run_id=?", (str(foreign), run["run_id"]))
+        if receipt == "pending":
+            db.execute("UPDATE fleet_run_checkouts SET path=?,state='pending' WHERE run_id=?",
+                       (str(foreign), run["run_id"]))
+        assert run_identity(db, run["run_id"]) == expected
+    assert expected != repository_identity(str(root))
+
+
+@pytest.mark.parametrize("checkout_state", ["ready", "pending"])
+def test_database_learning_identity_preserves_checkout_after_source_deletion(tmp_path, checkout_state):
+    import shutil
+
+    from fleet.project_identity import project_identity, repository_identity, run_identity
+
+    root, _, store, run = setup_run(tmp_path)
+    expected = repository_identity(str(root))
+    ensure_run_checkout(store, run["run_id"])
+    if checkout_state == "pending":
+        with store._connect() as db:
+            db.execute("UPDATE fleet_run_checkouts SET state='pending' WHERE run_id=?", (run["run_id"],))
+    shutil.rmtree(root)
+    with store._connect() as db:
+        assert run_identity(db, run["run_id"]) == expected
+    if checkout_state == "ready":
+        assert project_identity(store.get_run(run["run_id"])) == expected
 
 
 def test_clean_failed_worker_refreshes_to_required_baseline(tmp_path):
