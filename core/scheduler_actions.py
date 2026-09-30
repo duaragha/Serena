@@ -735,7 +735,7 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
     if _configuration(payload):
         return ActionOutcome(False, "serena.fleet.reconcile accepts no schedule payload")
     closed: list[dict[str, Any]] = []
-    for task in store.tasks_in_state("running"):
+    for task in store.tasks_in_state("running", "review"):
         if len(closed) >= MAX_RECONCILE_PER_TICK:
             break
         run_id = str(task.get("run_id") or "")
@@ -781,8 +781,13 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             record["error"] = str(error)
         if state == "completed" and checkout is not None:
             try:
-                delivery = agent_checkouts.deliver(
-                    checkout, task_id=task_id, brief=brief, run_id=run_id)
+                if task["state"] == "review":
+                    delivery = agent_checkouts.review_delivery(checkout)
+                    if delivery.status == "pr":
+                        continue
+                else:
+                    delivery = agent_checkouts.deliver(
+                        checkout, task_id=task_id, brief=brief, run_id=run_id)
             except agent_checkouts.CheckoutError as error:
                 # Leave the task running; the next tick retries the delivery.
                 record["error"] = f"delivery failed: {error}"
@@ -806,9 +811,11 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             record.update(delivery=delivery.status, url=delivery.url)
             card: dict[str, Any] = {"url": delivery.url}
             if delivery.status == "no_changes":
+                final = "done"
                 result, message = "done: no changes needed", (
                     f"#{task_id} done, no code changes needed: {headline}")
             elif delivery.status == "merged":
+                final = "done"
                 try:
                     shipped = agent_checkouts.ship(checkout)
                 except agent_checkouts.CheckoutError as error:
@@ -820,13 +827,18 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
                 card.update(status="merged", note=(
                     "📱 SideStore build started" if "codemagic" in shipped
                     else shipped))
+            elif delivery.status == "closed":
+                final = "blocked"
+                result = f"closed: {delivery.url}"
+                message = f"#{task_id} PR closed without merging: {headline}. {delivery.url}"
+                card.update(status="failed", reason=delivery.detail)
             else:
+                final = "review"
                 note = f" ({delivery.detail})" if delivery.detail else ""
                 result, message = f"pr: {delivery.url}", (
                     f"#{task_id} PR ready (4/4): {headline}{note}. {delivery.url}")
                 card.update(status="pr", note=delivery.detail)
             card.setdefault("status", "no_changes")
-            final = "done"
         else:
             reason = str(run.get("error") or state)[:200]
             carded = job_cards.enabled()

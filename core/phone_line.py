@@ -337,7 +337,7 @@ def _fingerprint(text: str) -> str:
     return hashlib.sha256(" ".join(text.lower().split()).encode("utf-8")).hexdigest()[:24]
 
 
-_TASK_LABELS = (("running", "running"), ("ready", "queued"),
+_TASK_LABELS = (("running", "running"), ("review", "PR awaiting merge"), ("ready", "queued"),
                 ("needs_triage", "waiting on you"), ("blocked", "blocked"))
 
 

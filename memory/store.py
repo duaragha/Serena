@@ -55,7 +55,7 @@ class AmbiguousMemoryId(LookupError):
 # hand, and every task that predates the queue. Only enqueue_task, the phone
 # and webhook boundary, can make work "ready", so the dispatcher never picks up
 # a to-do list it was not handed.
-TASK_STATES = frozenset({"backlog", "needs_triage", "ready", "claimed", "running", "blocked", "done"})
+TASK_STATES = frozenset({"backlog", "needs_triage", "ready", "claimed", "running", "review", "blocked", "done"})
 TASK_PRIORITIES = ("low", "normal", "high", "critical")
 MAX_TASKS = 10000
 TASK_LEASE_SECONDS = 30
@@ -386,12 +386,13 @@ def finish_task_run(task_id: int, run_id: str, state: str, result: str = "") -> 
     the run is long gone by the time it finishes, and the reservation ledger
     guarantees one task maps to one run.
     """
-    if state not in {"done", "blocked"}:
+    if state not in {"review", "done", "blocked"}:
         raise ValueError("invalid task finish state")
     run_id = _task_text(run_id, "run_id", 256)
     path = _find_task_path(task_id)
     row = _parse_file(path) if path else None
-    if not row or row["type"] != "task" or row["state"] != "running" or row["run_id"] != run_id:
+    if (not row or row["type"] != "task" or row["state"] not in {"running", "review"}
+            or row["run_id"] != run_id):
         return False
     _task_metadata(row, state=state, assignee="", lease_token="", lease_until="",
                    result=_flatten(str(result or ""))[:500])

@@ -390,6 +390,12 @@ Only `enqueue_task` stamps a `source_id`, and only sourced `ready` tasks are
 dispatched. Notes from `chats memory add` and every pre-queue task are
 `backlog`.
 
+An opened PR leaves its task in `review`, visible in the active task list and
+phone status, with its private checkout retained. Reconciliation reads that
+PR without repushing the branch: a merge finishes and ships the task, while a
+closure without merging blocks it. Only merged or no-change deliveries become
+`done`; finishing Fleet alone does not mean the fix reached the default branch.
+
 ### SideStore publication
 
 Each app that ships to SideStore carries a `sidestore` object inside its
