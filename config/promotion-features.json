@@ -213,7 +213,7 @@
       "title": "Keep Fleet learning tied to its owned checkout",
       "devTag": "v0.3.10-dev.22",
       "base": "17552c4baa237435ef993c654ca784b6b9527351",
-      "commit": "50770adb111eef1ac56716fe42aeb2cc77d78106",
+      "commit": "7c6566e5257c8b43bda5503883ec601ad39820fb",
       "requires": [],
       "paths": ["fleet/project_identity.py", "tests/test_fleet_checkout.py", "tests/test_fleet_shared_learning.py"]
     },
@@ -222,7 +222,7 @@
       "title": "Fleet model routing for Sol 6.1 and Claude 5.5",
       "devTag": "v0.3.10-dev.22",
       "base": "17552c4baa237435ef993c654ca784b6b9527351",
-      "commit": "50770adb111eef1ac56716fe42aeb2cc77d78106",
+      "commit": "7c6566e5257c8b43bda5503883ec601ad39820fb",
       "requires": ["fleet-checkout-identity"],
       "paths": [
         "fleet/policy.py", "fleet/retry_policy.py", "fleet/supervisor.py",
