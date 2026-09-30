@@ -20,6 +20,10 @@ def test_health_route_identifies_the_live_sidecar_process():
     assert response.get_json() == {
         "ok": True,
         "pid": os.getpid(),
+        "desktop": {
+            "channel": os.environ.get("SERENA_DESKTOP_CHANNEL", "standalone"),
+            "version": os.environ.get("SERENA_DESKTOP_VERSION", ""),
+        },
         "capabilities": {
             "structuredWorkspace": int("workspace_host" in sidecar.app.extensions),
         },

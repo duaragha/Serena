@@ -11,15 +11,25 @@ if not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 if __name__ == "__main__" and sys.argv[1:] == ["--workspace-runtime-check"]:
-    from core.workspace_claude import ClaudeWorkspace  # noqa: F401
-    from core.workspace_codex import CodexWorkspace  # noqa: F401
-    from core.workspace_claude_runtime import runtime_paths
+    # Import the actual call runtime too: importing the lazy voice.call package
+    # alone does not catch missing numpy extensions in a frozen release.
+    import numpy as np
+
+    from voice.call import CallRuntime  # noqa: F401
+
+    if np.dot(np.array([2, 3]), np.array([4, 5])) != 23:
+        raise RuntimeError("packaged numpy runtime is unusable")
+    from tempfile import TemporaryDirectory
+
+    import jsonschema  # noqa: F401
+
     from core.scheduler_actions import REVIEWED_ACTIONS, start_ready_fleet_task
     from core.webhook_ingress import default_ingress, route_task
+    from core.workspace_claude import ClaudeWorkspace  # noqa: F401
+    from core.workspace_claude_runtime import runtime_paths
+    from core.workspace_codex import CodexWorkspace  # noqa: F401
     from fleet.delivery import accept_operator_evidence, consume_operator_steering
-    from memory.store import enqueue_task, claim_next_task
-    from tempfile import TemporaryDirectory
-    import jsonschema  # noqa: F401
+    from memory.store import claim_next_task, enqueue_task
 
     runtime_paths()
     # Exercise the bundled registry, not the source checkout. Keep this probe
