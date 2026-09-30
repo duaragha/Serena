@@ -68,6 +68,7 @@ def test_killed_writer_resumes_with_its_patch_and_completed_research(fleet_env, 
         return [sys.executable, "-c", code]
 
     monkeypatch.setattr("fleet.workers.worker_command", command)
+    monkeypatch.setattr("fleet.leg_scripts.worker_command", command)
     parked = supervisor.run_supervisor(run["run_id"])
     assert parked["state"] == "waiting_for_resources", parked.get("error")
     assert parked["resource_waits"][0]["resource"] == "process"

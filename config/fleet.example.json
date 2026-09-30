@@ -35,8 +35,8 @@
       "workers": [
         {
           "provider": "codex",
-          "model": "gpt-6-astra",
-          "effort": "medium"
+          "model": "gpt-6.1-sol",
+          "effort": "xhigh"
         }
       ],
       "phases": {
@@ -50,22 +50,22 @@
         "execute": [
           {
             "provider": "codex",
-            "model": "gpt-6-astra",
-            "effort": "medium"
+            "model": "gpt-6.1-sol",
+            "effort": "xhigh"
           }
         ],
         "verify": [
           {
-            "provider": "codex",
-            "model": "gpt-6-astra",
-            "effort": "medium"
+            "provider": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "xhigh"
           }
         ],
         "finalize": [
           {
             "provider": "claude",
-            "model": "claude-opus-5",
-            "effort": "high"
+            "model": "claude-opus-5-5",
+            "effort": "xhigh"
           }
         ]
       }
@@ -89,22 +89,22 @@
         "execute": [
           {
             "provider": "claude",
-            "model": "claude-opus-5",
-            "effort": "high"
+            "model": "claude-opus-5-5",
+            "effort": "xhigh"
           }
         ],
         "verify": [
           {
             "provider": "codex",
-            "model": "gpt-6-astra",
-            "effort": "medium"
+            "model": "gpt-6.1-sol",
+            "effort": "xhigh"
           }
         ],
         "finalize": [
           {
             "provider": "claude",
-            "model": "claude-opus-5",
-            "effort": "high"
+            "model": "claude-opus-5-5",
+            "effort": "xhigh"
           }
         ]
       }

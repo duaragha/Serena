@@ -3052,20 +3052,21 @@ def _execute_leg(store: FleetStore, run_id: str, leg: dict[str, Any]) -> WorkerR
         reason=safe_error,
     )
     if state == "failed" and integration_blocked and difficult_gate:
-        from fleet.retry_policy import difficult_retry_reason
+        from fleet.retry_policy import difficult_retry_reason, integration_failure_reason
 
-        if difficult_retry_reason(snapshot, leg, difficult_gate):
+        if integration_failure_reason(snapshot, leg, difficult_gate):
             try:
                 if os.environ.get("SERENA_FLEET_PEERS", "on") != "off" and peers.failure_help(
                     snapshot, leg, attempt, safe_error + "\n" + json.dumps(difficult_gate)[:2000]
                 ):
                     return result
-                usable, _detail = _capacity_decision(_read_start_capacity().get("codex"))
-                if usable:
-                    store.escalate_difficult_leg(
-                        run_id, str(leg["leg_id"]),
-                        attempt_id=str(attempt["attempt_id"]), gate=difficult_gate,
-                    )
+                if difficult_retry_reason(snapshot, leg, difficult_gate):
+                    usable, _detail = _capacity_decision(_read_start_capacity().get("codex"))
+                    if usable:
+                        store.escalate_difficult_leg(
+                            run_id, str(leg["leg_id"]),
+                            attempt_id=str(attempt["attempt_id"]), gate=difficult_gate,
+                        )
             except Exception as exc:
                 store.append_event(
                     run_id, "leg.difficult_retry_failed", {"error": str(exc)[:1_000]},

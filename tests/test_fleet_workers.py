@@ -37,7 +37,7 @@ def _request(
         phase=phase,
         role="tester",
         provider=provider,
-        model="gpt-5.6-sol" if provider == "codex" else "opus",
+        model="gpt-6.1-sol" if provider == "codex" else "claude-opus-5-5",
         effort="xhigh",
         access_mode=access_mode,
         cwd=str(tmp_path),
@@ -236,7 +236,7 @@ def test_codex_resume_places_subcommand_after_enforced_outer_options(tmp_path, m
     command = worker_command(request)
     assert command[-3:] == ["resume", "codex-session-1", "-"]
     assert command.index('default_permissions="fleet_test_read"') < command.index("resume")
-    assert command[command.index("-m") + 1] == "gpt-5.6-sol"
+    assert command[command.index("-m") + 1] == "gpt-6.1-sol"
     assert 'model_reasoning_effort="xhigh"' in command
 
 
@@ -269,7 +269,7 @@ def test_direct_codex_and_claude_stream_parsers_report_real_identity(
 import json, sys
 sys.stdin.read()
 print(json.dumps({"type":"thread.started","thread_id":"11111111-1111-1111-1111-111111111111"}), flush=True)
-print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-5.6-sol","reasoning_effort":"xhigh"}}), flush=True)
+print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-6.1-sol","reasoning_effort":"xhigh"}}), flush=True)
 print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"codex answer"}}), flush=True)
 """,
     )
@@ -280,8 +280,8 @@ import json, sys
 sys.stdin.read()
 args = sys.argv
 sid = args[args.index("--session-id") + 1]
-print(json.dumps({"type":"system","subtype":"init","session_id":sid,"model":"claude-opus-5"}), flush=True)
-print(json.dumps({"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5","content":[{"type":"text","text":"claude answer"}]}}), flush=True)
+print(json.dumps({"type":"system","subtype":"init","session_id":sid,"model":"claude-opus-5-5"}), flush=True)
+print(json.dumps({"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"claude answer"}]}}), flush=True)
 print(json.dumps({"type":"result","session_id":sid,"result":"claude answer","is_error":False}), flush=True)
 """,
     )
@@ -297,7 +297,7 @@ print(json.dumps({"type":"result","session_id":sid,"result":"claude answer","is_
     )
     assert codex.ok is True
     assert codex.output_text == "codex answer"
-    assert codex.actual_model == "gpt-5.6-sol"
+    assert codex.actual_model == "gpt-6.1-sol"
     assert codex.actual_effort == "xhigh"
     assert Path(codex.event_log_path).is_file()
     assert any(
@@ -314,7 +314,7 @@ print(json.dumps({"type":"result","session_id":sid,"result":"claude answer","is_
     )
     assert claude.ok is True
     assert claude.output_text == "claude answer"
-    assert claude.actual_model == "claude-opus-5"
+    assert claude.actual_model == "claude-opus-5-5"
     assert sum(event == "session.started" for event, _ in claude_events) == 1
     assert any(
         payload.get("effort") == "xhigh"
@@ -340,8 +340,8 @@ if "do the controlled test" not in prompt:
     raise SystemExit(10)
 args = sys.argv
 sid = args[args.index("--session-id") + 1]
-print(json.dumps({"type":"system","subtype":"init","session_id":sid,"model":"claude-opus-5"}), flush=True)
-print(json.dumps({"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5","content":[{"type":"text","text":"prompt arrived"}]}}), flush=True)
+print(json.dumps({"type":"system","subtype":"init","session_id":sid,"model":"claude-opus-5-5"}), flush=True)
+print(json.dumps({"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"prompt arrived"}]}}), flush=True)
 print(json.dumps({"type":"result","session_id":sid,"result":"prompt arrived","is_error":False}), flush=True)
 """,
     )
@@ -369,7 +369,7 @@ def test_worker_cancellation_terminates_the_direct_process_group(tmp_path, monke
 import json, sys, time
 sys.stdin.read()
 print(json.dumps({"type":"thread.started","thread_id":"22222222-2222-2222-2222-222222222222"}), flush=True)
-print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-5.6-sol","reasoning_effort":"xhigh"}}), flush=True)
+print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-6.1-sol","reasoning_effort":"xhigh"}}), flush=True)
 time.sleep(30)
 """,
     )
@@ -409,7 +409,7 @@ subprocess.Popen(
 while not Path('child-ready').exists():
     time.sleep(0.01)
 print(json.dumps({"type":"thread.started","thread_id":"33333333-3333-3333-3333-333333333333"}), flush=True)
-print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-5.6-sol","reasoning_effort":"xhigh"}}), flush=True)
+print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-6.1-sol","reasoning_effort":"xhigh"}}), flush=True)
 print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"done"}}), flush=True)
 """.replace("CHILD_CODE", repr(child_code)),
     )
@@ -436,7 +436,7 @@ def test_slow_event_callback_cannot_discard_queued_final_answer(tmp_path, monkey
 import json, sys
 sys.stdin.read()
 print(json.dumps({"type":"thread.started","thread_id":"queued-final-fixture"}), flush=True)
-print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-5.6-sol","reasoning_effort":"xhigh"}}), flush=True)
+print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-6.1-sol","reasoning_effort":"xhigh"}}), flush=True)
 print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"final answer preserved"}}), flush=True)
 """,
     )
@@ -453,24 +453,26 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
     assert result.output_text == "final answer preserved"
 
 
-def test_codex_rollout_identity_reads_actual_effort_field(tmp_path, monkeypatch):
+@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-6.1-sol"])
+def test_codex_rollout_identity_reads_actual_effort_field(tmp_path, monkeypatch, model):
     rollout = tmp_path / "rollout.jsonl"
     rollout.write_text(
-        '{"type":"turn_context","payload":{"model":"gpt-5.6-sol","effort":"xhigh"}}\n',
+        json.dumps({"type": "turn_context", "payload": {"model": model, "effort": "xhigh"}}) + "\n",
         encoding="utf-8",
     )
     monkeypatch.setattr("core.codex_bridge.find_codex_jsonl", lambda _sid: rollout)
-    assert _codex_actual_identity("session-1") == ("gpt-5.6-sol", "xhigh")
+    assert _codex_actual_identity("session-1") == (model, "xhigh")
 
 
-def test_claude_rollout_identity_reads_model_and_actual_effort(tmp_path, monkeypatch):
+@pytest.mark.parametrize("model", ["claude-opus-5", "claude-opus-5-5", "claude-sonnet-5-5"])
+def test_claude_rollout_identity_reads_model_and_actual_effort(tmp_path, monkeypatch, model):
     rollout = tmp_path / "claude.jsonl"
     rollout.write_text(
-        '{"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5"}}\n',
+        json.dumps({"type": "assistant", "effort": "xhigh", "message": {"model": model}}) + "\n",
         encoding="utf-8",
     )
     monkeypatch.setattr("core.claude_bridge.find_claude_jsonl", lambda _sid: rollout)
-    assert _claude_actual_identity("session-1") == ("claude-opus-5", "xhigh")
+    assert _claude_actual_identity("session-1") == (model, "xhigh")
 
 
 def test_claude_rollout_identity_does_not_carry_effort_across_model_switch(
@@ -479,7 +481,7 @@ def test_claude_rollout_identity_does_not_carry_effort_across_model_switch(
 ):
     rollout = tmp_path / "claude.jsonl"
     rollout.write_text(
-        '{"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5"}}\n'
+        '{"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5-5"}}\n'
         '{"type":"assistant","message":{"model":"claude-haiku-4-5"}}\n',
         encoding="utf-8",
     )
@@ -554,13 +556,13 @@ def test_claude_terminal_result_preserves_overload_error(tmp_path, monkeypatch, 
 def test_synthetic_claude_error_never_overwrites_real_model_identity(tmp_path, monkeypatch):
     rollout = tmp_path / "claude.jsonl"
     rollout.write_text(
-        '{"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5"}}\n'
+        '{"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5-5"}}\n'
         '{"type":"assistant","message":{"model":"<synthetic>"}}\n',
         encoding="utf-8",
     )
     monkeypatch.setattr("core.claude_bridge.find_claude_jsonl", lambda _sid: rollout)
 
-    assert _claude_actual_identity("session-1") == ("claude-opus-5", "xhigh")
+    assert _claude_actual_identity("session-1") == ("claude-opus-5-5", "xhigh")
     assert "model" not in _event_summary(
         {"type": "assistant", "message": {"model": "<synthetic>"}}
     )
@@ -606,9 +608,9 @@ import json, sys
 sys.stdin.read()
 args = sys.argv
 sid = args[args.index("--session-id") + 1]
-print(json.dumps({"type":"system","subtype":"init","session_id":sid,"model":"claude-opus-5"}), flush=True)
+print(json.dumps({"type":"system","subtype":"init","session_id":sid,"model":"claude-opus-5-5"}), flush=True)
 print(json.dumps({"type":"user","message":{"content":[{"type":"tool_result","content":"x" * (1024 * 1024)}]}}), flush=True)
-print(json.dumps({"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5","content":[{"type":"text","text":"finished after huge tool output"}]}}), flush=True)
+print(json.dumps({"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"finished after huge tool output"}]}}), flush=True)
 print(json.dumps({"type":"result","session_id":sid,"result":"finished after huge tool output","is_error":False}), flush=True)
 """,
     )
@@ -655,7 +657,7 @@ def test_capture_limit_truncates_diagnostics_without_killing_codex(
 import json, sys
 sys.stdin.read()
 print(json.dumps({"type":"thread.started","thread_id":"44444444-4444-4444-4444-444444444444"}), flush=True)
-print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-5.6-sol","reasoning_effort":"xhigh"}}), flush=True)
+print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-6.1-sol","reasoning_effort":"xhigh"}}), flush=True)
 for index in range(8):
     print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":f"noise-{index}-" + "x" * 256}}), flush=True)
 print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"done after capture limit"}}), flush=True)
@@ -704,7 +706,7 @@ def _claude_request(phase="discover", activity="coding", access_mode="read_only"
 
     return WorkerRequest(
         run_id="r", leg_id="l", attempt_id="a", task="t", activity=activity,
-        phase=phase, role="x", provider="claude", model="claude-opus-5",
+        phase=phase, role="x", provider="claude", model="claude-opus-5-5",
         effort="low", access_mode=access_mode, cwd="/tmp", prompt="p",
         worker_key="agent:a", worker_label="A", assignment="ws-1",
         assignment_ids=("ws-1",), review_target_ids=(),

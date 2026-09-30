@@ -279,6 +279,7 @@ def test_post_fix_review_restart_is_bounded_and_preserves_deadline(team, tmp_pat
     with store._connect() as db:
         db.execute("UPDATE fleet_lesson_reviews SET state='running',dispatches=1")
     job = learning.projection(run["run_id"])["reviews"][0]
+    review_capacity = {job["provider"]: {"usable": True}}
     calls = []
 
     def reviewer(request, **kwargs):
@@ -305,15 +306,17 @@ def test_post_fix_review_restart_is_bounded_and_preserves_deadline(team, tmp_pat
         )
 
     review_final_lessons(
-        store, run["run_id"], runner=reviewer, capacity={"codex": {"usable": True}}
+        store, run["run_id"], runner=reviewer, capacity=review_capacity
     )
     recovered = learning.projection(run["run_id"])["reviews"][0]
     assert recovered["deadline"] == job["deadline"] and recovered["dispatches"] == 2
     assert recovered["state"] == "completed" and len(calls) == 1
+    assert (calls[0].provider, calls[0].model, calls[0].effort) == (
+        job["provider"], job["model"], job["effort"])
     with store._connect() as db:
         db.execute("UPDATE fleet_lesson_reviews SET state='running'")
     review_final_lessons(
-        store, run["run_id"], runner=reviewer, capacity={"codex": {"usable": True}}
+        store, run["run_id"], runner=reviewer, capacity=review_capacity
     )
     assert learning.projection(run["run_id"])["reviews"][0]["state"] == "expired"
     assert len(calls) == 1

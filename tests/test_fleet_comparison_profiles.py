@@ -4,14 +4,14 @@ from fleet.policy import build_policy, builtin_config, policy_models_match_contr
 
 
 @pytest.mark.parametrize('variant,code,review', [
-    ('sol', ('gpt-5.6-sol', 'xhigh'), ('gpt-5.6-sol', 'high')),
+    ('sol', ('gpt-6.1-sol', 'xhigh'), ('gpt-6.1-sol', 'xhigh')),
     ('astra', ('gpt-6-astra', 'medium'), ('gpt-6-astra', 'medium')),
 ])
 def test_comparison_freezes_exact_pair(variant, code, review):
     policy = build_policy('coding', f'Fleet comparison profile: {variant}\nImplement queue',
                           config=builtin_config(), provider_mode='codex')
     assert [(p.workers[0].model, p.workers[0].effort) for p in policy.phases] == [
-        ('gpt-5.6-luna', 'max'), code, review, ('gpt-6-astra', 'high')]
+        ('gpt-5.6-luna', 'max'), code, review, ('gpt-6.1-sol', 'xhigh')]
     assert policy_models_match_contract('coding', policy.to_dict())
 
 def test_comparison_cannot_override_provider_restriction():
