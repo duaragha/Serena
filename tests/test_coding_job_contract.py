@@ -78,6 +78,23 @@ def test_ambiguous_projects_are_rejected_instead_of_guessed(tmp_path) -> None:
         )
 
 
+@pytest.mark.parametrize("brief,name", [
+    ("fix routines so exercises retain their sets and reps", "locket"),
+    ("fix whatsapp search so inbox results include older messages", "unified"),
+])
+def test_feature_vocabulary_resolves_one_available_repository(tmp_path, brief, name):
+    roots = [_repo(tmp_path / "locket"), _repo(tmp_path / "unified")]
+    assert resolve_repository_root(brief, roots=roots, projects_root=tmp_path) == tmp_path / name
+    with pytest.raises(RepositoryResolutionError):
+        resolve_repository_root(brief, roots=[], projects_root=tmp_path, serena_root=tmp_path / "missing")
+
+
+def test_mixed_feature_vocabulary_still_requires_a_project(tmp_path):
+    roots = [_repo(tmp_path / "locket"), _repo(tmp_path / "unified")]
+    with pytest.raises(RepositoryResolutionError):
+        resolve_repository_root("fix workouts in the inbox", roots=roots, projects_root=tmp_path)
+
+
 def test_project_path_beats_a_bare_name_mentioned_in_prose(tmp_path) -> None:
     unified = _repo(tmp_path / "personal_projects" / "unified")
     liquid = _repo(tmp_path / "liquid")

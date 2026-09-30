@@ -197,7 +197,7 @@ def locate(checkout_path: str | Path) -> TaskCheckout:
 
 @dataclass(frozen=True)
 class Delivery:
-    status: str  # "pr", "merged", "no_changes"
+    status: str  # "pr", "merged", "closed", "no_changes"
     url: str = ""
     detail: str = ""
 
@@ -208,6 +208,28 @@ def _identity(path: Path) -> list[str]:
     return [] if name and email else [
         "-c", f"user.name={DEFAULT_AUTHOR[0]}", "-c", f"user.email={DEFAULT_AUTHOR[1]}",
     ]
+
+
+def review_delivery(checkout: TaskCheckout) -> Delivery:
+    """Read an existing PR's outcome without repushing its finished branch."""
+
+    owner, repo = github_slug(checkout.remote)
+    response = _run(
+        ["gh", "pr", "view", checkout.branch, "--repo", f"{owner}/{repo}",
+         "--json", "url,state"], timeout=GH_TIMEOUT_SECONDS,
+    )
+    try:
+        data = json.loads(response.stdout)
+        url, state = str(data["url"]), str(data["state"])
+    except (ValueError, KeyError, TypeError) as error:
+        raise CheckoutError("could not read the pull request outcome") from error
+    if state == "MERGED":
+        return Delivery("merged", url=url)
+    if state == "CLOSED":
+        return Delivery("closed", url=url, detail="pull request closed without merging")
+    if state == "OPEN":
+        return Delivery("pr", url=url)
+    raise CheckoutError("unknown pull request state")
 
 
 def deliver(checkout: TaskCheckout, *, task_id: int, brief: str, run_id: str) -> Delivery:

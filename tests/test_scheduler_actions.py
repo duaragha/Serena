@@ -563,6 +563,25 @@ def test_real_queue_dispatches_highest_priority_and_preserves_thin_briefs(real_f
     assert all(call.kwargs["cwd"] == str(queue.root) for call in queue.start.call_args_list)
 
 
+def test_routines_brief_dispatches_to_locket_without_a_named_project(real_fleet_queue, tmp_path, monkeypatch):
+    import subprocess
+
+    from core import coding_job_contract
+
+    queue = real_fleet_queue
+    root = tmp_path / "locket"
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    resolve = coding_job_contract.resolve_repository_root
+    monkeypatch.setattr(coding_job_contract, "resolve_repository_root", lambda brief, **kw: resolve(
+        brief, **kw, roots=[root], projects_root=tmp_path))
+    task = queue.store.enqueue_task("Fix routines so exercises retain all logged sets and reps")
+    assert task["project_hint"] == ""
+    outcome = REVIEWED_ACTIONS["serena.fleet.start"]({})
+    assert outcome.output["run_id"] == "run-1"
+    assert queue.start.call_args.kwargs["cwd"] == str(root)
+    assert queue.store.get_memory(task["id"])["state"] == "running"
+
+
 def test_real_queue_existing_active_run_is_attached_without_start(real_fleet_queue):
     queue = real_fleet_queue
     task = queue.enqueue()

@@ -91,7 +91,7 @@ def _attached_task_list() -> str:
     from memory import store
 
     lines: list[str] = []
-    for state in ("running", "ready", "needs_triage", "blocked", "backlog"):
+    for state in ("running", "review", "ready", "needs_triage", "blocked", "backlog"):
         try:
             rows = store.tasks_in_state(state)
         except Exception:
@@ -354,7 +354,10 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
     output = {"task_id": task_id}
 
     def hold(detail: str, *, state: str = "blocked") -> ActionOutcome:
-        released = store.release_task_claim(task_id, owner, token, state=state)
+        options = {"state": state}
+        if state == "needs_triage":
+            options["result"] = detail
+        released = store.release_task_claim(task_id, owner, token, **options)
         # "blocked" here means the dispatcher could not even open the run, on
         # something it cannot clear itself -- GitHub auth it cannot renew, a
         # repository it cannot reach. Left quiet, the task simply never starts
@@ -718,6 +721,29 @@ def _auto_retry_transient(task: dict[str, Any], run_id: str, reason: str, headli
     return True
 
 
+def _review_batch(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bound PR reads while rotating past PRs that remain open for weeks."""
+
+    import sqlite3
+    import time
+    from contextlib import closing
+
+    from memory import store
+
+    if not tasks:
+        return []
+    path = store.MEMORY_DIR / ".fleet-dispatch.sqlite3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path, timeout=5)) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS pr_reviews (task_id INTEGER PRIMARY KEY, checked_at REAL)")
+        checked = dict(db.execute("SELECT task_id, checked_at FROM pr_reviews"))
+        batch = sorted(tasks, key=lambda task: (checked.get(task["id"], 0), task["id"]))[:MAX_RECONCILE_PER_TICK]
+        with db:
+            db.executemany("INSERT OR REPLACE INTO pr_reviews VALUES (?, ?)",
+                           [(task["id"], time.time()) for task in batch])
+    return batch
+
+
 def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
     """Close finished dispatched runs: deliver, record, and tell him.
 
@@ -735,7 +761,8 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
     if _configuration(payload):
         return ActionOutcome(False, "serena.fleet.reconcile accepts no schedule payload")
     closed: list[dict[str, Any]] = []
-    for task in store.tasks_in_state("running"):
+    tasks = store.tasks_in_state("running") + _review_batch(store.tasks_in_state("review"))
+    for task in tasks:
         if len(closed) >= MAX_RECONCILE_PER_TICK:
             break
         run_id = str(task.get("run_id") or "")
@@ -781,8 +808,13 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             record["error"] = str(error)
         if state == "completed" and checkout is not None:
             try:
-                delivery = agent_checkouts.deliver(
-                    checkout, task_id=task_id, brief=brief, run_id=run_id)
+                if task["state"] == "review":
+                    delivery = agent_checkouts.review_delivery(checkout)
+                    if delivery.status == "pr":
+                        continue
+                else:
+                    delivery = agent_checkouts.deliver(
+                        checkout, task_id=task_id, brief=brief, run_id=run_id)
             except agent_checkouts.CheckoutError as error:
                 # Leave the task running; the next tick retries the delivery.
                 record["error"] = f"delivery failed: {error}"
@@ -806,9 +838,11 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             record.update(delivery=delivery.status, url=delivery.url)
             card: dict[str, Any] = {"url": delivery.url}
             if delivery.status == "no_changes":
+                final = "done"
                 result, message = "done: no changes needed", (
                     f"#{task_id} done, no code changes needed: {headline}")
             elif delivery.status == "merged":
+                final = "done"
                 try:
                     shipped = agent_checkouts.ship(checkout)
                 except agent_checkouts.CheckoutError as error:
@@ -820,13 +854,18 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
                 card.update(status="merged", note=(
                     "📱 SideStore build started" if "codemagic" in shipped
                     else shipped))
+            elif delivery.status == "closed":
+                final = "blocked"
+                result = f"closed: {delivery.url}"
+                message = f"#{task_id} PR closed without merging: {headline}. {delivery.url}"
+                card.update(status="failed", reason=delivery.detail)
             else:
+                final = "review"
                 note = f" ({delivery.detail})" if delivery.detail else ""
                 result, message = f"pr: {delivery.url}", (
                     f"#{task_id} PR ready (4/4): {headline}{note}. {delivery.url}")
                 card.update(status="pr", note=delivery.detail)
             card.setdefault("status", "no_changes")
-            final = "done"
         else:
             reason = str(run.get("error") or state)[:200]
             carded = job_cards.enabled()
@@ -868,10 +907,15 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             break
         task_id = int(task["id"])
         headline = " ".join(str(task["content"]).split())[:120]
+        blocker = str(task.get("result") or "")
         question = (f"#{task_id} needs one detail before i hand it off: \"{headline}\". "
-                    f"what exactly should change, and in which project? "
-                    f"reply \"#{task_id} <details>\".")
-        if _notify_phone(question, f"task:{task_id}:question", answers_request=True):
+                    + (f"{blocker}. which project is this for? " if blocker else
+                       "what exactly should change, and in which project? ")
+                    + f"reply \"#{task_id} <details>\".")
+        key = f"task:{task_id}:question"
+        if blocker:
+            key += ":" + hashlib.sha256((blocker + str(task['content'])).encode()).hexdigest()[:12]
+        if _notify_phone(question, key, answers_request=True):
             store.mark_task_asked(task_id)
             asked.append(task_id)
     from core import sidestore_publish

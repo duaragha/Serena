@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 QUEUE_PREFIX = "queue:"
+ANSWER_PREFIX = re.compile(r"^answer\s+#(?P<id>[1-9]\d{0,8})\s*:\s*\S.*$", re.I)
 TURN_TIMEOUT_SECONDS = 90
 MAX_REPLY_CHARACTERS = 900
 
@@ -80,12 +82,17 @@ def envelope(text: str, *, queue: str = "", journal: str = "") -> str:
     return (
         "This turn is a text Raghav just sent to your own line -- his private "
         "chat with your bot, which exists only for him to reach you. It is one "
-        "of two things, and you decide which:\n\n"
+        "of three things, and you decide which:\n\n"
         "1. Work he wants done. Then your ENTIRE reply is one line starting "
         f"with \"{QUEUE_PREFIX}\" followed by the brief, rewritten so a coding "
         "agent who cannot ask him anything could start: name the project and "
         "what should change. Do not add commentary around it.\n"
-        "2. Anything else -- a question, a status check, a correction, talk. "
+        "2. An answer to a task shown below as waiting on you. Then your ENTIRE "
+        "reply is one line: \"answer #<task id>: <his exact words>\". Use only a "
+        "task id from the live queue; do not invent details, queue another task, "
+        "or tell him to retype command grammar. If several waiting tasks could "
+        "match, ask which one instead.\n"
+        "3. Anything else -- a question, a status check, a correction, talk. "
         "Then just answer him, as yourself, in one or two sentences. No "
         f"\"{QUEUE_PREFIX}\" prefix, no markdown, no lists.\n\n"
         "A question about the queue is never work. Neither is a message that "
@@ -116,8 +123,8 @@ def envelope(text: str, *, queue: str = "", journal: str = "") -> str:
     )
 
 
-def read(text: str, *, queue: str = "") -> tuple[str, str] | None:
-    """``("task", brief)``, ``("say", reply)``, or None when her brain is down."""
+def read(text: str, *, queue: str = "") -> tuple[str, str | dict[str, Any]] | None:
+    """Task, grounded task-answer intent, speech, or None when the brain is down."""
 
     body = (text or "").strip()
     if not body:
@@ -144,6 +151,10 @@ def read(text: str, *, queue: str = "") -> tuple[str, str] | None:
     said = " ".join(str(answer.get("say") or "").split())
     if not said:
         return None
+    if match := ANSWER_PREFIX.fullmatch(said):
+        # The model identifies which question he answered; the answer itself
+        # stays his actual message, never details the model supplied for him.
+        return "answer", {"task_id": int(match.group("id")), "answer": body}
     if said.lower().startswith(QUEUE_PREFIX):
         brief = said[len(QUEUE_PREFIX):].strip()
         # She answered with the prefix and nothing after it; the text he sent

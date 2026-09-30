@@ -100,6 +100,28 @@ def test_triage_question_is_asked_once_and_an_answer_requeues(queue):
     assert store.answer_triage(task["id"], "more") is None
 
 
+def test_dispatch_bounce_names_the_repository_blocker_and_accepts_project_only_answer(queue, monkeypatch):
+    from core import coding_job_contract, scheduler_actions
+    from fleet import supervisor
+
+    task = store.enqueue_task("Fix dashboard chart refresh so values update after selecting another day",
+                              source_id="imessage:repository")
+    monkeypatch.setattr(coding_job_contract, "resolve_repository_root",
+                        Mock(side_effect=ValueError("project name is missing")))
+    monkeypatch.setattr(supervisor, "get_run", lambda run_id: None)
+    texts = []
+    monkeypatch.setattr(scheduler_actions, "_notify_phone",
+                        lambda text, key, **kw: texts.append(text) or True)
+    assert scheduler_actions.start_ready_fleet_task({}).output["state"] == "needs_triage"
+    assert store.get_memory(task["id"])["asked_at"] == ""
+    assert scheduler_actions.reconcile_fleet_tasks({}).output["asked"] == [task["id"]]
+    assert "project name is missing" in texts[-1]
+    assert "which project is this for" in texts[-1]
+    assert scheduler_actions.reconcile_fleet_tasks({}).output["asked"] == []
+    assert store.answer_triage(task["id"], "locket")["project_hint"] == "locket"
+    assert store.get_memory(task["id"])["state"] == "ready"
+
+
 # ---- the phone line --------------------------------------------------------
 
 
@@ -308,6 +330,21 @@ def test_deliver_reports_no_changes_without_pushing(github, monkeypatch):
     assert result.status == "no_changes" and calls == []
 
 
+@pytest.mark.parametrize("state,status", [("OPEN", "pr"), ("MERGED", "merged"), ("CLOSED", "closed")])
+def test_review_reads_the_existing_pr_without_pushing(github, monkeypatch, state, status):
+    import json
+
+    from core import agent_checkouts
+
+    checkout = agent_checkouts.prepare(github.synced, 3, projects_root=github.projects)
+    before = _git("rev-parse", "HEAD", cwd=checkout.path)
+    calls = _fake_gh(monkeypatch, lambda args: (0, json.dumps({"url": "https://pr/3", "state": state})))
+    result = agent_checkouts.review_delivery(checkout)
+    assert (result.status, result.url) == (status, "https://pr/3")
+    assert len(calls) == 1 and calls[0][1:3] == ["pr", "view"]
+    assert _git("rev-parse", "HEAD", cwd=checkout.path) == before
+
+
 def test_automerge_is_opt_in_per_repository(github, monkeypatch):
     import json
 
@@ -350,6 +387,10 @@ def test_reconcile_delivers_notifies_and_asks_once(queue, monkeypatch):
     monkeypatch.setattr(agent_checkouts, "locate", lambda path: checkout)
     deliver = Mock(return_value=agent_checkouts.Delivery("pr", url="https://pr/1"))
     monkeypatch.setattr(agent_checkouts, "deliver", deliver)
+    review = Mock(return_value=agent_checkouts.Delivery("pr", url="https://pr/1"))
+    monkeypatch.setattr(agent_checkouts, "review_delivery", review)
+    ship = Mock(return_value="")
+    monkeypatch.setattr(agent_checkouts, "ship", ship)
     cleanup = Mock()
     monkeypatch.setattr(agent_checkouts, "cleanup", cleanup)
     texts = []
@@ -365,17 +406,75 @@ def test_reconcile_delivers_notifies_and_asks_once(queue, monkeypatch):
     runs["run-1"]["state"] = "completed"
     second = action({})
     assert second.output["asked"] == []
-    assert store.get_memory(task["id"])["state"] == "done"
+    assert store.get_memory(task["id"])["state"] == "review"
     assert store.get_memory(task["id"])["result"] == "pr: https://pr/1"
-    cleanup.assert_called_once_with(checkout)
+    assert f"[{task['id']}]" in store.format_tasks()
+    assert f"#{task['id']} [review]" in scheduler_actions._attached_task_list()
+    from core import phone_line
+    assert f"#{task['id']} PR awaiting merge" in phone_line._status_text()
+    cleanup.assert_not_called()
+    ship.assert_not_called()
     keys = [key for key, _text, _reply in texts]
     assert keys == [f"task:{thin['id']}:question", f"task:{from_chat['id']}:question",
-                    f"task:{task['id']}:done"]
+                    f"task:{task['id']}:review"]
     assert "https://pr/1" in texts[-1][1]
     # Both answer briefs he texted, so quiet hours must not hold them.
     assert [reply for _key, _text, reply in texts] == [True, True, True]
     assert store.get_memory(note["id"])["asked_at"] == ""
     assert action({}).output["closed"] == []
+    assert len(texts) == 3 and deliver.call_count == 1
+    review.return_value = agent_checkouts.Delivery("merged", url="https://pr/1")
+    action({})
+    assert store.get_memory(task["id"])["state"] == "done"
+    cleanup.assert_called_once_with(checkout)
+    ship.assert_called_once_with(checkout)
+    assert texts[-1][0] == f"task:{task['id']}:done"
+    assert action({}).output["closed"] == []
+
+
+def test_a_closed_unmerged_pr_blocks_the_task_and_keeps_its_checkout(queue, monkeypatch):
+    from core import agent_checkouts, scheduler_actions
+    from fleet import supervisor
+
+    task = store.enqueue_task(BRIEF, source_id="imessage:closed")
+    claimed = store.claim_next_task("d")
+    store.mark_task_running(task["id"], "d", claimed["lease_token"], "run-closed")
+    assert store.finish_task_run(task["id"], "run-closed", "review", "pr: https://pr/4")
+    assert not store.finish_task_run(task["id"], "another-run", "done")
+    monkeypatch.setattr(supervisor, "get_run", lambda run_id: {"state": "completed", "cwd": "/a"})
+    monkeypatch.setattr(agent_checkouts, "locate", lambda path: SimpleNamespace(path=Path(path)))
+    monkeypatch.setattr(agent_checkouts, "review_delivery", lambda checkout: agent_checkouts.Delivery(
+        "closed", url="https://pr/4", detail="pull request closed without merging"))
+    cleanup = Mock()
+    monkeypatch.setattr(agent_checkouts, "cleanup", cleanup)
+    monkeypatch.setattr(scheduler_actions, "_notify_phone", lambda *a, **kw: True)
+    scheduler_actions.reconcile_fleet_tasks({})
+    assert store.get_memory(task["id"])["state"] == "blocked"
+    assert store.get_memory(task["id"])["result"] == "closed: https://pr/4"
+    cleanup.assert_not_called()
+
+
+def test_pr_review_polling_is_bounded_and_rotates_past_open_prs(queue, monkeypatch):
+    from core import agent_checkouts, scheduler_actions
+    from fleet import supervisor
+
+    for index in range(5):
+        task = store.enqueue_task(BRIEF, source_id=f"imessage:review-{index}")
+        claim = store.claim_next_task("d")
+        run_id = f"run-{task['id']}"
+        assert store.mark_task_running(task["id"], "d", claim["lease_token"], run_id)
+        assert store.finish_task_run(task["id"], run_id, "review", f"pr: https://pr/{task['id']}")
+    monkeypatch.setattr(supervisor, "get_run", lambda run_id: {"state": "completed", "cwd": f"/a/{run_id}"})
+    monkeypatch.setattr(agent_checkouts, "locate", lambda path: SimpleNamespace(path=Path(path)))
+    review = Mock(return_value=agent_checkouts.Delivery("pr", url="https://pr/1"))
+    monkeypatch.setattr(agent_checkouts, "review_delivery", review)
+    action = scheduler_actions.reconcile_fleet_tasks
+    action({})
+    assert review.call_count == scheduler_actions.MAX_RECONCILE_PER_TICK
+    action({})
+    assert review.call_count == 2 * scheduler_actions.MAX_RECONCILE_PER_TICK
+    assert len({str(call.args[0].path) for call in review.call_args_list}) == 5
+    assert len(store.tasks_in_state("review")) == 5
 
 
 def test_reconcile_keeps_a_failed_run_for_inspection(queue, monkeypatch):

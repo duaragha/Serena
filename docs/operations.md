@@ -397,6 +397,23 @@ Only `enqueue_task` stamps a `source_id`, and only sourced `ready` tasks are
 dispatched. Notes from `chats memory add` and every pre-queue task are
 `backlog`.
 
+An opened PR leaves its task in `review`, visible in the active task list and
+phone status, with its private checkout retained. Reconciliation reads that
+PR without repushing the branch: a merge finishes and ships the task, while a
+closure without merging blocks it. Only merged or no-change deliveries become
+`done`; finishing Fleet alone does not mean the fix reached the default branch.
+
+Queue intake recognizes explicit project names; repository resolution also
+recognizes unambiguous Locket/Unified feature vocabulary and requires one existing Git root;
+mixed or unknown targets ask for clarification. A project-only answer such as
+`#78 locket` updates the hint without making an otherwise vague brief ready.
+When dispatch discovers a repository blocker, it clears the old question receipt
+and persists the reason so the next triage question explains what is missing.
+On her dedicated phone line, a conversational reply can answer that waiting task
+directly. The brain identifies its ID; the queue stores his actual message and
+rechecks that the task still needs triage. Ambiguous answers ask which task,
+and the explicit `#<id> <answer>` grammar remains available.
+
 ### SideStore publication
 
 Each app that ships to SideStore carries a `sidestore` object inside its
