@@ -4,6 +4,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -76,6 +77,27 @@ def test_identity(tmp_path):
     sibling.mkdir()
     (sibling / ".git").write_text("gitdir: " + str(a / ".git") + "\n", encoding="utf-8")
     assert repository_identity(str(a)) == repository_identity(str(sibling))
+
+
+def test_windows_identity_metadata_uses_files_instead_of_protocol_pipes():
+    from fleet.project_identity import _windows_git_metadata
+
+    # This real stand-in stalls if either output is a pipe, reproducing the
+    # metadata transport failure without launching a provider or touching Git.
+    script = """
+import os, stat, sys, time
+if any(stat.S_ISFIFO(os.fstat(fd).st_mode) for fd in (1, 2)):
+    time.sleep(30)
+assert all(stat.S_ISREG(os.fstat(fd).st_mode) for fd in (1, 2))
+assert sys.stdin.read() == ""
+print("git metadata")
+print("git diagnostic", file=sys.stderr)
+"""
+    result = _windows_git_metadata([sys.executable, "-c", script], dict(os.environ))
+
+    assert result.returncode == 0
+    assert result.stdout == "git metadata\n"
+    assert result.stderr == "git diagnostic\n"
 
 
 def failure_event(store, run, leg, attempt, item="command-1"):

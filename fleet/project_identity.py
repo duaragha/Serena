@@ -5,6 +5,7 @@ import hashlib
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -39,12 +40,34 @@ def canonical_remote(value: str) -> str | None:
     return "git:" + host.lower() + "/" + (path.lower() if host.lower() == "github.com" else path)
 
 
+def _windows_git_metadata(command: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    # Git for Windows can block inspecting redirected pipe handles before its
+    # command starts. Disk handles also keep timeout cleanup out of pipe reads.
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        result = subprocess.run(
+            command, stdout=stdout, stderr=stderr, stdin=subprocess.DEVNULL,
+            timeout=5, env=env,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        def read_text(stream):
+            stream.seek(0)
+            return stream.read().decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+
+        return subprocess.CompletedProcess(
+            result.args, result.returncode,
+            read_text(stdout), read_text(stderr),
+        )
+
+
 def repository_identity(cwd: str, *, fallback: str | None = None) -> str:
     root = Path(cwd).resolve()
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
     def git(*args):
-        result = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
+        command = ["git", "-C", str(root), *args]
+        if os.name == "nt":
+            return _windows_git_metadata(command, env)
+        result = subprocess.run(command, capture_output=True,
                                 stdin=subprocess.DEVNULL, text=True, timeout=5, env=env,
                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         return result
