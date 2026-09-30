@@ -286,9 +286,14 @@ def _read_codex_capacity(
 def _read_codex_app_server(environ: Mapping[str, str]) -> dict[str, Any] | None:
     """Read effective Codex rate limits without starting a model turn."""
 
-    configured = str(environ.get("SERENA_FLEET_CODEX_BIN") or "").strip()
-    binary = str(Path(configured).expanduser()) if configured else shutil.which("codex")
+    from fleet.workers import _is_windows, provider_binary
+
+    binary = provider_binary("codex", environ)
     if not binary:
+        return None
+    if _is_windows() and Path(binary).suffix.lower() in {".cmd", ".bat", ".ps1"}:
+        # An unknown shim cannot supply a bounded native RPC observation.
+        # Its descendants may retain our pipes after wrapper termination.
         return None
     timeout = _positive_setting(
         environ,

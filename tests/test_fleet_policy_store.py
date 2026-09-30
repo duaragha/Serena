@@ -1295,6 +1295,7 @@ def test_delete_run_requires_terminal_state_and_cascades_all_records(tmp_path):
     assert all(item["run_id"] != run["run_id"] for item in store.list_runs())
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group signalling; Windows uses job objects")
 def test_stale_recovery_terminates_only_token_matched_worker(
     tmp_path,
     monkeypatch,

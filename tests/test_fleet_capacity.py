@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
@@ -293,3 +294,86 @@ def test_an_unknown_provider_is_not_quietly_handed_claude(monkeypatch):
 
     assert provider_binary("gpt-6-astra") is None
     assert provider_binary("") is None
+
+
+def test_codex_capacity_rpc_launches_the_shared_worker_resolver_result(tmp_path, monkeypatch):
+    from fleet import capacity, workers
+
+    environ = {"SERENA_FLEET_CODEX_BIN": str(tmp_path / "npm" / "codex.cmd")}
+    native = str(tmp_path / "npm" / "native" / "codex.exe")
+    resolved = []
+    spawned = []
+    written = []
+    limits = {"primary": {"usedPercent": 17, "resetsAt": NOW + 900}}
+
+    def resolve(provider, source):
+        resolved.append((provider, source))
+        return native
+
+    class Input(io.StringIO):
+        def write(self, text):
+            written.append(text)
+            return super().write(text)
+
+    class Process:
+        def __init__(self):
+            self.stdin = Input()
+            self.stdout = io.StringIO(json.dumps({"id": 2, "result": {"rateLimits": limits}}) + "\n")
+
+        def poll(self):
+            return 0
+
+        def wait(self, **_kwargs):
+            return 0
+
+    process = Process()
+
+    def spawn(command, **kwargs):
+        spawned.append((command, kwargs))
+        return process
+
+    monkeypatch.setattr(workers, "provider_binary", resolve)
+    monkeypatch.setattr(capacity.subprocess, "Popen", spawn)
+
+    assert capacity._read_codex_app_server(environ) == limits
+    assert resolved == [("codex", environ)]
+    assert spawned[0][0] == [native, "app-server", "--listen", "stdio://"]
+    messages = [json.loads(line) for line in "".join(written).splitlines()]
+    assert [message["method"] for message in messages] == [
+        "initialize", "initialized", "account/rateLimits/read"
+    ]
+    assert process.stdin.closed
+    assert process.stdout.closed
+
+
+def test_codex_capacity_rpc_does_not_spawn_when_shared_resolver_finds_no_binary(monkeypatch):
+    from fleet import capacity, workers
+
+    monkeypatch.setattr(workers, "provider_binary", lambda *_args: None)
+
+    def unexpected_spawn(*_args, **_kwargs):
+        raise AssertionError("A missing Codex binary must not start a capacity process")
+
+    monkeypatch.setattr(capacity.subprocess, "Popen", unexpected_spawn)
+
+    assert capacity._read_codex_app_server({}) is None
+
+
+@pytest.mark.parametrize("suffix", [".cmd", ".bat", ".ps1"])
+def test_unresolved_windows_codex_shim_never_spawns_and_capacity_stays_unknown(tmp_path, monkeypatch, suffix):
+    from fleet import capacity, workers
+
+    shim = str(tmp_path / f"codex{suffix}")
+    environ = {"SERENA_FLEET_CODEX_SESSIONS_DIR": str(tmp_path / "no-sessions")}
+    monkeypatch.setattr(workers, "provider_binary", lambda *_args: shim)
+    monkeypatch.setattr(workers, "_is_windows", lambda: True)
+
+    def unexpected_spawn(*_args, **_kwargs):
+        raise AssertionError("An unresolved Windows shim must not create a capacity process")
+
+    monkeypatch.setattr(capacity.subprocess, "Popen", unexpected_spawn)
+
+    assert capacity._read_codex_app_server(environ) is None
+    state = capacity._read_codex_capacity(NOW, environ)
+    assert state.status == "unknown"
+    assert state.usable is True

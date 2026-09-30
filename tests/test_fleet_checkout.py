@@ -173,7 +173,9 @@ def test_database_learning_identity_rejects_foreign_or_pending_checkout_receipts
 
 @pytest.mark.parametrize("checkout_state", ["ready", "pending"])
 def test_database_learning_identity_preserves_checkout_after_source_deletion(tmp_path, checkout_state):
+    import os
     import shutil
+    import stat
 
     from fleet.project_identity import project_identity, repository_identity, run_identity
 
@@ -183,7 +185,16 @@ def test_database_learning_identity_preserves_checkout_after_source_deletion(tmp
     if checkout_state == "pending":
         with store._connect() as db:
             db.execute("UPDATE fleet_run_checkouts SET state='pending' WHERE run_id=?", (run["run_id"],))
-    shutil.rmtree(root)
+    def remove_readonly(function, path, exc_info):
+        # Git object files are read-only on Windows; remove this disposable
+        # source repository completely, without weakening the identity check.
+        if not isinstance(exc_info[1], PermissionError):
+            raise exc_info[1]
+        os.chmod(path, os.stat(path).st_mode | stat.S_IWRITE)
+        function(path)
+
+    shutil.rmtree(root, onerror=remove_readonly)
+    assert not root.exists()
     with store._connect() as db:
         assert run_identity(db, run["run_id"]) == expected
     if checkout_state == "ready":
