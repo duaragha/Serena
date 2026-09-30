@@ -91,7 +91,7 @@ def _attached_task_list() -> str:
     from memory import store
 
     lines: list[str] = []
-    for state in ("running", "ready", "needs_triage", "blocked", "backlog"):
+    for state in ("running", "review", "ready", "needs_triage", "blocked", "backlog"):
         try:
             rows = store.tasks_in_state(state)
         except Exception:
@@ -721,6 +721,29 @@ def _auto_retry_transient(task: dict[str, Any], run_id: str, reason: str, headli
     return True
 
 
+def _review_batch(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bound PR reads while rotating past PRs that remain open for weeks."""
+
+    import sqlite3
+    import time
+    from contextlib import closing
+
+    from memory import store
+
+    if not tasks:
+        return []
+    path = store.MEMORY_DIR / ".fleet-dispatch.sqlite3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path, timeout=5)) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS pr_reviews (task_id INTEGER PRIMARY KEY, checked_at REAL)")
+        checked = dict(db.execute("SELECT task_id, checked_at FROM pr_reviews"))
+        batch = sorted(tasks, key=lambda task: (checked.get(task["id"], 0), task["id"]))[:MAX_RECONCILE_PER_TICK]
+        with db:
+            db.executemany("INSERT OR REPLACE INTO pr_reviews VALUES (?, ?)",
+                           [(task["id"], time.time()) for task in batch])
+    return batch
+
+
 def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
     """Close finished dispatched runs: deliver, record, and tell him.
 
@@ -738,7 +761,8 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
     if _configuration(payload):
         return ActionOutcome(False, "serena.fleet.reconcile accepts no schedule payload")
     closed: list[dict[str, Any]] = []
-    for task in store.tasks_in_state("running", "review"):
+    tasks = store.tasks_in_state("running") + _review_batch(store.tasks_in_state("review"))
+    for task in tasks:
         if len(closed) >= MAX_RECONCILE_PER_TICK:
             break
         run_id = str(task.get("run_id") or "")

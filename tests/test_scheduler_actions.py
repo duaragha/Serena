@@ -565,6 +565,7 @@ def test_real_queue_dispatches_highest_priority_and_preserves_thin_briefs(real_f
 
 def test_routines_brief_dispatches_to_locket_without_a_named_project(real_fleet_queue, tmp_path, monkeypatch):
     import subprocess
+
     from core import coding_job_contract
 
     queue = real_fleet_queue

@@ -18,6 +18,12 @@ _DOMAINS = {
 }
 
 
+def named_task_projects(text: str) -> set[str]:
+    """Recognized explicit names, including conflicts that must stay visible."""
+
+    return {name for name, pattern in _NAMES.items() if re.search(pattern, text, re.I)}
+
+
 def infer_task_project(text: str, *, domains: bool = True) -> str:
     """Return one recognized name; ambiguous briefs keep their question.
 
@@ -25,7 +31,7 @@ def infer_task_project(text: str, *, domains: bool = True) -> str:
     they never make a vague brief actionable or authorize a new operation.
     """
 
-    named = {name for name, pattern in _NAMES.items() if re.search(pattern, text, re.I)}
+    named = named_task_projects(text)
     if named:
         return next(iter(named)) if len(named) == 1 else ""
     matches = ({name for name, pattern in _DOMAINS.items() if re.search(pattern, text, re.I)}

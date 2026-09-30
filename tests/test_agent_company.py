@@ -333,6 +333,7 @@ def test_deliver_reports_no_changes_without_pushing(github, monkeypatch):
 @pytest.mark.parametrize("state,status", [("OPEN", "pr"), ("MERGED", "merged"), ("CLOSED", "closed")])
 def test_review_reads_the_existing_pr_without_pushing(github, monkeypatch, state, status):
     import json
+
     from core import agent_checkouts
 
     checkout = agent_checkouts.prepare(github.synced, 3, projects_root=github.projects)
@@ -408,6 +409,7 @@ def test_reconcile_delivers_notifies_and_asks_once(queue, monkeypatch):
     assert store.get_memory(task["id"])["state"] == "review"
     assert store.get_memory(task["id"])["result"] == "pr: https://pr/1"
     assert f"[{task['id']}]" in store.format_tasks()
+    assert f"#{task['id']} [review]" in scheduler_actions._attached_task_list()
     from core import phone_line
     assert f"#{task['id']} PR awaiting merge" in phone_line._status_text()
     cleanup.assert_not_called()
@@ -450,6 +452,29 @@ def test_a_closed_unmerged_pr_blocks_the_task_and_keeps_its_checkout(queue, monk
     assert store.get_memory(task["id"])["state"] == "blocked"
     assert store.get_memory(task["id"])["result"] == "closed: https://pr/4"
     cleanup.assert_not_called()
+
+
+def test_pr_review_polling_is_bounded_and_rotates_past_open_prs(queue, monkeypatch):
+    from core import agent_checkouts, scheduler_actions
+    from fleet import supervisor
+
+    for index in range(5):
+        task = store.enqueue_task(BRIEF, source_id=f"imessage:review-{index}")
+        claim = store.claim_next_task("d")
+        run_id = f"run-{task['id']}"
+        assert store.mark_task_running(task["id"], "d", claim["lease_token"], run_id)
+        assert store.finish_task_run(task["id"], run_id, "review", f"pr: https://pr/{task['id']}")
+    monkeypatch.setattr(supervisor, "get_run", lambda run_id: {"state": "completed", "cwd": f"/a/{run_id}"})
+    monkeypatch.setattr(agent_checkouts, "locate", lambda path: SimpleNamespace(path=Path(path)))
+    review = Mock(return_value=agent_checkouts.Delivery("pr", url="https://pr/1"))
+    monkeypatch.setattr(agent_checkouts, "review_delivery", review)
+    action = scheduler_actions.reconcile_fleet_tasks
+    action({})
+    assert review.call_count == scheduler_actions.MAX_RECONCILE_PER_TICK
+    action({})
+    assert review.call_count == 2 * scheduler_actions.MAX_RECONCILE_PER_TICK
+    assert len({str(call.args[0].path) for call in review.call_args_list}) == 5
+    assert len(store.tasks_in_state("review")) == 5
 
 
 def test_reconcile_keeps_a_failed_run_for_inspection(queue, monkeypatch):

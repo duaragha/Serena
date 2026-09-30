@@ -498,3 +498,14 @@ def test_dispatch_triage_bounce_clears_a_previous_question_receipt(queue):
     assert bounced["asked_at"] == ""
     assert bounced["result"] == "which repo? state: done"
     assert store.mark_task_asked(task["id"])
+
+
+def test_a_mixed_project_answer_does_not_silently_reuse_an_existing_hint(queue):
+    task = store.enqueue_task("fix it", project_hint="locket")
+    assert store.mark_task_asked(task["id"])
+    answered = store.answer_triage(task["id"], "it's in both locket and unified")
+    assert (answered["state"], answered["project_hint"], answered["asked_at"]) == (
+        "needs_triage", "", "")
+    assert "multiple projects" in answered["result"]
+    assert store.claim_next_task("dispatcher") is None
+    assert store.answer_triage(task["id"], "unified")["project_hint"] == "unified"
