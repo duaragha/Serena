@@ -361,6 +361,54 @@ def test_she_marks_work_with_a_line_prefix(monkeypatch):
     assert phone_intent.read("anything") is None
 
 
+def test_answer_intent_keeps_his_words_instead_of_model_supplied_details(monkeypatch):
+    from core import phone_intent
+
+    monkeypatch.setattr(phone_intent, "_endpoint", lambda: ("http://x/turn", "t"))
+    monkeypatch.setattr(phone_intent, "journal_grounding", lambda: "")
+    monkeypatch.setattr(phone_intent, "_post", lambda *a: {
+        "ok": True, "say": "answer #106: model-added details that he never supplied"})
+    assert phone_intent.read("it's in locket", queue="#106 waiting on you") == (
+        "answer", {"task_id": 106, "answer": "it's in locket"})
+    envelope = phone_intent.envelope("it's in locket", queue="#106 waiting on you")
+    assert "answer #<task id>" in envelope and "If several waiting tasks" in envelope
+
+
+def test_conversational_answer_updates_the_waiting_task_without_retyping_or_duplication(monkeypatch, tmp_path, queue):
+    from core import phone_line
+    from memory import store
+
+    task = store.enqueue_task("fix it", source_id="imessage:original")
+    state, sent, asked = _dedicated(
+        monkeypatch, tmp_path, [_row(14, "fix the workout list in locket so exercises stay in order")],
+        brain=("answer", {"task_id": task["id"], "answer": "invented details"}))
+    report = phone_line.poll(now=1000)
+    assert [command["kind"] for command in report.commands] == ["answer"]
+    answered = store.get_memory(task["id"])
+    assert answered["state"] == "ready" and answered["project_hint"] == "locket"
+    assert "invented details" not in answered["content"]
+    assert "fix the workout list in locket" in answered["content"]
+    assert len(store.list_memories("task")) == 1
+    assert sent == [f"thanks, #{task['id']} is queued."]
+    assert phone_line.poll(now=1010).commands == []
+
+
+def test_conversational_answer_cannot_reopen_a_task_that_is_not_waiting(monkeypatch, tmp_path, queue):
+    from core import phone_line
+    from memory import store
+
+    task = store.enqueue_task("fix the workout list in locket so exercises remain in order")
+    original = store.get_memory(task["id"])["content"]
+    _state, sent, _asked = _dedicated(
+        monkeypatch, tmp_path, [_row(15, "it's in locket")],
+        brain=("answer", {"task_id": task["id"], "answer": "it's in locket"}))
+    report = phone_line.poll(now=1000)
+    assert report.commands[0]["kind"] == "say"
+    assert store.get_memory(task["id"])["content"] == original
+    assert len(store.list_memories("task")) == 1
+    assert sent == [f"#{task['id']} isn't waiting on an answer."]
+
+
 def test_triage_is_the_floor_when_her_brain_is_unreachable(monkeypatch):
     from core import phone_intent
 
