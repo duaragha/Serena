@@ -24,6 +24,19 @@ def named_task_projects(text: str) -> set[str]:
     return {name for name, pattern in _NAMES.items() if re.search(pattern, text, re.I)}
 
 
+def project_only_answer(text: str) -> bool:
+    """A project correction locates a specification; it cannot supply one."""
+
+    names = named_task_projects(text)
+    padding = {"it", "its", "s", "is", "in", "for", "on", "the", "app", "project",
+               "repo", "repository", "both", "and", "this", "that", "one", "i", "mean",
+               "meant", "yes", "no", "actually", "please"}
+    if "unified" in names:
+        padding.add("inbox")
+    words = set(re.findall(r"\b\w+\b", text.casefold()))
+    return bool(names) and not (words - names - padding)
+
+
 def infer_task_project(text: str, *, domains: bool = True) -> str:
     """Return one recognized name; ambiguous briefs keep their question.
 

@@ -508,4 +508,16 @@ def test_a_mixed_project_answer_does_not_silently_reuse_an_existing_hint(queue):
         "needs_triage", "", "")
     assert "multiple projects" in answered["result"]
     assert store.claim_next_task("dispatcher") is None
-    assert store.answer_triage(task["id"], "unified")["project_hint"] == "unified"
+    corrected = store.answer_triage(task["id"], "unified")
+    assert (corrected["state"], corrected["project_hint"]) == ("needs_triage", "unified")
+    assert store.answer_triage(task["id"], "it's in locket")["state"] == "needs_triage"
+
+
+def test_project_only_correction_keeps_genuine_earlier_specification(queue):
+    task = store.enqueue_task("fix it")
+    answered = store.answer_triage(task["id"], "fix dashboard charts so values refresh after selecting another day")
+    claim = store.claim_next_task("dispatcher")
+    assert store.release_task_claim(task["id"], "dispatcher", claim["lease_token"], state="needs_triage")
+    corrected = store.answer_triage(task["id"], "it's in locket")
+    assert answered["state"] == corrected["state"] == "ready"
+    assert corrected["project_hint"] == "locket"

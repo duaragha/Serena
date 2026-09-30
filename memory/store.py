@@ -450,14 +450,24 @@ def answer_triage(task_id: int, answer: str) -> dict | None:
     if not row or row["type"] != "task" or row["state"] != "needs_triage":
         return None
     brief = _task_text(f"{row['content']}\n\nClarification: {answer}", "text", 6000)
-    from core.task_projects import infer_task_project, named_task_projects
+    from core.task_projects import infer_task_project, named_task_projects, project_only_answer
     conflicting = len(named_task_projects(answer)) > 1
     project = ("" if conflicting else
                (infer_task_project(answer, domains=False) or row.get("project_hint")
                 or infer_task_project(brief, domains=False)))
     substantial = len(re.findall(r"\b\w+\b", answer)) >= 3
+    # Question labels and prior project-only replies are routing history, not
+    # specification words. Keep genuine earlier details when his final reply
+    # only corrects the project.
+    parts = row["content"].split("\n\nClarification: ")
+    specification = "\n".join([parts[0], *(part for part in parts[1:]
+                                           if not project_only_answer(part))])
+    project_only = project_only_answer(answer)
+    if not project_only:
+        specification += "\n" + answer
     state = ("needs_triage" if conflicting else
-             "ready" if substantial else classify_task(brief[:4000], project or None))
+             "ready" if substantial and not project_only else
+             classify_task(specification[:4000], project or None))
     new_path = _write_file(task_id, "task", brief, created=row["created_at"], snooze=row["snooze_until"],
                 locket_id=row["locket_id"], source_session_id=row["source_session_id"],
                 source_agent=row["source_agent"], source_title=row["source_title"],
