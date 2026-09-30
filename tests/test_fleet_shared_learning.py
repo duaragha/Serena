@@ -1,7 +1,10 @@
 """Cross-run lifecycle proof using private stores and synthetic repositories."""
 import json
+import os
 import shutil
+import stat
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -25,6 +28,19 @@ def repo(path, remote="https://github.com/example/shared.git"):
         subprocess.run(["git", "-C", str(path), "config", "remote.origin.url", remote], check=True)
     (path / "rules.txt").write_text("Build generated declarations before typecheck.\n", encoding="utf-8")
     return path
+
+
+def remove_test_repo(path):
+    def remove_readonly(function, entry, exc_info):
+        # Git object files are read-only on Windows; remove this disposable
+        # repository completely, preserving the source-deletion identity checks.
+        if not isinstance(exc_info[1], PermissionError):
+            raise exc_info[1]
+        os.chmod(entry, os.stat(entry).st_mode | stat.S_IWRITE)
+        function(entry)
+
+    shutil.rmtree(path, onerror=remove_readonly)
+    assert not path.exists()
 
 
 def run_at(store, path, task="Repair missing generated declarations before typecheck", worker_count=2):
@@ -61,6 +77,27 @@ def test_identity(tmp_path):
     sibling.mkdir()
     (sibling / ".git").write_text("gitdir: " + str(a / ".git") + "\n", encoding="utf-8")
     assert repository_identity(str(a)) == repository_identity(str(sibling))
+
+
+def test_windows_identity_metadata_uses_files_instead_of_protocol_pipes():
+    from fleet.project_identity import _windows_git_metadata
+
+    # This real stand-in stalls if either output is a pipe, reproducing the
+    # metadata transport failure without launching a provider or touching Git.
+    script = """
+import os, stat, sys, time
+if any(stat.S_ISFIFO(os.fstat(fd).st_mode) for fd in (1, 2)):
+    time.sleep(30)
+assert all(stat.S_ISREG(os.fstat(fd).st_mode) for fd in (1, 2))
+assert sys.stdin.read() == ""
+print("git metadata")
+print("git diagnostic", file=sys.stderr)
+"""
+    result = _windows_git_metadata([sys.executable, "-c", script], dict(os.environ))
+
+    assert result.returncode == 0
+    assert result.stdout == "git metadata\n"
+    assert result.stderr == "git diagnostic\n"
 
 
 def failure_event(store, run, leg, attempt, item="command-1"):
@@ -283,7 +320,7 @@ def test_backfill_after_source_checkout_deleted(shared, monkeypatch, tmp_path):
     from pathlib import Path
     source = Path(a[0]["cwd"]).resolve()
     assert source.is_relative_to(tmp_path.resolve())
-    shutil.rmtree(source)
+    remove_test_repo(source)
     restarted = FleetStore(store.path)
     assert len(incidents.recall(restarted, b[0], b[2]["attempt_id"])) == 1
     incidents.reconcile(restarted)
@@ -376,7 +413,7 @@ def test_event_project_survives_remote_change_outage_and_cleanup(shared, monkeyp
                            leg_id=a[1]["leg_id"], attempt_id=a[2]["attempt_id"])
     source = Path(a[0]["cwd"]).resolve()
     assert source.is_relative_to(tmp_path.resolve())
-    shutil.rmtree(source)
+    remove_test_repo(source)
     restarted = FleetStore(store.path)
     old = incidents.recall(restarted, b[0], b[2]["attempt_id"])
     new = incidents.recall(restarted, c[0], c[2]["attempt_id"])
@@ -435,7 +472,7 @@ def test_findings_and_verified_lessons_revalidate_source(shared, tmp_path, sourc
     if source_change.endswith("deleted"):
         source = Path(a[0]["cwd"]).resolve()
         assert source.is_relative_to(tmp_path.resolve())
-        shutil.rmtree(source)
+        remove_test_repo(source)
     restarted = FleetStore(store.path)
     found = recall(PeerStore(restarted), b[3])
     lessons = FleetLearning(restarted).retrieve(b[0], "after-change")

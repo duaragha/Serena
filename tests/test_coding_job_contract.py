@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -48,6 +50,35 @@ def _repo(path):
         "baseline",
     )
     return path.resolve()
+
+
+def test_repository_git_cannot_consume_the_callers_protocol_stdin():
+    # Run the production helper inside a process receiving protocol input. The
+    # disposable Git stand-in reads stdin, exposing inheritance on either OS.
+    script = """
+import subprocess, sys
+from pathlib import Path
+from core import coding_job_contract as contract
+original_run = subprocess.run
+def fixture_git(argv, *args, **kwargs):
+    assert argv[0] == "git"
+    command = [sys.executable, "-c", "import json, sys; print(json.dumps(sys.stdin.read()))"]
+    return original_run(command, *args, **kwargs)
+subprocess.run = fixture_git
+result = contract._git(Path.cwd(), "rev-parse", "--show-toplevel")
+print(result.stdout.strip())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        input='{"jsonrpc":"2.0","method":"tools/call"}\n',
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+
+    assert json.loads(result.stdout) == ""
 
 
 def test_repository_root_requires_git_and_never_falls_back_to_home(tmp_path) -> None:

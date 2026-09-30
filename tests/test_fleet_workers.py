@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
+import sys
 import time
 from pathlib import Path
 
+import psutil
 import pytest
 
 from core.fleet_workers import (
@@ -18,6 +21,35 @@ from core.fleet_workers import (
     runtime_doctor,
     worker_command,
 )
+
+
+_PYTHON_FIXTURE_BINARIES: set[str] = set()
+
+
+@pytest.fixture(autouse=True)
+def _launch_python_fixture_binaries(monkeypatch):
+    """Keep native process/pipe coverage without relying on Unix shebangs."""
+    import fleet.workers as workers
+
+    _PYTHON_FIXTURE_BINARIES.clear()
+    original_command = workers.worker_command
+    original_run = subprocess.run
+
+    def python_command(argv):
+        if argv and str(argv[0]) in _PYTHON_FIXTURE_BINARIES:
+            return [sys.executable, *argv]
+        return argv
+
+    def command(request, **kwargs):
+        return python_command(original_command(request, **kwargs))
+
+    def probe(argv, *args, **kwargs):
+        return original_run(python_command(argv), *args, **kwargs)
+
+    monkeypatch.setattr(workers, "worker_command", command)
+    monkeypatch.setattr(subprocess, "run", probe)
+    yield
+    _PYTHON_FIXTURE_BINARIES.clear()
 
 
 def _request(
@@ -48,6 +80,7 @@ def _request(
 def _executable(path: Path, source: str) -> Path:
     path.write_text(source, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    _PYTHON_FIXTURE_BINARIES.add(str(path))
     return path
 
 
@@ -86,27 +119,37 @@ raise SystemExit(1)
     assert report["ready_providers"] == ["codex"]
 
 
-def test_worker_argv_isolated_from_nested_fleet_and_user_mcp(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform_name", ["posix", "nt"])
+def test_worker_argv_isolated_from_nested_fleet_and_user_mcp(tmp_path, monkeypatch, platform_name):
+    import fleet.workers as workers
+
+    monkeypatch.setattr(workers, "_is_windows", lambda: platform_name == "nt")
     monkeypatch.setenv("SERENA_FLEET_CODEX_BIN", "/opt/bin/codex")
     monkeypatch.setenv("SERENA_FLEET_CLAUDE_BIN", "/opt/bin/claude")
     # No read catalog on disk, so every leg falls back to zero MCP.
     monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "state"))
 
     codex = worker_command(_request(tmp_path, "codex", access_mode="write"))
-    assert codex[:2] == ["/opt/bin/codex", "exec"]
+    assert codex[:2] == [str(Path("/opt/bin/codex")), "exec"]
     assert "--ignore-user-config" in codex
     assert codex[codex.index("--disable") + 1] == "multi_agent"
-    assert codex[codex.index("--sandbox") + 1] == "workspace-write"
+    assert codex[codex.index("--sandbox") + 1] == (
+        "danger-full-access" if platform_name == "nt" else "workspace-write"
+    )
     assert not any("mcp_servers" in value for value in codex)
     assert codex[-3:] == ["-C", str(tmp_path), "-"]
 
     codex_read_only = worker_command(_request(tmp_path, "codex"))
-    assert 'permissions.fleet_test_read.extends=":read-only"' in codex_read_only
-    assert "--sandbox" not in codex_read_only
+    if platform_name == "nt":
+        assert codex_read_only[codex_read_only.index("--sandbox") + 1] == "danger-full-access"
+        assert not any("permissions.fleet_test_read" in value for value in codex_read_only)
+    else:
+        assert 'permissions.fleet_test_read.extends=":read-only"' in codex_read_only
+        assert "--sandbox" not in codex_read_only
     assert codex_read_only[codex_read_only.index("--enable") + 1] == "standalone_web_search"
 
     claude = worker_command(_request(tmp_path, "claude"), session_id="sid-1")
-    assert claude[0] == "/opt/bin/claude"
+    assert claude[0] == str(Path("/opt/bin/claude"))
     assert "--safe-mode" in claude
     assert "--strict-mcp-config" in claude
     assert claude[claude.index("--mcp-config") + 1] == '{"mcpServers":{}}'
@@ -222,7 +265,11 @@ def test_coding_research_phase_enables_native_web_tools_for_both_providers(
     assert "WebSearch" not in review_tools and "WebFetch" not in review_tools
 
 
-def test_codex_resume_places_subcommand_after_enforced_outer_options(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform_name", ["posix", "nt"])
+def test_codex_resume_places_subcommand_after_enforced_outer_options(tmp_path, monkeypatch, platform_name):
+    import fleet.workers as workers
+
+    monkeypatch.setattr(workers, "_is_windows", lambda: platform_name == "nt")
     monkeypatch.setenv("SERENA_FLEET_CODEX_BIN", "/opt/bin/codex")
     request = _request(tmp_path, "codex")
     request = WorkerRequest(
@@ -235,7 +282,11 @@ def test_codex_resume_places_subcommand_after_enforced_outer_options(tmp_path, m
     )
     command = worker_command(request)
     assert command[-3:] == ["resume", "codex-session-1", "-"]
-    assert command.index('default_permissions="fleet_test_read"') < command.index("resume")
+    if platform_name == "nt":
+        assert command.index("--sandbox") < command.index("resume")
+        assert command[command.index("--sandbox") + 1] == "danger-full-access"
+    else:
+        assert command.index('default_permissions="fleet_test_read"') < command.index("resume")
     assert command[command.index("-m") + 1] == "gpt-6.1-sol"
     assert 'model_reasoning_effort="xhigh"' in command
 
@@ -300,6 +351,9 @@ print(json.dumps({"type":"result","session_id":sid,"result":"claude answer","is_
     assert codex.actual_model == "gpt-6.1-sol"
     assert codex.actual_effort == "xhigh"
     assert Path(codex.event_log_path).is_file()
+    assert next(payload["command"] for event, payload in codex_events if event == "process.started")[:2] == [
+        sys.executable, str(codex_bin)
+    ]
     assert any(
         payload.get("effort") == "xhigh"
         for event, payload in codex_events
@@ -315,6 +369,9 @@ print(json.dumps({"type":"result","session_id":sid,"result":"claude answer","is_
     assert claude.ok is True
     assert claude.output_text == "claude answer"
     assert claude.actual_model == "claude-opus-5-5"
+    assert next(payload["command"] for event, payload in claude_events if event == "process.started")[:2] == [
+        sys.executable, str(claude_bin)
+    ]
     assert sum(event == "session.started" for event, _ in claude_events) == 1
     assert any(
         payload.get("effort") == "xhigh"
@@ -330,11 +387,15 @@ def test_claude_receives_prompt_before_slow_session_surface_callback(
     claude_bin = _executable(
         tmp_path / "prompt-deadline-claude",
         """#!/usr/bin/env python3
-import json, select, sys
-if not select.select([sys.stdin], [], [], 0.25)[0]:
+import json, sys, threading
+received = []
+reader = threading.Thread(target=lambda: received.append(sys.stdin.read()), daemon=True)
+reader.start()
+reader.join(0.25)
+if reader.is_alive():
     print("prompt was not delivered before the deadline", file=sys.stderr)
     raise SystemExit(9)
-prompt = sys.stdin.read()
+prompt = received[0]
 if "do the controlled test" not in prompt:
     print("wrong prompt", file=sys.stderr)
     raise SystemExit(10)
@@ -386,7 +447,10 @@ time.sleep(30)
     assert time.monotonic() - started < 5
 
 
-@pytest.mark.parametrize("ignore_term", [False, True])
+@pytest.mark.parametrize("ignore_term", [False, pytest.param(
+    True,
+    marks=pytest.mark.skipif(os.name == "nt", reason="Windows Job termination does not send POSIX SIGTERM"),
+)])
 def test_worker_exit_is_not_pinned_by_a_descendant_inheriting_output_pipes(
     tmp_path, monkeypatch, ignore_term
 ):
@@ -593,8 +657,7 @@ time.sleep(30)
             on_event=explode,
         )
     assert len(pids) == 1
-    with pytest.raises(ProcessLookupError):
-        os.kill(pids[0], 0)
+    assert not psutil.pid_exists(pids[0])
 
 
 def test_oversized_tool_event_is_compacted_without_killing_claude(
@@ -696,6 +759,98 @@ def test_codex_uses_full_access_only_on_windows(tmp_path, monkeypatch, platform_
         argv = worker_command(_request(tmp_path, "codex", access_mode=mode))
         full = "--sandbox" in argv and argv[argv.index("--sandbox") + 1] == "danger-full-access"
         assert full is expected
+
+
+@pytest.mark.parametrize("machine,package_arch,native_arch", [
+    ("AMD64", "x64", "x86_64"),
+    ("ARM64", "arm64", "aarch64"),
+])
+@pytest.mark.parametrize("layout", ["nested_optional", "hoisted_optional", "legacy_vendor"])
+@pytest.mark.parametrize("use_override", [False, True])
+@pytest.mark.parametrize("install_scope", ["global", "project_local"])
+def test_windows_codex_npm_shim_resolves_matching_native_binary(
+    tmp_path, monkeypatch, machine, package_arch, native_arch, layout, use_override, install_scope
+):
+    import platform
+
+    import fleet.workers as workers
+
+    monkeypatch.setattr(workers, "_is_windows", lambda: True)
+    monkeypatch.setattr(platform, "machine", lambda: machine)
+    shim_directory = tmp_path / "npm" if install_scope == "global" else tmp_path / "project/node_modules/.bin"
+    shim = shim_directory / "codex.cmd"
+    shim.parent.mkdir(parents=True)
+    shim.write_text("@echo off\n", encoding="utf-8")
+    modules = tmp_path / "npm/node_modules" if install_scope == "global" else tmp_path / "project/node_modules"
+    packages = modules / "@openai"
+    codex_package = packages / "codex"
+    if layout == "nested_optional":
+        native_package = codex_package / "node_modules" / "@openai" / f"codex-win32-{package_arch}"
+    elif layout == "hoisted_optional":
+        native_package = packages / f"codex-win32-{package_arch}"
+    else:
+        native_package = codex_package
+    native = native_package / "vendor" / f"{native_arch}-pc-windows-msvc" / "bin" / "codex.exe"
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b"native fixture")
+    monkeypatch.setattr(workers.shutil, "which", lambda _name: str(shim))
+    environ = {"SERENA_FLEET_CODEX_BIN": str(shim)} if use_override else {}
+
+    assert workers.provider_binary("codex", environ) == str(native)
+
+
+@pytest.mark.parametrize("suffix", [".bat", ".ps1"])
+def test_windows_codex_alternate_npm_shims_resolve_native_binary(tmp_path, monkeypatch, suffix):
+    import platform
+
+    import fleet.workers as workers
+
+    monkeypatch.setattr(workers, "_is_windows", lambda: True)
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    shim = tmp_path / f"codex{suffix}"
+    native = tmp_path / "node_modules/@openai/codex/vendor/x86_64-pc-windows-msvc/bin/codex.exe"
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b"native fixture")
+
+    assert workers.provider_binary("codex", {"SERENA_FLEET_CODEX_BIN": str(shim)}) == str(native)
+
+
+@pytest.mark.parametrize("case", ["wrong_arch", "directory", "unknown_arch", "non_windows"])
+def test_codex_unresolved_or_unsupported_shim_keeps_original_diagnostic_path(tmp_path, monkeypatch, case):
+    import platform
+
+    import fleet.workers as workers
+
+    monkeypatch.setattr(workers, "_is_windows", lambda: case != "non_windows")
+    monkeypatch.setattr(platform, "machine", lambda: "unsupported" if case == "unknown_arch" else "AMD64")
+    shim = tmp_path / "codex.cmd"
+    target = "aarch64" if case == "wrong_arch" else "x86_64"
+    candidate = tmp_path / "node_modules/@openai/codex/vendor" / f"{target}-pc-windows-msvc/bin/codex.exe"
+    candidate.parent.mkdir(parents=True)
+    if case == "directory":
+        candidate.mkdir()
+    else:
+        candidate.write_bytes(b"native fixture")
+
+    assert workers.provider_binary("codex", {"SERENA_FLEET_CODEX_BIN": str(shim)}) == str(shim)
+
+
+def test_windows_native_override_and_other_provider_shims_are_preserved(tmp_path, monkeypatch):
+    import platform
+
+    import fleet.workers as workers
+
+    monkeypatch.setattr(workers, "_is_windows", lambda: True)
+    monkeypatch.setattr(platform, "machine", lambda: "AMD64")
+    native = tmp_path / "explicit-native" / "codex.exe"
+    shim = tmp_path / "codex.cmd"
+    candidate = tmp_path / "node_modules/@openai/codex/vendor/x86_64-pc-windows-msvc/bin/codex.exe"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"native fixture")
+    monkeypatch.setattr(workers.shutil, "which", lambda _name: str(shim))
+
+    assert workers.provider_binary("codex", {"SERENA_FLEET_CODEX_BIN": str(native)}) == str(native)
+    assert workers.provider_binary("claude", {"SERENA_FLEET_CLAUDE_BIN": str(shim)}) == str(shim)
 
 
 # ---- a research leg must be permitted the tools its contract requires ------

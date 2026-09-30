@@ -11,6 +11,30 @@ const catalog = require('../config/promotion-features.json');
 const root = path.resolve(__dirname, '..');
 const git = (args, cwd = root) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 
+test('Fleet routing requires identity while identity remains independently selectable', () => {
+  const routing = catalog.features.find(f => f.id === 'fleet-model-routing');
+  const identity = catalog.features.find(f => f.id === 'fleet-checkout-identity');
+  assert.deepEqual(routing.requires, [identity.id]);
+  assert.deepEqual(identity.requires, []);
+  assert.ok(catalog.features.indexOf(identity) < catalog.features.indexOf(routing));
+  assert.ok(routing.paths.every(file => !identity.paths.includes(file)));
+  assert.throws(() => selection(catalog, [routing.id], [routing.id]), /requires/);
+  assert.deepEqual(selection(catalog, [identity.id], [identity.id]).added.map(f => f.id), [identity.id]);
+  assert.deepEqual(selection(catalog, [routing.id, identity.id], [routing.id, identity.id]).added.map(f => f.id),
+    [identity.id, routing.id]);
+  assert.deepEqual(selection(catalog, [routing.id], [routing.id], [identity.id]).added.map(f => f.id), [routing.id]);
+});
+
+test('feature pins and reviewed bases remain in the promotion source history', () => {
+  const source = git(['rev-parse', 'HEAD']);
+  for (const feature of catalog.features) {
+    assert.doesNotThrow(() => git(['merge-base', '--is-ancestor', feature.commit, source]),
+      `${feature.id} lost its source ancestry; preserve the pinned commit when merging`);
+    if (feature.base) assert.doesNotThrow(() => git(['merge-base', '--is-ancestor', feature.base, feature.commit]),
+      `${feature.id} has a reviewed base outside its feature history`);
+  }
+});
+
 function historyFixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'serena-promotion-history-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

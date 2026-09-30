@@ -1392,6 +1392,40 @@ def _codex_sandbox(access_mode: str) -> str:
     return "workspace-write" if access_mode == "write" else "read-only"
 
 
+def _windows_codex_native(binary: str) -> str:
+    """Use npm's matching native executable for direct Windows process launch.
+
+    A batch shim cannot run through CreateProcessW. Its subprocess descendants
+    can also retain capacity-probe pipes after the shim has been terminated.
+    Resolve only known vendor layouts next to that installation; preserve an
+    explicit native path or an unrecognized installation for normal diagnostics.
+    """
+    if not _is_windows() or Path(binary).suffix.lower() not in {".cmd", ".bat", ".ps1"}:
+        return binary
+    import platform
+
+    architecture = {
+        "amd64": ("x64", "x86_64"), "x86_64": ("x64", "x86_64"),
+        "arm64": ("arm64", "aarch64"), "aarch64": ("arm64", "aarch64"),
+    }.get(platform.machine().lower())
+    if architecture is None:
+        return binary
+    package_arch, native_arch = architecture
+    shim_directory = Path(binary).parent
+    if shim_directory.name.lower() == ".bin" and shim_directory.parent.name.lower() == "node_modules":
+        modules = shim_directory.parent
+    else:
+        modules = shim_directory / "node_modules"
+    package = modules / "@openai" / "codex"
+    vendor = Path("vendor") / f"{native_arch}-pc-windows-msvc" / "bin" / "codex.exe"
+    candidates = (
+        package / "node_modules" / "@openai" / f"codex-win32-{package_arch}" / vendor,
+        package.parent / f"codex-win32-{package_arch}" / vendor,
+        package / vendor,
+    )
+    return next((str(path) for path in candidates if path.is_file()), binary)
+
+
 def provider_binary(provider: str, environ: Mapping[str, str] | None = None) -> str | None:
     """Where this provider's CLI is, or None if this machine has not got it.
 
@@ -1408,10 +1442,11 @@ def provider_binary(provider: str, environ: Mapping[str, str] | None = None) -> 
         # An explicit override is an operator statement about this machine and
         # is taken at face value, including by the tests that build argv
         # without installing anything.
-        return str(Path(override).expanduser())
+        binary = str(Path(override).expanduser())
+        return _windows_codex_native(binary) if provider == "codex" else binary
     found = shutil.which(provider)
     if found:
-        return found
+        return _windows_codex_native(found) if provider == "codex" else found
     home = Path.home()
     if provider == "codex":
         candidates = sorted((home / ".nvm" / "versions" / "node").glob("*/bin/codex"), reverse=True)
