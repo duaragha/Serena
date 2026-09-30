@@ -454,3 +454,47 @@ def test_his_answer_settles_triage_instead_of_being_graded_again(queue):
     assert answered["state"] == "ready"
     thin = store.enqueue_task("fix it", source_id="imessage:y")
     assert store.answer_triage(thin["id"], "yeah")["state"] == "needs_triage"
+
+
+@pytest.mark.parametrize("brief,expected", [
+    ("Fix routines so exercises keep their logged sets and reps", "locket"),
+    ("Fix whatsapp message search so inbox results load older messages", "unified"),
+    ("Fix exercise suggestions in Unified when a workout message arrives", "unified"),
+    ("Fix exercise messages in the inbox when a workout is saved", ""),
+    ("Fix search results so the dashboard shows the next page", ""),
+])
+def test_queue_project_inference_is_specific_and_rejects_mixed_domains(queue, brief, expected):
+    from core.task_projects import infer_task_project
+
+    assert infer_task_project(brief) == expected
+    task = store.enqueue_task(brief)
+    named = infer_task_project(brief, domains=False)
+    assert task["project_hint"] == named
+    assert store.get_memory(task["id"])["project_hint"] == named
+
+
+def test_project_only_answer_unsticks_a_complete_brief_but_not_a_vague_one(queue):
+    task = store.enqueue_task("Fix the dashboard charts so values refresh when selecting another day")
+    claim = store.claim_next_task("dispatcher")
+    assert store.release_task_claim(task["id"], "dispatcher", claim["lease_token"],
+                                    state="needs_triage", result="which repository?")
+    assert store.mark_task_asked(task["id"])
+    answered = store.answer_triage(task["id"], "locket")
+    assert (answered["state"], answered["project_hint"], answered["asked_at"], answered["result"]) == (
+        "ready", "locket", "", "")
+    thin = store.enqueue_task("fix it")
+    answered = store.answer_triage(thin["id"], "unified")
+    assert (answered["state"], answered["project_hint"]) == ("needs_triage", "unified")
+
+
+def test_dispatch_triage_bounce_clears_a_previous_question_receipt(queue):
+    task = store.enqueue_task(BRIEF)
+    claim = store.claim_next_task("dispatcher")
+    path = store._find_task_path(task["id"])
+    store._task_metadata(store._parse_file(path), asked_at=123)
+    assert store.release_task_claim(task["id"], "dispatcher", claim["lease_token"],
+                                    state="needs_triage", result="which repo?\nstate: done")
+    bounced = store.get_memory(task["id"])
+    assert bounced["asked_at"] == ""
+    assert bounced["result"] == "which repo? state: done"
+    assert store.mark_task_asked(task["id"])

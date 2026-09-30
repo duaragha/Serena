@@ -244,6 +244,9 @@ def enqueue_task(text: str, project_hint: str | None = None,
     """
     text = _task_text(text, "text", 4000)
     project = _task_text(project_hint, "project", 512, optional=True)
+    if not project:
+        from core.task_projects import infer_task_project
+        project = infer_task_project(text, domains=False)
     source = _task_text(source_id, "source_id", 512, optional=True)
     if not isinstance(priority, str) or priority not in TASK_PRIORITIES:
         raise ValueError("invalid task priority")
@@ -349,13 +352,18 @@ def mark_task_running(task_id: int, owner: str, token: str, run_id: str, *, now=
 
 
 @_serialized_write
-def release_task_claim(task_id: int, owner: str, token: str, *, state="ready", now=None) -> bool:
+def release_task_claim(task_id: int, owner: str, token: str, *, state="ready", result="", now=None) -> bool:
     if state not in {"ready", "blocked", "needs_triage", "done"}:
         raise ValueError("invalid task release state")
     row = _owned_task(task_id, owner, token, _moment(now))
     if not row or (row["state"] == "running" and state == "ready"):
         return False
-    _task_metadata(row, state=state, assignee="", lease_token="", lease_until="")
+    fields = {"state": state, "assignee": "", "lease_token": "", "lease_until": ""}
+    if state == "needs_triage":
+        # Dispatch found a new blocker after his first answer. The earlier
+        # question receipt must not silence this one.
+        fields.update(asked_at="", result=_flatten(str(result or ""))[:500])
+    _task_metadata(row, **fields)
     return True
 
 
@@ -442,14 +450,18 @@ def answer_triage(task_id: int, answer: str) -> dict | None:
     if not row or row["type"] != "task" or row["state"] != "needs_triage":
         return None
     brief = _task_text(f"{row['content']}\n\nClarification: {answer}", "text", 6000)
+    from core.task_projects import infer_task_project
+    project = (infer_task_project(answer, domains=False) or row.get("project_hint")
+               or infer_task_project(brief, domains=False))
     substantial = len(re.findall(r"\b\w+\b", answer)) >= 3
     state = "ready" if substantial else classify_task(brief[:4000],
-                                                     row.get("project_hint") or None)
+                                                     project or None)
     new_path = _write_file(task_id, "task", brief, created=row["created_at"], snooze=row["snooze_until"],
                 locket_id=row["locket_id"], source_session_id=row["source_session_id"],
                 source_agent=row["source_agent"], source_title=row["source_title"],
                 source_message_timestamp=row["source_message_timestamp"],
-                task_fields={"state": state})
+                task_fields={"state": state, "project_hint": project,
+                             "result": "", "asked_at": ""})
     if new_path != path:
         path.unlink(missing_ok=True)
     return _clean(_parse_file(new_path))

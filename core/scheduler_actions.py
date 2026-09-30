@@ -354,7 +354,10 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
     output = {"task_id": task_id}
 
     def hold(detail: str, *, state: str = "blocked") -> ActionOutcome:
-        released = store.release_task_claim(task_id, owner, token, state=state)
+        options = {"state": state}
+        if state == "needs_triage":
+            options["result"] = detail
+        released = store.release_task_claim(task_id, owner, token, **options)
         # "blocked" here means the dispatcher could not even open the run, on
         # something it cannot clear itself -- GitHub auth it cannot renew, a
         # repository it cannot reach. Left quiet, the task simply never starts
@@ -880,10 +883,15 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             break
         task_id = int(task["id"])
         headline = " ".join(str(task["content"]).split())[:120]
+        blocker = str(task.get("result") or "")
         question = (f"#{task_id} needs one detail before i hand it off: \"{headline}\". "
-                    f"what exactly should change, and in which project? "
-                    f"reply \"#{task_id} <details>\".")
-        if _notify_phone(question, f"task:{task_id}:question", answers_request=True):
+                    + (f"{blocker}. which project is this for? " if blocker else
+                       "what exactly should change, and in which project? ")
+                    + f"reply \"#{task_id} <details>\".")
+        key = f"task:{task_id}:question"
+        if blocker:
+            key += ":" + hashlib.sha256((blocker + str(task['content'])).encode()).hexdigest()[:12]
+        if _notify_phone(question, key, answers_request=True):
             store.mark_task_asked(task_id)
             asked.append(task_id)
     from core import sidestore_publish

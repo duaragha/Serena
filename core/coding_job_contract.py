@@ -445,6 +445,14 @@ def resolve_repository_root(
         if len(near) > 1:
             names = ", ".join(sorted(path.name for path in near))
             raise RepositoryResolutionError(f"which Git project: {names}?")
+        from core.task_projects import infer_task_project
+
+        inferred = infer_task_project(search_text)
+        matches = [root for root in canonical if root.name.casefold() == inferred]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise RepositoryResolutionError(f"which Git project: {inferred}?")
         if explicit_errors:
             raise RepositoryResolutionError(explicit_errors[0])
         raise RepositoryResolutionError(

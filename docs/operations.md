@@ -396,6 +396,13 @@ PR without repushing the branch: a merge finishes and ships the task, while a
 closure without merging blocks it. Only merged or no-change deliveries become
 `done`; finishing Fleet alone does not mean the fix reached the default branch.
 
+Queue intake recognizes explicit project names; repository resolution also
+recognizes unambiguous Locket/Unified feature vocabulary and requires one existing Git root;
+mixed or unknown targets ask for clarification. A project-only answer such as
+`#78 locket` updates the hint without making an otherwise vague brief ready.
+When dispatch discovers a repository blocker, it clears the old question receipt
+and persists the reason so the next triage question explains what is missing.
+
 ### SideStore publication
 
 Each app that ships to SideStore carries a `sidestore` object inside its

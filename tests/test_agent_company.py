@@ -100,6 +100,28 @@ def test_triage_question_is_asked_once_and_an_answer_requeues(queue):
     assert store.answer_triage(task["id"], "more") is None
 
 
+def test_dispatch_bounce_names_the_repository_blocker_and_accepts_project_only_answer(queue, monkeypatch):
+    from core import coding_job_contract, scheduler_actions
+    from fleet import supervisor
+
+    task = store.enqueue_task("Fix dashboard chart refresh so values update after selecting another day",
+                              source_id="imessage:repository")
+    monkeypatch.setattr(coding_job_contract, "resolve_repository_root",
+                        Mock(side_effect=ValueError("project name is missing")))
+    monkeypatch.setattr(supervisor, "get_run", lambda run_id: None)
+    texts = []
+    monkeypatch.setattr(scheduler_actions, "_notify_phone",
+                        lambda text, key, **kw: texts.append(text) or True)
+    assert scheduler_actions.start_ready_fleet_task({}).output["state"] == "needs_triage"
+    assert store.get_memory(task["id"])["asked_at"] == ""
+    assert scheduler_actions.reconcile_fleet_tasks({}).output["asked"] == [task["id"]]
+    assert "project name is missing" in texts[-1]
+    assert "which project is this for" in texts[-1]
+    assert scheduler_actions.reconcile_fleet_tasks({}).output["asked"] == []
+    assert store.answer_triage(task["id"], "locket")["project_hint"] == "locket"
+    assert store.get_memory(task["id"])["state"] == "ready"
+
+
 # ---- the phone line --------------------------------------------------------
 
 
