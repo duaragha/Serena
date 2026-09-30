@@ -392,8 +392,9 @@ dispatched. Notes from `chats memory add` and every pre-queue task are
 
 ### SideStore publication
 
-For Unified, add this object inside its existing `ship["duaragha/unified"]`
-rule in the PC's `~/.config/serena/dispatch.json`:
+Each app that ships to SideStore carries a `sidestore` object inside its
+`ship["<owner>/<repo>"]` rule in the PC's `~/.config/serena/dispatch.json`.
+Unified keeps its own releases repo:
 
 ```json
 "sidestore": {
@@ -402,6 +403,30 @@ rule in the PC's `~/.config/serena/dispatch.json`:
   "branch": "main"
 }
 ```
+
+Atrium, Vantage, OpenWhispr and Locket share the public
+`duaragha/sideload-releases` repo, whose one feed
+(`https://raw.githubusercontent.com/duaragha/sideload-releases/main/sidestore-source.json`)
+lists every app. The feed must already hold an entry for the bundle; the
+publisher only prepends versions. Optional rule fields:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `name` | the feed entry's `name` | Release title, notes, and IPA asset name (`<name>-<version>-ios-unsigned.ipa`) |
+| `tag_prefix` | `mobile-v` for a one-app feed, `<name>-v` for a shared feed | Release tag is `<prefix><version>`, so two apps at one version never share a release |
+
+The rule's `codemagic_app_id` and `codemagic_workflow` name the build to watch.
+Each app's `codemagic.yaml` must write `sidestore-build.json` (name, bundle,
+version, build number, commit, IPA name, SHA-256, size) and list it as an
+artifact; Unified's workflow is the reference. Versions may have three or four
+numeric parts: the four apps stamp `<product>.<BUILD_NUMBER>`, and SideStore
+checks the IPA's `CFBundleShortVersionString` against the feed exactly, so the
+string is published verbatim and only ordered numerically.
+
+`dispatch.json` is re-read on every reconcile tick, so a rule change needs no
+restart. A change to the publisher's code does: deploy it with
+`scripts/deploy-pc.ps1 -Commit <sha>` (it restarts the automation loop that runs
+reconcile; Fleet is untouched without `-IncludeFleet`).
 
 `serena.fleet.reconcile` polls Codemagic's saved build history even when no Fleet
 tasks remain open. It selects the newest successful app version on that branch
@@ -412,7 +437,7 @@ iOS fields inside the IPA before uploading only the IPA. Small manifests may be
 inside Codemagic's `_artifacts.zip`. Public notes are generic; private task briefs,
 source archives, and commit messages are never copied to the public release.
 
-Mobile releases use `mobile-v<version>` and `--latest=false` to preserve the
+Mobile releases use `<tag_prefix><version>` and `--latest=false` to preserve the
 desktop updater's latest release. Existing assets must match the build; they
 are never overwritten. A contents-API SHA check preserves concurrent feed edits,
 older builds cannot displace newer versions, and a retry resumes a partial
