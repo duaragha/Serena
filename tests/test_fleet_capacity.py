@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 import threading
 from pathlib import Path
 
@@ -28,12 +29,22 @@ def _read(
         "_read_codex_app_server",
         lambda _environ: codex_limits,
     )
-    environ = {"SERENA_FLEET_LIVE_USAGE_PATH": str(usage_path)}
+    # These fixtures exercise quota signals with installed providers. Use an
+    # existing binary without depending on which CLIs happen to be on the host;
+    # the Codex RPC is mocked above and no provider executable is launched.
+    environ = {
+        "SERENA_FLEET_LIVE_USAGE_PATH": str(usage_path),
+        **{
+            f"SERENA_FLEET_{provider}_BIN": sys.executable
+            for provider in ("CODEX", "CLAUDE", "MUSE")
+        },
+    }
     environ.update(extra or {})
     return fleet_capacity.read_fleet_capacity(now=NOW, environ=environ)
 
 
 def test_fresh_claude_exhaustion_and_codex_headroom_are_detected(tmp_path, monkeypatch):
+    monkeypatch.setattr("fleet.workers.shutil.which", lambda _name: None)
     usage = tmp_path / "live-usage.json"
     _write_usage(
         usage,
