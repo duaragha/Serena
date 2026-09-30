@@ -236,7 +236,7 @@ def test_write_legs_run_isolated_and_integrate_before_review(fleet_env, monkeypa
         ["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True
     )
     subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
-    (root / "value.txt").write_text("base\n", encoding="utf-8")
+    (root / "value.txt").write_text("base\n", encoding="utf-8", newline="\n")
     subprocess.run(["git", "-C", str(root), "add", "value.txt"], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
     monkeypatch.delenv("SERENA_FLEET_ISOLATION", raising=False)
@@ -252,7 +252,7 @@ def test_write_legs_run_isolated_and_integrate_before_review(fleet_env, monkeypa
         if request.access_mode == "write":
             assert Path(request.cwd) != root
             target = Path(request.cwd) / "value.txt"
-            target.write_text(target.read_text(encoding="utf-8") + request.phase + "\n", encoding="utf-8")
+            target.write_text(target.read_text(encoding="utf-8") + request.phase + "\n", encoding="utf-8", newline="\n")
         else:
             assert Path(request.cwd) == root
             if request.phase == "verify":
@@ -297,7 +297,7 @@ def test_four_isolated_writers_without_declared_paths_are_serialized_and_preclai
     )
     subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
     for slot in "abcd":
-        (root / f"{slot}.txt").write_text("base\n", encoding='utf-8')
+        (root / f"{slot}.txt").write_text("base\n", encoding='utf-8', newline="\n")
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
     monkeypatch.delenv("SERENA_FLEET_ISOLATION", raising=False)
@@ -322,7 +322,7 @@ def test_four_isolated_writers_without_declared_paths_are_serialized_and_preclai
             )
             slot = request.worker_key.rsplit(":", 1)[-1]
             target = Path(request.cwd) / f"{slot}.txt"
-            target.write_text(target.read_text(encoding="utf-8") + request.phase + "\n", encoding="utf-8")
+            target.write_text(target.read_text(encoding="utf-8") + request.phase + "\n", encoding="utf-8", newline="\n")
             if request.phase == "execute":
                 with lock:
                     active_execute += 1
@@ -372,8 +372,8 @@ def test_ready_integrations_drain_in_stable_worker_order(fleet_env, monkeypatch)
         ["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True
     )
     subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
-    (root / "alpha.txt").write_text("base\n", encoding="utf-8")
-    (root / "beta.txt").write_text("base\n", encoding="utf-8")
+    (root / "alpha.txt").write_text("base\n", encoding="utf-8", newline="\n")
+    (root / "beta.txt").write_text("base\n", encoding="utf-8", newline="\n")
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
     monkeypatch.delenv("SERENA_FLEET_ISOLATION", raising=False)
@@ -391,8 +391,8 @@ def test_ready_integrations_drain_in_stable_worker_order(fleet_env, monkeypatch)
     second = ensure_workspace(
         isolation, run_id="run-order", worker_key="agent:b", cwd=root
     )
-    (Path(first.path) / "alpha.txt").write_text("alpha\n", encoding="utf-8")
-    (Path(second.path) / "beta.txt").write_text("beta\n", encoding="utf-8")
+    (Path(first.path) / "alpha.txt").write_text("alpha\n", encoding="utf-8", newline="\n")
+    (Path(second.path) / "beta.txt").write_text("beta\n", encoding="utf-8", newline="\n")
     legs = [
         {
             "leg_id": "leg-agent:a",
@@ -479,7 +479,7 @@ def test_failed_earlier_writer_releases_later_pending_integration(fleet_env, mon
         ["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True
     )
     subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
-    (root / "beta.txt").write_text("base\n", encoding="utf-8")
+    (root / "beta.txt").write_text("base\n", encoding="utf-8", newline="\n")
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
     monkeypatch.delenv("SERENA_FLEET_ISOLATION", raising=False)
@@ -491,7 +491,7 @@ def test_failed_earlier_writer_releases_later_pending_integration(fleet_env, mon
     workspace = ensure_workspace(
         isolation, run_id="run-failed-order", worker_key="agent:b", cwd=root
     )
-    (Path(workspace.path) / "beta.txt").write_text("beta\n", encoding="utf-8")
+    (Path(workspace.path) / "beta.txt").write_text("beta\n", encoding="utf-8", newline="\n")
     earlier = {
         "leg_id": "leg-agent:a",
         "worker_key": "agent:a",
@@ -604,7 +604,7 @@ def test_rejected_write_releases_claims_and_retry_unblocks_sibling(
         check=True,
     )
     subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
-    (root / "value.txt").write_text("base\n", encoding="utf-8")
+    (root / "value.txt").write_text("base\n", encoding="utf-8", newline="\n")
     subprocess.run(["git", "-C", str(root), "add", "value.txt"], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
     monkeypatch.delenv("SERENA_FLEET_ISOLATION", raising=False)
@@ -643,7 +643,7 @@ def test_rejected_write_releases_claims_and_retry_unblocks_sibling(
         if request.phase == "execute":
             execute_calls.append(request.worker_key)
             target = Path(request.cwd) / f"{request.worker_key.replace(':', '-')}.txt"
-            target.write_text(f"{request.worker_key}\n", encoding='utf-8')
+            target.write_text(f"{request.worker_key}\n", encoding='utf-8', newline="\n")
         return WorkerResult(
             True,
             f"{request.phase}: complete",
@@ -2494,7 +2494,7 @@ def test_delete_terminal_run_refuses_unrecovered_worker_changes(fleet_env, monke
         ["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True
     )
     subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
-    (root / "value.txt").write_text("base\n", encoding="utf-8")
+    (root / "value.txt").write_text("base\n", encoding="utf-8", newline="\n")
     subprocess.run(["git", "-C", str(root), "add", "value.txt"], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "base"], check=True)
     monkeypatch.setenv("SERENA_FLEET_WORKSPACE_ROOT", str(fleet_env / "delete-worktrees"))
@@ -2529,7 +2529,7 @@ def test_delete_terminal_run_refuses_unrecovered_worker_changes(fleet_env, monke
         ["git", "-C", str(root), "worktree", "add", "-q", "-b", workspace.branch, str(worker)],
         check=True,
     )
-    (worker / "value.txt").write_text("unrecovered\n", encoding="utf-8")
+    (worker / "value.txt").write_text("unrecovered\n", encoding="utf-8", newline="\n")
 
     with pytest.raises(RuntimeError, match="unrecovered worker changes"):
         supervisor.delete_run(run["run_id"])
