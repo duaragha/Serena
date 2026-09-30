@@ -16,6 +16,8 @@ function historyFixture(t) {
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const fixture = path.join(directory, 'repo');
   git(['clone', '--no-hardlinks', root, fixture]);
+  // Validate the catalog being reviewed, including edits not committed yet.
+  fs.copyFileSync(path.join(root, 'config/promotion-features.json'), path.join(fixture, 'config/promotion-features.json'));
   const source = git(['rev-parse', 'HEAD'], fixture);
   // Historical composition tests must still work after these versions ship.
   // Only remove tags inside this disposable clone, never from the source or remote.
