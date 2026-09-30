@@ -67,11 +67,9 @@ def test_policy_routes_exact_models_and_safe_coding_writers():
         for phase in coding.phases
     ] == [
         [("gpt-5.6-luna", "max")],
-        # Code runs medium and Fix runs high on purpose: Code's defects are
-        # caught by Review and repaired by Fix, Fix's are not caught by anything.
-        [("gpt-6-astra", "medium")],
-        [("gpt-6-astra", "medium")],
-        [("claude-opus-5", "high")],
+        [("gpt-6.1-sol", "xhigh")],
+        [("claude-opus-5-5", "xhigh")],
+        [("claude-opus-5-5", "xhigh")],
     ]
     assert all(phase.execution == "parallel" for phase in coding.phases)
     assert all(worker.access_mode == "read_only" for worker in coding.phases[0].workers)
@@ -91,11 +89,9 @@ def test_policy_routes_exact_models_and_safe_coding_writers():
         for phase in research.phases
     ] == [
         [("gpt-5.6-luna", "max")],
-        [("claude-opus-5", "high")],
-        # Luna still reads and Opus still analyses and refines;
-        # Astra took the review leg when Sol was retired.
-        [("gpt-6-astra", "medium")],
-        [("claude-opus-5", "high")],
+        [("claude-opus-5-5", "xhigh")],
+        [("gpt-6.1-sol", "xhigh")],
+        [("claude-opus-5-5", "xhigh")],
     ]
     assert all(phase.execution == "parallel" for phase in research.phases)
     assert all(
@@ -129,14 +125,14 @@ def test_provider_handoff_preserves_the_logical_slot_and_uses_each_phase_model()
     assert replacement["phases"][0]["workers"][1]["provider"] == "codex"
     # Every unfinished phase moves to the Claude escape-hatch stack.
     assert [phase["workers"][1]["model"] for phase in replacement["phases"][1:]] == [
-        "claude-opus-5",
-        "claude-opus-5",
-        "claude-opus-5",
+        "claude-opus-5-5",
+        "claude-opus-5-5",
+        "claude-opus-5-5",
     ]
     assert [phase["workers"][1]["effort"] for phase in replacement["phases"][1:]] == [
-        "medium",
-        "medium",
-        "high",
+        "xhigh",
+        "xhigh",
+        "xhigh",
     ]
     assert all(
         phase["workers"][1]["worker_key"] == "agent:b"
@@ -245,7 +241,8 @@ def test_live_handoff_interrupts_only_the_selected_owned_worker(tmp_path, monkey
 
 def test_coding_opus_identity_is_generation_strict() -> None:
     assert expected_model_matches("claude", "claude-opus-5", "claude-opus-5")
-    assert expected_model_matches("claude", "opus", "claude-opus-5-20260801")
+    assert expected_model_matches("claude", "claude-opus-5", "claude-opus-5-20260801")
+    assert expected_model_matches("claude", "opus", "claude-opus-5-5-20260922")
     assert not expected_model_matches("claude", "opus", "claude-opus-4-1-20250805")
     assert expected_model_matches(
         "claude", "claude-sonnet-5", "claude-sonnet-5-20260801"
@@ -256,6 +253,37 @@ def test_coding_opus_identity_is_generation_strict() -> None:
     assert not expected_model_matches(
         "claude", "claude-haiku-4-5", "claude-haiku-5"
     )
+
+
+@pytest.mark.parametrize("family", ["opus", "sonnet"])
+def test_claude_five_point_five_identity_does_not_alias_five(family):
+    older = f"claude-{family}-5"
+    newer = f"claude-{family}-5-5"
+    assert expected_model_matches("claude", older, older + "-20260801")
+    assert expected_model_matches("claude", newer, newer)
+    assert expected_model_matches("claude", newer, newer + "-20260922")
+    assert not expected_model_matches("claude", older, newer)
+    assert not expected_model_matches("claude", older, newer + "-20260922")
+    assert not expected_model_matches("claude", newer, older)
+    assert not expected_model_matches("claude", newer, older + "-20260801")
+    assert not expected_model_matches("claude", newer, f"claude-{family}-5-6")
+
+
+@pytest.mark.parametrize("activity", ["coding", "research"])
+@pytest.mark.parametrize("mode", ["codex", "claude"])
+def test_provider_only_phase_stacks_use_the_approved_models_and_efforts(activity, mode):
+    expected = {
+        "codex": [("gpt-5.6-luna", "max")] + [("gpt-6.1-sol", "xhigh")] * 3,
+        "claude": [("claude-sonnet-5-5", "high")] + [("claude-opus-5-5", "xhigh")] * 3,
+    }
+    policy = build_policy(activity, config=builtin_config(), provider_mode=mode, worker_count=3)
+    assert all(
+        [(worker.provider, worker.model, worker.effort) for worker in phase.workers]
+        == [(mode, *spec)] * 3
+        for phase, spec in zip(policy.phases, expected[mode], strict=True)
+    )
+    validate_policy_snapshot(policy.to_dict())
+    assert policy_models_match_contract(activity, policy.to_dict())
 
 
 def test_phase_model_policy_cannot_be_overridden_by_stale_config() -> None:
@@ -366,17 +394,17 @@ def test_three_explicit_workstreams_select_three_durable_agents():
     expected_keys = ["agent:a", "agent:b", "agent:c"]
     expected_models = [
         ["gpt-5.6-luna"] * 3,
-        ["gpt-6-astra"] * 3,
-        ["gpt-6-astra"] * 3,
-        ["claude-opus-5"] * 3,
+        ["gpt-6.1-sol"] * 3,
+        ["claude-opus-5-5"] * 3,
+        ["claude-opus-5-5"] * 3,
     ]
     # Effort is named per model because the curves differ in shape; every agent
     # in a phase shares the phase's one rung.
     expected_efforts = [
         ["max"] * 3,
-        ["medium"] * 3,
-        ["medium"] * 3,
-        ["high"] * 3,
+        ["xhigh"] * 3,
+        ["xhigh"] * 3,
+        ["xhigh"] * 3,
     ]
     for phase, phase_models, phase_efforts in zip(
         policy.phases, expected_models, expected_efforts, strict=True
@@ -489,13 +517,13 @@ def test_exact_four_codex_workers_only_directive_builds_four_native_codex_slots(
         [worker.model for worker in phase.workers] for phase in policy.phases
     ] == [
         ["gpt-5.6-luna"] * 4,
-        ["gpt-6-astra"] * 4,
-        ["gpt-6-astra"] * 4,
-        ["gpt-6-astra"] * 4,
+        ["gpt-6.1-sol"] * 4,
+        ["gpt-6.1-sol"] * 4,
+        ["gpt-6.1-sol"] * 4,
     ]
     assert [
         [worker.effort for worker in phase.workers] for phase in policy.phases
-    ] == [["max"] * 4, ["medium"] * 4, ["medium"] * 4, ["high"] * 4]
+    ] == [["max"] * 4, ["xhigh"] * 4, ["xhigh"] * 4, ["xhigh"] * 4]
 
 
 @pytest.mark.parametrize(
@@ -504,12 +532,12 @@ def test_exact_four_codex_workers_only_directive_builds_four_native_codex_slots(
         (
             "no-claude: implement the fix",
             "codex",
-            ["gpt-5.6-luna", "gpt-6-astra", "gpt-6-astra", "gpt-6-astra"],
+            ["gpt-5.6-luna", "gpt-6.1-sol", "gpt-6.1-sol", "gpt-6.1-sol"],
         ),
         (
             "no-codex: implement the fix",
             "claude",
-            ["claude-opus-5", "claude-opus-5", "claude-opus-5", "claude-opus-5"],
+            ["claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-5-5", "claude-opus-5-5"],
         ),
     ],
 )
@@ -923,15 +951,15 @@ def test_claude_retry_resumes_only_after_provider_init_confirmed_the_session(tmp
         second["attempt_id"],
         state="failed",
         session_id="confirmed-session",
-        actual_model="claude-opus-5",
+        actual_model=claude_leg["model"],
         exit_code=1,
     )
     third = store.begin_attempt(claude_leg["leg_id"])
     assert third["resume_session_id"] == "confirmed-session"
 
 
-def test_code_continues_research_while_review_and_cross_provider_fix_start_clean(tmp_path):
-    """Code reuses Codex research; Review is isolated and Fix crosses providers."""
+def test_code_continues_research_and_fix_continues_clean_claude_review(tmp_path):
+    """Review crosses providers cleanly; Fix resumes that review session."""
 
     store = FleetStore(tmp_path / "fleet.sqlite3")
     run = _create(store, activity="coding")
@@ -966,18 +994,26 @@ def test_code_continues_research_while_review_and_cross_provider_fix_start_clean
             exit_code=0,
         )
 
-    for leg in run["phases"][2]["legs"]:
+    for index, leg in enumerate(run["phases"][2]["legs"]):
         review = store.begin_attempt(leg["leg_id"])
-        assert leg["runtime"] == "codex"
+        assert leg["runtime"] == "claude"
         assert review["resume_session_id"] is None
         assert review["resume_kind"] is None
+        store.finish_attempt(
+            review["attempt_id"],
+            state="completed",
+            session_id=f"review-session-{index}",
+            actual_model=leg["model"],
+            actual_effort=leg["effort"],
+            exit_code=0,
+        )
 
-    for leg in run["phases"][3]["legs"]:
+    for index, leg in enumerate(run["phases"][3]["legs"]):
         fix = store.begin_attempt(leg["leg_id"])
         assert leg["runtime"] == "claude"
-        assert fix["resume_session_id"] is None
-        assert fix["resume_kind"] is None
-        assert fix["resume_source_phase"] is None
+        assert fix["resume_session_id"] == f"review-session-{index}"
+        assert fix["resume_kind"] == "phase_continuation"
+        assert fix["resume_source_phase"] == "verify"
 
 
 def test_claude_confirmed_lineage_survives_a_preinit_resumed_failure(tmp_path):
@@ -1356,12 +1392,13 @@ def test_editing_the_matrix_does_not_strand_runs_already_in_flight():
     frozen = build_policy(
         "coding", "tasks:\n- one\n- two", config=builtin_config(), worker_count=2
     ).to_dict()
-    # Simulate the matrix moving under it: the run holds an effort no current
-    # matrix or escape-hatch stack names any more.
+    # Preserve a pre-upgrade Astra high contract. It must remain
+    # usable without being mistaken for the current Sol policy.
     for phase in frozen["phases"]:
         if phase["name"] == "execute":
             for worker in phase["workers"]:
-                worker["effort"] = "xhigh"
+                worker["model"] = "gpt-6-astra"
+                worker["effort"] = "high"
 
     assert policy_models_match_contract("coding", frozen) is False
     assert policy_models_match_contract("coding", frozen, baseline=frozen) is True
@@ -1401,6 +1438,50 @@ def test_one_provider_may_carry_both_its_pipeline_and_escape_hatch_spec():
                 worker["model"] = spec[1]
                 worker["effort"] = spec[2]
             assert policy_models_match_contract("coding", snapshot), (name, spec)
+
+
+def test_handoff_from_old_claude_stack_preserves_historical_attempt_receipts(tmp_path):
+    store = FleetStore(tmp_path / "historical-models.sqlite3")
+    frozen = build_policy(
+        "coding", config=builtin_config(), provider_mode="claude", worker_count=1
+    ).to_dict()
+    for phase in frozen["phases"]:
+        worker = phase["workers"][0]
+        worker["model"] = "claude-opus-5"
+        worker["effort"] = "high" if phase["name"] == "finalize" else "medium"
+    run = store.create_run(
+        task="continue pre-upgrade coding work", activity="coding", cwd=str(tmp_path),
+        origin_session_id=None, origin_agent="claude", dry_run=False, policy=frozen,
+    )
+    leg = run["phases"][0]["legs"][0]
+    old = store.begin_attempt(leg["leg_id"])
+    store.finish_attempt(
+        old["attempt_id"], state="failed", output_text="saved research findings",
+        session_id="old-claude-session", actual_model="claude-opus-5-20260801",
+        actual_effort="medium", error="529 Overloaded", exit_code=1,
+    )
+    replacement = build_provider_handoff_policy(
+        frozen, phase_index=0, ordinal=0, target_provider="codex",
+        reason="explicit operator handoff", automatic=False,
+    )
+    changed = store.apply_leg_handoff(
+        run["run_id"], leg["leg_id"], policy=replacement, start_phase_index=0,
+        target_provider="codex", reason="explicit operator handoff", automatic=False,
+    )
+    historical = changed["phases"][0]["legs"][0]["current_attempt"]
+    assert historical["attempt_id"] == old["attempt_id"]
+    assert historical["requested_model"] == "claude-opus-5"
+    assert historical["actual_model"] == "claude-opus-5-20260801"
+    assert historical["requested_effort"] == historical["actual_effort"] == "medium"
+    assert [
+        (phase["legs"][0]["model"], phase["legs"][0]["effort"])
+        for phase in changed["phases"]
+    ] == [("gpt-5.6-luna", "max")] + [("gpt-6.1-sol", "xhigh")] * 3
+    pickup = store.begin_attempt(leg["leg_id"])
+    assert pickup["resume_session_id"] is None
+    assert pickup["handoff_context"]["model"] == "claude-opus-5"
+    assert pickup["handoff_context"]["effort"] == "medium"
+    assert pickup["handoff_context"]["output_text"] == "saved research findings"
 
 
 def test_a_wedged_run_can_be_forced_out_and_then_retried(tmp_path):

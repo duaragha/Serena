@@ -103,6 +103,21 @@ jobs:
             .venv/bin/python -m pytest -q --tb=short tests/test_fleet_report_visibility.py tests/test_web_terminal_performance.py
           fi
           .venv/bin/python -m pytest -q --tb=short tests/test_workspace_browser.py tests/test_fleet_chat_sidebar.py tests/test_voice_created_chat_sidebar.py tests/test_session_sidebar_completeness.py tests/test_workspace_desktop_editions.py tests/test_terminal*.py tests/test_linked_terminal*.py tests/test_pty_terminal_runtime.py tests/test_desktop_shell_parity.py
+      - name: Prove selected Fleet model routing before packaging
+        if: contains(fromJSON(inputs.selected), 'fleet-model-routing')
+        working-directory: candidate
+        run: |
+          .venv/bin/python -m pytest -q --tb=short \
+            tests/test_fleet_policy_store.py tests/test_fleet_comparison_profiles.py \
+            tests/test_fleet_difficult_retry.py tests/test_fleet_workers.py \
+            tests/test_fleet_supervisor.py tests/test_fleet_reports.py \
+            tests/test_fleet_autonomy.py tests/test_fleet_peers.py \
+            tests/test_fleet_process_recovery.py
+      - name: Prove selected Fleet checkout identity before packaging
+        if: contains(fromJSON(inputs.selected), 'fleet-checkout-identity')
+        working-directory: candidate
+        run: |
+          .venv/bin/python -m pytest -q --tb=short tests/test_fleet_checkout.py tests/test_fleet_shared_learning.py
       - name: Build stable AppImage without publishing
         working-directory: candidate/apps/desktop
         run: |
@@ -166,6 +181,20 @@ jobs:
             ./.venv/Scripts/python.exe -m pytest -q --tb=short tests/test_fleet_report_visibility.py
             if ($LASTEXITCODE -ne 0) { throw 'report visibility tests failed' }
           }
+      - name: Prove selected Fleet model routing before accepting Windows artifacts
+        if: contains(fromJSON(inputs.selected), 'fleet-model-routing')
+        working-directory: candidate
+        shell: pwsh
+        run: |
+          ./.venv/Scripts/python.exe -m pytest -q --tb=short tests/test_fleet_policy_store.py tests/test_fleet_comparison_profiles.py tests/test_fleet_difficult_retry.py tests/test_fleet_workers.py tests/test_fleet_supervisor.py tests/test_fleet_reports.py tests/test_fleet_autonomy.py tests/test_fleet_peers.py tests/test_fleet_process_recovery.py
+          if ($LASTEXITCODE -ne 0) { throw 'Fleet model routing tests failed' }
+      - name: Prove selected Fleet checkout identity before accepting Windows artifacts
+        if: contains(fromJSON(inputs.selected), 'fleet-checkout-identity')
+        working-directory: candidate
+        shell: pwsh
+        run: |
+          ./.venv/Scripts/python.exe -m pytest -q --tb=short tests/test_fleet_checkout.py tests/test_fleet_shared_learning.py
+          if ($LASTEXITCODE -ne 0) { throw 'Fleet checkout identity tests failed' }
       - uses: actions/upload-artifact@v4
         with:
           name: candidate-windows

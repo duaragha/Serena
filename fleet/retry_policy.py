@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-DIFFICULT_RETRY_MODEL = "gpt-6-astra"
+DIFFICULT_RETRY_MODEL = "gpt-6.1-sol"
 DIFFICULT_RETRY_EFFORT = "xhigh"
 
 _INFRASTRUCTURE = re.compile(
@@ -24,7 +24,7 @@ _IMPLEMENTATION = re.compile(
 )
 
 
-def difficult_retry_reason(
+def integration_failure_reason(
     run: dict[str, Any], leg: dict[str, Any], gate: dict[str, Any] | None
 ) -> str | None:
     """Only a concrete code/test failure in an actual integration gate qualifies.
@@ -50,11 +50,6 @@ def difficult_retry_reason(
         return None
     if policy.get("provider_mode") in {"claude", "claude-only"}:
         return None
-    if (
-        leg.get("requested_model", leg.get("model")),
-        leg.get("requested_effort", leg.get("effort")),
-    ) == (DIFFICULT_RETRY_MODEL, DIFFICULT_RETRY_EFFORT):
-        return None
     if not gate or gate.get("ran") is not True or gate.get("ok") is not False:
         return None
     code = gate.get("exit_code")
@@ -64,3 +59,20 @@ def difficult_retry_reason(
     if _INFRASTRUCTURE.search(output) or not _IMPLEMENTATION.search(output):
         return None
     return "integration verification found an implementation failure: " + output[-800:]
+
+
+def difficult_retry_reason(
+    run: dict[str, Any], leg: dict[str, Any], gate: dict[str, Any] | None
+) -> str | None:
+    """A proven failure can escalate once, unless it already uses the target.
+
+    A worker at that target may still receive fresh peer advice and its bounded
+    advice retry; the target check applies only to model escalation.
+    """
+    reason = integration_failure_reason(run, leg, gate)
+    if (
+        leg.get("requested_model", leg.get("model")),
+        leg.get("requested_effort", leg.get("effort")),
+    ) == (DIFFICULT_RETRY_MODEL, DIFFICULT_RETRY_EFFORT):
+        return None
+    return reason

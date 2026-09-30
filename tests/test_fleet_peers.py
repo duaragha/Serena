@@ -295,9 +295,11 @@ def test_supervisor_recovers_through_peer_advice_with_real_git_and_test_gate(
     monkeypatch.setenv("SERENA_FLEET_WORKSPACE_ROOT", str(fleet_env / "worktrees"))
     monkeypatch.setenv("SERENA_FLEET_INTEGRATION_TEST_COMMAND", f'"{sys.executable}" test_value.py')
     calls = []
+    requests = []
 
     def worker(request, *, cancel_requested, on_event):
         calls.append((request.role, request.phase, request.worker_key))
+        requests.append(request)
         if request.role == "peer-consultant":
             return WorkerResult(
                 True,
@@ -326,9 +328,11 @@ def test_supervisor_recovers_through_peer_advice_with_real_git_and_test_gate(
     assert any(job["auto_retry"] and job["retry_applied"] for job in state["help"]), (calls, state)
     assert (root / "value.txt").read_text(encoding="utf-8") == "good\n"
     assert len([call for call in calls if call[0] == "peer-consultant"]) == 1
-    assert len([call for call in calls if call[1:] == ("execute", "agent:a")]) == (
-        2 if repair else 3
-    )
+    code = [request for request in requests if request.phase == "execute"
+            and request.worker_key == "agent:a" and request.role != "peer-consultant"]
+    assert len(code) == 2
+    assert [(request.model, request.effort) for request in code] == [("gpt-6.1-sol", "xhigh")] * 2
+    assert outcome["policy"]["difficult_retries"] == []
     subprocess.run([sys.executable, "test_value.py"], cwd=root, check=True)
 
 

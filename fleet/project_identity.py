@@ -73,22 +73,45 @@ def repository_local_identity(root: Path) -> str:
 
 def project_identity(run: dict) -> str:
     checkout = run.get("checkout") or {}
-    source = checkout.get("source_cwd") or run["cwd"]
-    if not Path(source).exists() and run.get("repository_identity"):
-        return run["repository_identity"]
-    return repository_identity(source, fallback=run.get("repository_identity"))
+    source = run["cwd"]
+    fallback = run.get("repository_identity")
+    if checkout:
+        matches = bool(checkout.get("path")) and (
+            Path(checkout["path"]).resolve() == Path(source).resolve()
+        )
+        if not matches:
+            # A receipt for another checkout cannot lend this run its identity.
+            fallback = None
+        elif checkout.get("state") == "ready":
+            source = checkout.get("source_cwd") or source
+    return repository_identity(source, fallback=fallback)
 
 
 def run_identity(db, run_id: str) -> str | None:
     """Resolve trusted checkout metadata without loading a whole run projection."""
     row = db.execute(
-        "SELECT COALESCE(c.source_cwd,r.cwd) AS source FROM fleet_runs r "
+        "SELECT r.cwd,c.source_cwd,c.path,c.state FROM fleet_runs r "
         "LEFT JOIN fleet_run_checkouts c ON c.run_id=r.run_id WHERE r.run_id=?",
         (run_id,),
     ).fetchone()
     if not row:
         return None
-    return project_identity({"cwd": row["source"], "repository_identity": stored_identity(db, run_id)})
+    cwd = row["cwd"]
+    fallback = stored_identity(db, run_id)
+    checkout = None
+    if row["path"]:
+        source_matches = bool(row["source_cwd"]) and (
+            Path(row["source_cwd"]).resolve() == Path(cwd).resolve()
+        )
+        if not source_matches:
+            return repository_identity(cwd)
+        if row["state"] == "ready":
+            cwd = row["path"]
+            checkout = {"source_cwd": row["source_cwd"], "path": row["path"],
+                        "state": row["state"]}
+    return project_identity({
+        "cwd": cwd, "repository_identity": fallback, "checkout": checkout,
+    })
 
 
 def remember(db, run_id, cwd):

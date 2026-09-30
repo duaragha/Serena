@@ -37,30 +37,34 @@ only-Codex, no-Claude, or zero-Claude requests. Pass `provider_mode: "claude"` f
 explicitly asks for one to four agents, pass that exact number as `worker_count`; otherwise omit
 it so Fleet scales from the task. Never bury an explicit provider restriction only inside `task`.
 
-Model routing is fixed server-side for every entrypoint. A provider handoff therefore selects the
-target provider, not an arbitrary model. Coding runs use Luna max for Research, Astra medium for
-both Code and Review, and Opus high for Fix. On confirmed Claude exhaustion, an unfinished
-Fix phase moves to Astra high; Code and Review stay Astra medium. Claude-only runs retain their
-explicit Opus stack. Pure research runs use Luna max for Research, Opus high for Analyze, Sol high for Review,
-and Opus high for Refine. Do not pass, imply, or silently substitute another phase model.
+Model routing is fixed server-side for every entrypoint. A provider handoff selects the target
+provider, not an arbitrary model. Mixed coding uses GPT-5.6 Luna max Research, GPT-6.1 Sol
+xhigh Code, and Claude Opus 5.5 xhigh Review and Fix. Codex-only uses GPT-5.6 Luna max
+Research and GPT-6.1 Sol xhigh for the other three phases. Claude-only uses Claude Sonnet
+5.5 high Research and Claude Opus 5.5 xhigh for the other three phases. Confirmed Claude
+exhaustion or terminal overload hands unfinished phases to GPT-6.1 Sol xhigh when Codex
+has capacity; explicit provider-only restrictions remain pinned. Pure research uses Luna 5.6
+max Research, Opus 5.5 xhigh Analyze, Sol 6.1 xhigh Review, and Opus 5.5 xhigh Refine.
+Do not pass, imply, or silently substitute another phase model.
 
 For explicitly requested A/B tests, a coding Codex-only task may begin with the exact line
 `Fleet comparison profile: sol` or `Fleet comparison profile: astra`. These fixed profiles
-select Sol xhigh/Sol high or Astra medium/Astra medium for Code/Review respectively; both
-keep Luna max Research and Astra high Fix. Use identical isolated fixtures and report actual
+select Sol 6.1 xhigh/Sol 6.1 xhigh or Astra 6 medium/Astra 6 medium for Code/Review;
+both keep Luna 5.6 max Research and Sol 6.1 xhigh Fix. Use identical isolated fixtures and report actual
 attempt identities, independent checks, and phase timings. Do not infer a universal ranking
 from a single paired run.
 
 For the opt-in research pilot, use `activity: research`, `provider_mode: balanced`,
 and the exact first line `Fleet research comparison: luna` or
 `Fleet research comparison: gemini`. Only Research changes (Luna max versus Gemini
-3.8 Flash high via `agy`); later phases stay Opus high/Sol high/Opus high. Gemini is
+3.8 Flash high via `agy`); later phases stay Opus 5.5 xhigh/Sol 6.1 xhigh/Opus 5.5 xhigh. Gemini is
 limited to native read/search tools and has no peer or account MCP gateway yet.
 Do not use it for account-connected tasks or as an automatic fallback. Report
 actual timing, step counts, research quality, and these pilot limitations.
 
 For coding Code/Fix integration gates with proven implementation failures, Fleet may
-automatically queue one difficult retry on Astra xhigh when Codex has capacity.
+automatically queue one difficult retry on Sol 6.1 xhigh when Codex has capacity.
+Attempts already running Sol 6.1 xhigh do not qualify for another model retry.
 This recorded exception changes only the failed leg, never Claude-only runs, and
 does not apply to quota, infrastructure, or malformed-evidence failures. A second
 failure stays failed. Do not manually promote arbitrary attempts to this model.

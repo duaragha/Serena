@@ -300,11 +300,11 @@ def test_dated_provider_identity_is_accepted(claude_run_db):
         seen.append(request.model)
         result = provider(request, **kwargs)
         return WorkerResult(True, result.output_text, None,
-                            request.model + "-20260401", request.effort, 0)
+                            request.model + "-20260922", request.effort, 0)
 
     report = reports.generate_report(run["run_id"], store=store, runner=dated)
-    assert seen == ["claude-opus-5"]
-    assert report["generator"] == "claude-opus-5"
+    assert seen == ["claude-opus-5-5"]
+    assert report["generator"] == "claude-opus-5-5"
     assert report["narrative"]
 
 
@@ -337,7 +337,7 @@ def test_many_lessons_deliver_complete_records_and_omitted_stay_unclear(run_db):
             None, request.model, request.effort, 0)
 
     report = reports.generate_report(run["run_id"], store=store, runner=vote)
-    assert report["generator"] == "gpt-6-astra", report["generator"]
+    assert report["generator"] == "gpt-6.1-sol", report["generator"]
     lessons = {lesson["lesson_id"]: lesson for lesson in report["knowledge"]["lessons"]}
     assert len(lessons) == 100
     assert 0 < len(delivered) < 100

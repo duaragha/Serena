@@ -950,9 +950,9 @@ def test_single_codex_worker_reuses_one_chat_across_all_four_phases(
     assert requests[3].resume_session_id is not None
     assert [(request.model, request.effort) for request in requests] == [
         ("gpt-5.6-luna", "max"),
-        ("gpt-6-astra", "medium"),
-        ("gpt-6-astra", "medium"),
-        ("gpt-6-astra", "high"),
+        ("gpt-6.1-sol", "xhigh"),
+        ("gpt-6.1-sol", "xhigh"),
+        ("gpt-6.1-sol", "xhigh"),
     ]
     verify = requests[2]
     assert verify.review_target_ids == ()
@@ -1026,9 +1026,9 @@ def test_rotated_review_waits_for_target_code_and_reviewers_own_prior_phase(
     assert completed["state"] == "completed"
     assert completed["progress"] == {"completed": 8, "total": 8}
     assert completed["agent_count"] == 2
-    # Three chats per agent: Research/Code share Codex, Review starts clean,
-    # and Fix starts its own Claude session.
-    assert completed["chat_count"] == 6
+    # Two chats per agent: Research/Code share Codex, Review starts clean on
+    # Claude, and Fix resumes that Claude session.
+    assert completed["chat_count"] == 4
     assert len(calls) == 8
     assert agent_a_review_started.is_set()
     assert completed_by_phase == {name: 2 for name in phase_names}
@@ -1041,11 +1041,11 @@ def test_rotated_review_waits_for_target_code_and_reviewers_own_prior_phase(
     assert by_phase == {
         "discover": ["codex", "codex"],
         "execute": ["codex", "codex"],
-        "verify": ["codex", "codex"],
+        "verify": ["claude", "claude"],
         "finalize": ["claude", "claude"],
     }
 
-    # Code continues Research; Review starts clean and Fix crosses providers.
+    # Code continues Research; Review starts clean and Fix continues Review.
     resumes = {
         name: [resume for phase, _provider, _access, resume in calls if phase == name]
         for name in phase_names
@@ -1053,7 +1053,7 @@ def test_rotated_review_waits_for_target_code_and_reviewers_own_prior_phase(
     assert resumes["discover"] == [None, None]
     assert all(resume is not None for resume in resumes["execute"])
     assert resumes["verify"] == [None, None]
-    assert resumes["finalize"] == [None, None]
+    assert all(resume is not None for resume in resumes["finalize"])
     assert [access for phase, _provider, access, _resume in calls if phase == "execute"] == [
         "write",
         "write",
@@ -1307,8 +1307,8 @@ def test_resident_supervisor_expands_a_stale_unstarted_multitask_plan(
     # Three named workstreams give three agents, four phases each. The old plan
     # padded to four so the codex/claude pairing stayed even.
     assert completed["agent_count"] == 3
-    # Three chats per agent: Research, the shared Code/Fix chat, and Review's own.
-    assert completed["chat_count"] == 9
+    # Two chats per agent: Codex Research/Code and clean Claude Review/Fix.
+    assert completed["chat_count"] == 6
     assert completed["progress"] == {"completed": 12, "total": 12}
     assert completed["policy"]["scaling"]["selected_workers"] == 3
     assert any(event["type"] == "run.policy_refreshed" for event in store.events(run["run_id"]))
@@ -1351,9 +1351,9 @@ def test_resident_supervisor_replaces_a_complete_stale_model_plan(
         for phase in completed["phases"]
     ] == [
         [("gpt-5.6-luna", "max")],
-        [("gpt-6-astra", "medium")],
-        [("gpt-6-astra", "medium")],
-        [("claude-opus-5", "high")],
+        [("gpt-6.1-sol", "xhigh")],
+        [("claude-opus-5-5", "xhigh")],
+        [("claude-opus-5-5", "xhigh")],
     ]
     assert any(event["type"] == "run.policy_refreshed" for event in store.events(run["run_id"]))
 
@@ -1781,8 +1781,8 @@ def test_controlled_promotion_resumes_codex_and_starts_opus_in_parallel(
     promoted_execute = completed["phases"][1]
     assert promoted_execute["execution"] == "parallel"
     assert [leg["model"] for leg in promoted_execute["legs"]] == [
-        "gpt-6-astra",
-        "gpt-6-astra",
+        "gpt-6.1-sol",
+        "gpt-6.1-sol",
     ]
 
 
@@ -1971,18 +1971,18 @@ def test_doctor_reports_the_locked_phase_model_matrix(fleet_env, monkeypatch):
     assert report["ok"] is True
     policy = report["checks"]["policy"]
     luna = [{"provider": "codex", "model": "gpt-5.6-luna", "effort": "max"}]
-    opus = [{"provider": "claude", "model": "claude-opus-5", "effort": "high"}]
-    astra_medium = [{"provider": "codex", "model": "gpt-6-astra", "effort": "medium"}]
+    opus = [{"provider": "claude", "model": "claude-opus-5-5", "effort": "xhigh"}]
+    sol = [{"provider": "codex", "model": "gpt-6.1-sol", "effort": "xhigh"}]
     assert policy["coding_phase_models"] == {
         "Research": luna,
-        "Code": astra_medium,
-        "Review": [{"provider": "codex", "model": "gpt-6-astra", "effort": "medium"}],
+        "Code": sol,
+        "Review": opus,
         "Fix": opus,
     }
     assert policy["research_phase_models"] == {
         "Research": luna,
         "Analyze": opus,
-        "Review": astra_medium,
+        "Review": sol,
         "Refine": opus,
     }
 
@@ -2055,17 +2055,17 @@ def test_confirmed_capacity_exhaustion_hands_the_same_slot_to_the_other_provider
     assert [request.provider for request in continued] == ["claude", "claude", "claude"]
     # The handed-off agent finishes on the Claude escape-hatch stack.
     assert [request.model for request in continued] == [
-        "claude-opus-5",
-        "claude-opus-5",
-        "claude-opus-5",
+        "claude-opus-5-5",
+        "claude-opus-5-5",
+        "claude-opus-5-5",
     ]
-    assert [request.effort for request in continued] == ["medium", "medium", "high"]
+    assert [request.effort for request in continued] == ["xhigh"] * 3
+    assert (pickup.model, pickup.effort) == ("claude-sonnet-5-5", "high")
     assert completed["policy"]["provider_mode"] == "adaptive"
     assert completed["policy"]["handoffs"][0]["automatic"] is True
     assert completed["agent_count"] == 2
-    # Agent A spends the whole run on Claude after the pickup, so it opens one
-    # chat there. Agent B keeps Codex Research/Code, a separate Codex Review
-    # session, and a fresh Claude Fix session.
+    # Agent A starts Claude research after the pickup and a separate review;
+    # Agent B has Codex Research/Code and Claude Review/Fix.
     assert completed["chat_count"] == 4
 
 
@@ -2292,14 +2292,15 @@ def test_balanced_run_hands_a_parked_worker_to_the_first_recovered_provider(
     "API Error: Repeated 529 Overloaded errors",
     "Error code: 529",
 ])
+@pytest.mark.parametrize("failed_phase", ["verify", "finalize"])
 def test_claude_overload_continues_on_codex_despite_healthy_usage(
-    fleet_env, monkeypatch, provider_error,
+    fleet_env, monkeypatch, provider_error, failed_phase,
 ):
     calls = []
 
     def worker(request, **kwargs):
         calls.append(request)
-        if request.provider == "claude":
+        if request.provider == "claude" and request.phase == failed_phase:
             return WorkerResult(False, "saved the parser fix before the outage", "claude-outage",
                                 request.model, request.effort, 1, provider_error)
         return WorkerResult(True, f"{request.phase}:complete", "codex-pickup",
@@ -2310,11 +2311,17 @@ def test_claude_overload_continues_on_codex_despite_healthy_usage(
                                provider_mode="balanced", worker_count=1, cwd=str(fleet_env))
     completed = supervisor.run_supervisor(run["run_id"])
     assert completed["state"] == "completed", completed.get("error")
-    fixing = [request for request in calls if request.phase == "finalize"]
-    assert [request.provider for request in fixing] == ["claude", "codex"]
-    assert fixing[0].worker_key == fixing[1].worker_key
-    assert fixing[1].resume_session_id is None
-    assert "saved the parser fix before the outage" in fixing[1].prompt
+    pickups = [request for request in calls if request.phase == failed_phase]
+    assert [request.provider for request in pickups] == ["claude", "codex"]
+    assert [(request.model, request.effort) for request in pickups] == [
+        ("claude-opus-5-5", "xhigh"), ("gpt-6.1-sol", "xhigh")]
+    assert pickups[0].worker_key == pickups[1].worker_key
+    assert pickups[1].resume_session_id is None
+    assert "saved the parser fix before the outage" in pickups[1].prompt
+    assert all(
+        (request.provider, request.model, request.effort) == ("codex", "gpt-6.1-sol", "xhigh")
+        for request in calls[calls.index(pickups[1]):]
+    )
     handoff = completed["policy"]["handoffs"][0]
     assert handoff["automatic"] is True
     assert "service overload" in handoff["reason"]
