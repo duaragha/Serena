@@ -1587,7 +1587,9 @@ def codex_exec(model, effort, work_dir, timeout, danger_full_access, visible,
             "group": group_id or None,
         }
         if warnings:
-            payload["warnings"] = list(warnings)
+            # Not list(): this module defines a click command named `list`,
+            # which shadows the builtin and turned every warning into a usage error.
+            payload["warnings"] = [*warnings]
         print(json.dumps(payload))
 
     if os.environ.get("SERENA_FLEET_WORKER", "").strip().lower() in {"1", "true", "on"}:
@@ -1657,7 +1659,9 @@ def codex_exec(model, effort, work_dir, timeout, danger_full_access, visible,
         except Exception as e:  # noqa: BLE001
             warnings.append(f"initial index refresh failed: {e}")
 
-    work = Path(work_dir).expanduser() if work_dir else Path.home() / ".cache" / "serena-headless-codex" / "work"
+    # Absolute, because codex gets it twice: as its process cwd and as `-C`, which
+    # it resolves again from inside that cwd (`--cwd dbg` became dbg/dbg).
+    work = Path(work_dir).expanduser().resolve() if work_dir else Path.home() / ".cache" / "serena-headless-codex" / "work"
     try:
         work.mkdir(parents=True, exist_ok=True)
     except OSError as e:
