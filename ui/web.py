@@ -6570,6 +6570,7 @@ function _sortNewestFirst(a, b) {
 
 async function _reconcilePseudos(fresh, opts) {
   opts = opts || {};
+  const _HANDOFF_RESOLVE_WINDOW_MS = 10 * 60 * 1000;
   let changed = false;
   for (const pseudo of [..._pseudoSessions]) {
     // Structured creation returns an authoritative ID through its own iframe.
@@ -6589,6 +6590,18 @@ async function _reconcilePseudos(fresh, opts) {
     // the pseudo was created. Pick the newest candidate to avoid stealing an
     // older session's id.
     const pseudoAgent = (pseudo.agent || 'claude').toLowerCase();
+    // A handoff pane is briefed the moment it opens, so its real session starts
+    // within seconds. One that never resolved (its transcript was not indexed)
+    // used to sit for an hour and then adopt whatever session of that agent
+    // started next — a headless job in another directory — renaming it and
+    // merging its group into the handoff's thread. Past the window, or when the
+    // candidate already belongs to a group or a live external runtime, it is
+    // somebody else's session.
+    const handoffOpen = s => !pseudo.pending_group_link_with || (
+      !s.group && !s.external_runtime_active &&
+      (Date.parse(_pseudoCandidateTs(s)) || 0) - (Date.parse(pseudo.first_timestamp) || 0)
+        <= _HANDOFF_RESOLVE_WINDOW_MS
+    );
     const _normCwd = c => (c || '').replace(/[\\/]+$/, '');
     // A placeholder with no cwd was spawned with Python's default, which is
     // $HOME. Comparing '' against the real session's resolved '/home/<user>'
@@ -6599,7 +6612,8 @@ async function _reconcilePseudos(fresh, opts) {
       (s.agent || 'claude').toLowerCase() === pseudoAgent &&
       _normCwd(s.cwd) === pseudoCwd &&
       _pseudoCandidateTs(s) &&
-      _pseudoCandidateTs(s) >= pseudo.first_timestamp
+      _pseudoCandidateTs(s) >= pseudo.first_timestamp &&
+      handoffOpen(s)
     );
     // Handoff-spawned partner: the real session's recorded cwd can differ from
     // the pseudo's (resolved path, Windows-slug source, home fallback), so the
@@ -6610,7 +6624,8 @@ async function _reconcilePseudos(fresh, opts) {
       candidates = fresh.filter(s =>
         (s.agent || 'claude').toLowerCase() === pseudoAgent &&
         _pseudoCandidateTs(s) &&
-        _pseudoCandidateTs(s) >= pseudo.first_timestamp
+        _pseudoCandidateTs(s) >= pseudo.first_timestamp &&
+        handoffOpen(s)
       );
     }
     if (!candidates.length) continue;
