@@ -1,0 +1,14 @@
+[Unit]
+Description=Bound unused Docker build cache on the gaming PC VM
+After=docker.service
+ConditionHost=docker-vm
+
+[Service]
+Type=oneshot
+User=dockeradmin
+Group=dockeradmin
+RuntimeDirectory=serena-docker-cache
+ExecStart=/usr/local/bin/docker-cache-maintenance.sh --apply
+TimeoutStartSec=30min
+Nice=10
+IOSchedulingClass=idle

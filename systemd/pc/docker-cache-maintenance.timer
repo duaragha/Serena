@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Docker build cache maintenance on the gaming PC VM
+
+[Timer]
+OnCalendar=*-*-* 04:45:00 America/Toronto
+RandomizedDelaySec=15min
+Persistent=true
+Unit=docker-cache-maintenance.service
+
+[Install]
+WantedBy=timers.target
