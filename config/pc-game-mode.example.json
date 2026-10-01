@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "vboxmanage": "%ProgramFiles%\\Oracle\\VirtualBox\\VBoxManage.exe",
+  "poll_seconds": 5,
+  "cooldown_seconds": 20,
+  "discover_steam": true,
+  "targets": {
+    "background_cpu_pct": 30,
+    "background_ram_pct": 70
+  },
+  "vms": [
+    {"name": "Docker-Ubuntu", "cpu_cap": 40, "memory_mib": 8192},
+    {"name": "BlueBubbles-macOS", "cpu_cap": 25, "memory_mib": 4096}
+  ],
+  "games": [
+    {
+      "name": "The Elder Scrolls IV: Oblivion Remastered",
+      "root": "%ProgramFiles(x86)%\\Steam\\steamapps\\common\\Oblivion Remastered",
+      "executables": ["OblivionRemastered.exe", "OblivionRemastered-Win64-Shipping.exe"]
+    }
+  ]
+}
