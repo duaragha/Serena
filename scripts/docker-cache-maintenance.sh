@@ -30,7 +30,7 @@ fi
 
 commands=(
   'remove unused cache last accessed more than 7 days ago'
-  'target 40,000,000,000 cache bytes; preserve entries used in the last 24 hours'
+  'target 40,000,000,000 cache bytes by evicting unused cache as needed'
 )
 printf '%s\n' "${commands[@]}"
 if [[ $mode == --dry-run ]]; then
@@ -41,7 +41,7 @@ fi
 exec 9>"${RUNTIME_DIRECTORY:-/run/serena-docker-cache}/prune.lock"
 flock -n 9 || { echo 'another cache maintenance invocation is running'; exit 0; }
 "${docker_cmd[@]}" buildx --builder default prune --all --force --filter until=168h
-"${docker_cmd[@]}" buildx --builder default prune --all --force --filter until=24h \
+"${docker_cmd[@]}" buildx --builder default prune --all --force \
   --max-used-space 40000000000 --reserved-space 15000000000
 "${docker_cmd[@]}" buildx --builder default du | tail -n 4
 df -B1 /

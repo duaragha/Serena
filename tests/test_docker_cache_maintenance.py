@@ -61,6 +61,6 @@ def test_apply_only_prunes_build_cache_with_age_and_budget(tmp_path):
     assert result.returncode == 0, result.stderr
     assert [call for call in calls if "prune" in call] == [
         "--context default buildx --builder default prune --all --force --filter until=168h",
-        "--context default buildx --builder default prune --all --force --filter until=24h "
+        "--context default buildx --builder default prune --all --force "
         "--max-used-space 40000000000 --reserved-space 15000000000",
     ]

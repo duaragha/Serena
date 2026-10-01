@@ -19,10 +19,13 @@ records used by a build that starts after the history check.
 Two passes delete unused build cache only:
 
 1. Cache last accessed more than seven days ago is removed.
-2. Cache last accessed more than 24 hours ago is eligible for a 40 GB target
-   (40,000,000,000 bytes), with 15 GB reserved for reusable cache.
+2. Any unused cache is eligible for a 40 GB target (40,000,000,000 bytes), with
+   15 GB reserved for reusable cache. BuildKit prioritizes eviction using cache
+   recency and frequency. This pass has no age filter: releasing an old child
+   layer can make its newly eligible parent appear recently used, preventing
+   an age-restricted pass from reaching the budget.
 
-This is a target, not an absolute quota: recent cache, active builds, dependencies
+This is a target, not an absolute quota: active builds, dependencies
 and data shared with images can keep reported use above it. `--all` includes
 BuildKit internal/frontend references; it does not delete Docker images,
 containers, networks or volumes. Existing image tags remain available for rollback.
