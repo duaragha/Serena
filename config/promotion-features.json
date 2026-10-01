@@ -237,6 +237,18 @@
         "tests/test_fleet_reports.py", "tests/test_fleet_supervisor.py",
         "tests/test_fleet_workers.py", "tests/test_coding_job_contract.py"
       ]
+    },
+    {
+      "id": "codex-0159-chat-index",
+      "title": "Codex chats show in history again and stop nesting under Claude chats",
+      "devTag": "v0.3.10-dev.24",
+      "base": "9e92636c8e1857f6cdad319715220abff02708c3",
+      "commit": "b96a3922e600072c2b1bc3a79be09867b22df271",
+      "requires": [],
+      "paths": [
+        "core/codex_scanner.py", "core/indexer.py",
+        "tests/test_codex_scanner_resident.py", "tests/test_codex_parent_candidate.py"
+      ]
     }
   ]
 }
