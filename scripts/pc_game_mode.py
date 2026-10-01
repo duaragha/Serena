@@ -24,6 +24,12 @@ from pathlib import Path
 
 BELOW_NORMAL = 0x4000
 NORMAL_PRIORITY = 0x20
+# The Store API calls some software (including Wallpaper Engine) "game".
+# Its software genres take precedence over that broad product type.
+STEAM_SOFTWARE_GENRES = {str(value) for value in range(50, 61)}
+STEAM_NON_GAMES = {'431960', '228980'}
+STEAM_TYPES_CACHE = 'steam-types-v2.json'
+STEAM_GAMES_CACHE = 'steam-games-v2.json'
 HELPERS = re.compile(
     r"^(steam.*|epicwebhelper|crashreport.*|.*crashhandler.*|ueprereq.*|"
     r"setup.*|unins.*|installer.*|.*anticheat.*|.*_loader|launcher|"
@@ -358,7 +364,13 @@ def steam_type(app_id):
         headers={'User-Agent': 'SerenaPcGameMode/1.0'})
     with urllib.request.urlopen(request, timeout=3) as response:
         data = json.load(response).get(str(app_id), {})
-    return data.get('data', {}).get('type') if data.get('success') else None
+    if not data.get('success'):
+        return None
+    product = data.get('data', {})
+    if any(str(genre.get('id')) in STEAM_SOFTWARE_GENRES
+           for genre in product.get('genres', [])):
+        return 'application'
+    return product.get('type')
 
 
 def discover_steam(roots, cache, classifier=steam_type):
@@ -370,7 +382,7 @@ def discover_steam(roots, cache, classifier=steam_type):
             if not all(key in values for key in ('appid', 'name', 'installdir')):
                 continue
             app_id = values['appid']
-            if not app_id.isdigit():
+            if not app_id.isdigit() or app_id in STEAM_NON_GAMES:
                 continue
             kind = cache.get(app_id)
             if kind is None:
@@ -465,8 +477,8 @@ def watch(config_path, state_dir, windows, vbox, max_seconds=None):
     # saved CPU settings or recognition of explicitly configured games.
     discovered, cached_types = [], {}
     try:
-        catalog = read_json(state_dir / 'steam-games.json', {})
-        types = read_json(state_dir / 'steam-types.json', {})
+        catalog = read_json(state_dir / STEAM_GAMES_CACHE, {})
+        types = read_json(state_dir / STEAM_TYPES_CACHE, {})
         if isinstance(catalog, dict) and isinstance(catalog.get('games', []), list):
             discovered = catalog.get('games', [])
         if isinstance(types, dict):
@@ -504,8 +516,8 @@ def watch(config_path, state_dir, windows, vbox, max_seconds=None):
             if config.get('discover_steam', True) and not games and now - last_discovery >= 300:
                 try:
                     discovered = discover_steam(steam_roots(), cached_types)
-                    write_json(state_dir / 'steam-games.json', {'games': discovered})
-                    write_json(state_dir / 'steam-types.json', cached_types)
+                    write_json(state_dir / STEAM_GAMES_CACHE, {'games': discovered})
+                    write_json(state_dir / STEAM_TYPES_CACHE, cached_types)
                 except Exception:
                     logging.exception('Keeping previous game catalogue after discovery failure')
                 last_discovery = now
@@ -540,10 +552,10 @@ def main(argv=None):
         print(json.dumps(memory_plan(config, vbox, windows.sample(windows.processes(), [])), indent=2))
         return 0
     if args.command == 'discover':
-        cache = read_json(state_dir / 'steam-types.json', {})
+        cache = read_json(state_dir / STEAM_TYPES_CACHE, {})
         games = discover_steam(steam_roots(), cache)
-        write_json(state_dir / 'steam-types.json', cache)
-        write_json(state_dir / 'steam-games.json', {'games': games})
+        write_json(state_dir / STEAM_TYPES_CACHE, cache)
+        write_json(state_dir / STEAM_GAMES_CACHE, {'games': games})
         print(json.dumps(games, indent=2))
         return 0
     handle = windows.lock()
