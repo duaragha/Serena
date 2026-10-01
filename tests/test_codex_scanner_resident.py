@@ -57,6 +57,8 @@ def test_cli_session_remains_visible_without_metadata(tmp_path, monkeypatch) -> 
     ('other-extension', 'vscode', SESSION_ID, False),
     ('serena-workspace', 'exec', SESSION_ID, False),
     ('serena-workspace', 'vscode', 'other-session', False),
+    ('codex-tui', 'vscode', SESSION_ID, True),
+    ('serena-brain-fallback', 'vscode', SESSION_ID, False),
 ])
 def test_workspace_native_origin_survives_missing_synced_metadata(
     tmp_path, monkeypatch, originator, source, identity, expected,
