@@ -49,8 +49,10 @@ limits immediately when no game is running, before making discovery requests.
 
 Oblivion Remastered's two actual executable names are explicitly configured.
 Steam discovery reads installed app manifests and caches the official Steam
-Store classification. Only `game` apps are eligible; applications such as
-Wallpaper Engine and tools such as Steamworks redistributables are excluded.
+Store classification. Only `game` apps without software genres are eligible.
+Software genres override the API's broad product type, which incorrectly calls
+Wallpaper Engine a game. Wallpaper Engine and Steamworks redistributables also
+have explicit exclusions. Versioned caches discard earlier classifications.
 Unclassified apps are ignored until classification succeeds. Discovery runs at
 most every five minutes while no game is running.
 

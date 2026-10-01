@@ -1,3 +1,4 @@
+import io
 import json
 
 import pytest
@@ -278,6 +279,27 @@ def test_steam_tools_are_excluded_and_unclassified_apps_fail_closed(tmp_path):
     assert [rule['name'] for rule in rules] == ['Game']
 
 
+@pytest.mark.parametrize('genres,expected', [
+    ([{'id': '4'}, {'id': '23'}, {'id': '51'}, {'id': '57'}], 'application'),
+    ([{'id': '60'}], 'application'),
+    ([{'id': '3'}], 'game'),
+])
+def test_store_software_genres_override_misleading_game_type(monkeypatch, genres, expected):
+    response = {'1': {'success': True, 'data': {'type': 'game', 'genres': genres}}}
+    monkeypatch.setattr(game.urllib.request, 'urlopen',
+                        lambda *args, **kwargs: io.BytesIO(json.dumps(response).encode()))
+    assert game.steam_type('1') == expected
+
+
+def test_wallpaper_engine_is_excluded_even_with_a_stale_game_classification(tmp_path):
+    steamapps = tmp_path / 'steamapps'
+    steamapps.mkdir()
+    (steamapps / 'common' / 'wallpaper_engine').mkdir(parents=True)
+    (steamapps / 'appmanifest_431960.acf').write_text(
+        '"appid" "431960" "name" "Wallpaper Engine" "installdir" "wallpaper_engine"')
+    assert game.discover_steam([str(tmp_path)], {'431960': 'game'}) == []
+
+
 def test_corrupt_journal_is_not_overwritten(environment, tmp_path):
     config, vbox, windows, _, _ = environment
     (tmp_path / 'restore.json').write_text('{broken')
@@ -292,7 +314,7 @@ def test_corrupt_game_cache_does_not_block_restoring_cpu_settings(environment, t
     controller.apply(processes)
     config_file = tmp_path / 'config.json'
     config_file.write_text(json.dumps(config))
-    (tmp_path / 'steam-games.json').write_text('{broken cache')
+    (tmp_path / game.STEAM_GAMES_CACHE).write_text('{broken cache')
     game.watch(config_file, tmp_path, windows, vbox, max_seconds=0)
     assert vbox.info('Docker')['cpuexecutioncap'] == '85'
     assert vbox.info('Mac')['cpuexecutioncap'] == '90'
