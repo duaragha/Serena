@@ -719,14 +719,18 @@ def _is_agent_spawned_candidate(row: sqlite3.Row) -> bool:
         called by claude's Bash tool. The time-window check in
         _find_claude_parent does the disambiguation. No parent match
         means real user one-shot, stays top-level.
-    Definitely user-initiated (never candidate): source=cli — real
-        interactive `codex` CLI use; would never overlap with a claude
-        session in the same cwd at the same time.
+    Definitely user-initiated (never candidate): source=cli or
+        originator=codex-tui — real interactive `codex` CLI use; would never
+        overlap with a claude session in the same cwd at the same time.
+        codex-cli 0.159 tags its own TUI sessions source=vscode, which nested
+        terminal chats under whatever Claude chat shared the cwd.
     """
     origin = (row["originator"] or "").lower()
     if ":" in origin:
         orig_part, source = origin.split(":", 1)
         source = source.strip()
+        if orig_part.strip() == "codex-tui":
+            return False
         if source in ("mcp", "vscode", "exec"):
             return True
         if source == "cli":
