@@ -57,14 +57,16 @@ def test_cli_session_remains_visible_without_metadata(tmp_path, monkeypatch) -> 
     ('other-extension', 'vscode', SESSION_ID, False),
     ('serena-workspace', 'exec', SESSION_ID, False),
     ('serena-workspace', 'vscode', 'other-session', False),
+    ('codex-tui', 'vscode', SESSION_ID, True),
+    ('serena-brain-fallback', 'vscode', SESSION_ID, False),
 ])
 def test_workspace_native_origin_survives_missing_synced_metadata(
     tmp_path, monkeypatch, originator, source, identity, expected,
 ):
     path = _rollout(tmp_path, source)
-    record = json.loads(path.read_text())
+    record = json.loads(path.read_text(encoding="utf-8"))
     record['payload'].update(originator=originator, id=identity)
-    path.write_text(json.dumps(record) + '\n')
+    path.write_text(json.dumps(record) + '\n', encoding="utf-8")
     monkeypatch.setattr(codex_scanner.meta_sync, 'get_meta', lambda sid: {})
     monkeypatch.setattr(codex_scanner, 'CODEX_SESSIONS_ROOT', tmp_path)
     assert codex_scanner._is_user_initiated(path) is expected

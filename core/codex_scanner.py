@@ -97,6 +97,11 @@ def _is_user_initiated(file_path: Path) -> bool:
     source = _source_name(payload.get("source"))
     if source == "cli":
         return True
+    # codex-cli 0.159.3 tags its own interactive TUI sessions source "vscode",
+    # which hid every new terminal chat from the index (and stranded the
+    # handoff placeholder waiting for one, see _reconcilePseudos).
+    if source == "vscode" and payload.get("originator") == "codex-tui":
+        return True
     # Interactive workspace chats use the app-server's extension source. Their
     # native identity survives missing or older synced resident_work metadata.
     if (obj.get("type") == "session_meta" and source == "vscode"
