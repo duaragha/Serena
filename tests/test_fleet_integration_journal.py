@@ -68,7 +68,7 @@ def _intent(tmp_path):
     store.claim_paths(run_id="journal", worker_key="agent:a", paths=["*"])
     workspace = ensure_workspace(store, run_id="journal", worker_key="agent:a", cwd=root)
     worker = Path(workspace.path)
-    (worker / "core/alpha.py").write_text("alpha = 2\n", encoding="utf-8")
+    (worker / "core/alpha.py").write_bytes(b"alpha = 2\n")
     (worker / "new.bin").write_bytes(b"\x00\xffnew\r\n")
     paths = workspace_changed_paths(workspace)
     journal = IntegrationJournal(store, root, workspace, _workspace_patch(workspace, paths))
@@ -82,11 +82,11 @@ def _integrate(root, store, **kwargs):
 
 def test_mixed_exact_images_restore_then_apply_and_preserve_unrelated_files(tmp_path):
     root, store, _, journal = _intent(tmp_path)
-    (root / "core/alpha.py").write_text("alpha = 2\n", encoding="utf-8")
+    (root / "core/alpha.py").write_bytes(b"alpha = 2\n")
     (root / "unrelated.txt").write_text("user work", encoding="utf-8")
     assert journal.state() == "mixed"
     result = _integrate(root, store)
-    assert result.ok, result.reason
+    assert result.ok, (result.reason, result.test_gate)
     assert result.test_gate["integration_journal"]["restored_mixed_preimage"]
     assert result.rollback_ref == "retained-preimage-ref"
     assert (root / "unrelated.txt").read_text(encoding="utf-8") == "user work"
@@ -106,7 +106,7 @@ def test_foreign_drift_refuses_before_restoring_any_paths(tmp_path):
 
 def test_preview_never_restores_a_mixed_intent(tmp_path):
     root, store, _, _ = _intent(tmp_path)
-    (root / "core/alpha.py").write_text("alpha = 2\n", encoding="utf-8")
+    (root / "core/alpha.py").write_bytes(b"alpha = 2\n")
     result = _integrate(root, store, apply_changes=False)
     assert not result.ok and "preview" in result.reason
     assert (root / "core/alpha.py").read_text(encoding="utf-8") == "alpha = 2\n"
@@ -115,7 +115,8 @@ def test_preview_never_restores_a_mixed_intent(tmp_path):
 
 def test_recovered_postimage_must_pass_gates_and_rolls_back_to_original_preimage(tmp_path):
     root, store, _, journal = _intent(tmp_path)
-    assert _integrate(root, store).ok
+    applied = _integrate(root, store)
+    assert applied.ok, (applied.reason, applied.test_gate)
     failed = _integrate(root, store, test_gate=[sys.executable, "-c", "raise SystemExit(7)"])
     assert not failed.ok and failed.test_gate["exit_code"] == 7
     assert journal.state() == "pre"
@@ -195,7 +196,8 @@ def test_parent_symlink_never_reads_or_writes_outside_checkout(tmp_path):
 @pytest.mark.skipif(os.name == "nt", reason="POSIX SIGKILL fault injection")
 def test_death_during_rollback_recovers_remaining_mixed_images(tmp_path):
     root, store, _, _ = _intent(tmp_path)
-    assert _integrate(root, store).ok
+    applied = _integrate(root, store)
+    assert applied.ok, (applied.reason, applied.test_gate)
     script = (
         "import os, signal, sys\n"
         "from fleet.isolation import FleetIsolationStore, integrate_workspace\n"
@@ -214,7 +216,7 @@ def test_death_during_rollback_recovers_remaining_mixed_images(tmp_path):
     assert (root / "new.bin").exists()
     reopened = FleetIsolationStore(store.path, workspace_root=store.workspace_root)
     result = _integrate(root, reopened)
-    assert result.ok, result.reason
+    assert result.ok, (result.reason, result.test_gate)
     assert result.test_gate["integration_journal"]["restored_mixed_preimage"]
     assert (root / "core/alpha.py").read_text(encoding="utf-8") == "alpha = 2\n"
 

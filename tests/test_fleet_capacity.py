@@ -203,6 +203,7 @@ def test_codex_jsonl_fallback_respects_freshness_and_reset(tmp_path, monkeypatch
     states = fleet_capacity.read_fleet_capacity(
         now=NOW,
         environ={
+            "SERENA_FLEET_CODEX_BIN": sys.executable,
             "SERENA_FLEET_LIVE_USAGE_PATH": str(tmp_path / "missing.json"),
             "SERENA_FLEET_CODEX_SESSIONS_DIR": str(sessions),
             "SERENA_FLEET_CODEX_FRESH_SECONDS": "120",

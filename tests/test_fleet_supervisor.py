@@ -1189,7 +1189,7 @@ def test_four_agent_team_uses_four_readers_but_two_writer_waves(
             started[request.phase].append(request.worker_key)
             active[request.phase] += 1
             peak[request.phase] = max(peak[request.phase], active[request.phase])
-        barriers[request.phase].wait(timeout=3)
+        barriers[request.phase].wait(timeout=30 if os.name == "nt" else 5)
         time.sleep(0.06)
         with lock:
             active[request.phase] -= 1
@@ -1217,7 +1217,7 @@ tasks:
     )
     completed = supervisor.run_supervisor(run["run_id"])
 
-    assert completed["state"] == "completed"
+    assert completed["state"] == "completed", completed.get("error")
     assert completed["agent_count"] == 4
     assert completed["chat_count"] == 8
     assert completed["progress"] == {"completed": 16, "total": 16}
