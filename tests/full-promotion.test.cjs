@@ -92,3 +92,23 @@ test('released snapshot receives only pinned adaptation paths and records their 
   assert.throws(() => prepare({ ...fresh, source: git(repo, ['rev-parse', 'HEAD']) }));
   assert.equal(fs.existsSync(fresh.destination), false);
 });
+
+test('a newer catalog cannot drag later Dev features into the pinned release', t => {
+  const { repo, options } = fixture(t);
+  fs.writeFileSync(path.join(repo, 'later-feature.txt'), 'released after the requested Dev tag\n');
+  git(repo, ['add', '.']);
+  git(repo, ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'later feature']);
+  const later = git(repo, ['rev-parse', 'HEAD']);
+  git(repo, ['tag', 'v99.0.0-dev.2']);
+  const newerCatalog = JSON.parse(fs.readFileSync(path.join(repo, 'config/promotion-features.json'), 'utf8'));
+  newerCatalog.features.push({ id: 'later-fixture', title: 'Later feature', commit: later,
+    devTag: 'v99.0.0-dev.2', requires: [], paths: ['later-feature.txt'] });
+  fs.writeFileSync(path.join(repo, 'config/promotion-features.json'), JSON.stringify(newerCatalog));
+  git(repo, ['add', '.']);
+  git(repo, ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'register later feature']);
+  options.source = git(repo, ['rev-parse', 'HEAD']);
+  assert.throws(() => prepare({ ...options, selected: [...options.selected, 'later-fixture'], tested: [...options.tested, 'later-fixture'] }), /every registered feature in that release/);
+  const plan = prepare(options);
+  assert.equal(plan.features.some(f => f.id === 'later-fixture'), false);
+  assert.equal(fs.existsSync(path.join(options.destination, 'later-feature.txt')), false);
+});

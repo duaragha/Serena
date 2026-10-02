@@ -111,7 +111,8 @@ the currently running main PID stays healthy.
 An explicit request to promote all of Dev can use the same workflow with
 `dev_tag` and `dev_commit` set to a reviewed, immutable Dev release. Both platform
 installers and Dev updater manifests must already be published. Select every
-registered feature and acknowledge all additions as tested.
+registered feature present in that release and acknowledge all additions as
+tested. Features first released after the pinned Dev tag are excluded.
 
 The candidate retains stable's history as its parent, imports the exact Dev tree,
 and changes the version files and promotion receipt. A released snapshot can also
