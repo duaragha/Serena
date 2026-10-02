@@ -127,6 +127,14 @@ if __name__ == "__main__" and sys.argv[1:] == ["--fleet-peer-mcp"]:
 
 _repair_standard_streams()
 
+if __name__ == "__main__" and sys.argv[1:] == ["--index-refresh"]:
+    # Match the Linux sidecar's background scanner entry point. Dispatch before
+    # importing ui.web, so a refresh cannot start a second resident web runtime.
+    from core.indexer import update_index
+
+    update_index(skip_if_running=True)
+    raise SystemExit(0)
+
 if __name__ == "__main__" and sys.argv[1:2] == ["computer"]:
     from core.computer_cli import computer
 
