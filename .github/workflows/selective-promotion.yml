@@ -128,6 +128,8 @@ jobs:
       - name: Boot actual packaged stable shell in isolated profile
         working-directory: candidate/apps/desktop
         run: xvfb-run -a node tests/smoke-appimage.js
+      - name: Prove chat history in the frozen stable candidate
+        run: python scripts/verify-chat-index.py --binary candidate/apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
       - uses: actions/upload-artifact@v4
         with:
           name: candidate-linux
@@ -182,6 +184,11 @@ jobs:
             ./.venv/Scripts/python.exe -m pytest -q --tb=short tests/test_fleet_report_visibility.py
             if ($LASTEXITCODE -ne 0) { throw 'report visibility tests failed' }
           }
+      - name: Prove chat history in the frozen stable candidate
+        shell: pwsh
+        run: |
+          python scripts/verify-chat-index.py --binary candidate/apps/desktop/build/windows-sidecar/serena-web-sidecar/serena-web-sidecar.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Frozen chat history continuity failed' }
       - name: Prove selected Fleet model routing before accepting Windows artifacts
         if: contains(fromJSON(inputs.selected), 'fleet-model-routing')
         working-directory: candidate

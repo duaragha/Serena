@@ -55,6 +55,8 @@ mkdir -p "$pyinstaller_work" "$sidecar_dist" "$uv_cache" "$uv_tools"
   "$desktop_dir/sidecar.py"
 
 test -x "$sidecar_dist/serena-web-sidecar/serena-web-sidecar"
+"$python_bin" "$repo_root/scripts/verify-chat-index.py" \
+  --binary "$sidecar_dist/serena-web-sidecar/serena-web-sidecar"
 "$sidecar_dist/serena-web-sidecar/serena-web-sidecar" --workspace-runtime-check
 "$python_bin" "$repo_root/scripts/fleet_peer_smoke.py" \
   --binary "$sidecar_dist/serena-web-sidecar/serena-web-sidecar"
