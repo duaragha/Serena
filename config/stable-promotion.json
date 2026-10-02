@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "version": "v0.3.12",
-  "baseTag": "v0.3.11",
-  "baseCommit": "b045799b9f1f8202e0179edfd0bcbe21cf0c98e1",
-  "source": "9da6f8e0a51701a5bd91a9c181ddc8a942ff3b61",
-  "request": "90605e3e95fc888dc7d83fd81df59c40",
+  "version": "v0.3.13",
+  "baseTag": "v0.3.12",
+  "baseCommit": "47f2a7ca125be9c6057f2355c8a254e393197b86",
+  "source": "f7fae22ab2355f6aef4542b1551736c649fec128",
+  "request": "f30d5a06a706429c8feb34dfc37188da",
   "features": [
     {
       "id": "sidebar-order",
@@ -72,12 +72,18 @@
       "id": "packaged-index-refresh",
       "commit": "0fe6ec58a588a05b42bddb24b92c34f30e08c411",
       "devTag": "v0.3.10-dev.19"
+    },
+    {
+      "id": "codex-0159-chat-index",
+      "commit": "b96a3922e600072c2b1bc3a79be09867b22df271",
+      "devTag": "v0.3.10-dev.24",
+      "base": "9e92636c8e1857f6cdad319715220abff02708c3"
     }
   ],
   "patches": [
     {
-      "id": "packaged-index-refresh",
-      "sha256": "dbdeaf8b3e83a61487bbf6f2eedfbc949a01ad936d020200f4f5a3999d66922b"
+      "id": "codex-0159-chat-index",
+      "sha256": "2eb527e80bc8f4c102477ca1cf1227e2807efb24bb7259152f9caacfa2f0508e"
     }
   ]
 }
