@@ -5,12 +5,15 @@ import pytest
 
 from scripts import pc_game_mode as game
 
+SYSTEM_MASK_DEFAULT = 0xFFF
+
 
 def configuration():
     return {
         'vboxmanage': r'C:\VBox\VBoxManage.exe', 'enabled': True,
         'poll_seconds': 5, 'cooldown_seconds': 20,
         'targets': {'background_cpu_pct': 30, 'background_ram_pct': 70},
+        'vm_affinity_cpus': 4,
         'vms': [{'name': 'Docker', 'cpu_cap': 50, 'memory_mib': 8192},
                 {'name': 'Mac', 'cpu_cap': 25, 'memory_mib': 4096}],
         'games': [{'name': 'Oblivion', 'root': r'C:\Games\Oblivion',
@@ -28,6 +31,18 @@ class FakeVBox:
         }
         self.fail = None
         self.calls = []
+        self.priority_calls = []
+        self.fail_priority = None
+        for vm in self.machines.values():
+            vm['vmprocpriority'] = 'default'
+
+    def priority(self, name, value, state):
+        if self.fail_priority == name:
+            self.fail_priority = None
+            raise RuntimeError('temporary priority failure')
+        row = next(v for k, v in self.machines.items() if name in (k, v['UUID']))
+        self.priority_calls.append((name, value, state))
+        row['vmprocpriority'] = value
 
     def info(self, name):
         return next(value.copy() for key, value in self.machines.items()
@@ -52,9 +67,15 @@ class FakeVBox:
 
 
 class FakeWindows:
+    # A 12-logical-processor machine, matching the audited Ryzen 5600X.
+    SYSTEM_MASK = 0xFFF
+
     def __init__(self):
         self.values = {10: (100, game.NORMAL_PRIORITY)}
+        self.masks = {10: (100, SYSTEM_MASK_DEFAULT)}
         self.calls = []
+        self.affinity_calls = []
+        self.deny_affinity = False
 
     def priority(self, process, value=None):
         row = self.values.get(process.pid)
@@ -64,6 +85,20 @@ class FakeWindows:
             self.values[process.pid] = (row[0], value)
             self.calls.append((process.pid, value))
         return self.values[process.pid][1]
+
+    def system_affinity(self):
+        return self.SYSTEM_MASK
+
+    def affinity(self, process, mask=None):
+        row = self.masks.get(process.pid)
+        if row is None or row[0] != process.created:
+            return None
+        if mask is not None:
+            if self.deny_affinity:
+                return None
+            self.masks[process.pid] = (row[0], mask)
+            self.affinity_calls.append((process.pid, mask))
+        return self.masks[process.pid][1]
 
 
 @pytest.fixture
@@ -318,3 +353,190 @@ def test_corrupt_game_cache_does_not_block_restoring_cpu_settings(environment, t
     game.watch(config_file, tmp_path, windows, vbox, max_seconds=0)
     assert vbox.info('Docker')['cpuexecutioncap'] == '85'
     assert vbox.info('Mac')['cpuexecutioncap'] == '90'
+
+
+@pytest.mark.parametrize('system_mask,cpus,expected', [
+    (0xFFF, 4, 0xF00),      # 12 threads, guests confined to logical 8-11
+    (0xFFF, 1, 0x800),
+    (0xFFF, 12, 0xFFF),     # asking for every processor yields the whole mask
+    (0xFFF, 99, 0xFFF),     # and so does asking for more than exist
+    (0b101101, 2, 0b101000),  # gaps in the system mask are respected
+])
+def test_affinity_mask_reserves_the_low_cores_for_the_game(system_mask, cpus, expected):
+    assert game.affinity_mask(system_mask, cpus) == expected
+
+
+def test_game_pins_guests_to_top_cores_and_exit_restores_them(environment):
+    _, _, windows, controller, processes = environment
+    assert controller.tick(['Oblivion'], processes, 100)
+    assert windows.masks[10][1] == 0xF00
+    assert not controller.tick([], processes, 130)
+    assert windows.masks[10][1] == SYSTEM_MASK_DEFAULT
+
+
+def test_affinity_pinning_is_off_when_unconfigured(environment):
+    config, _, windows, controller, processes = environment
+    del config['vm_affinity_cpus']
+    controller.tick(['Oblivion'], processes, 100)
+    assert windows.affinity_calls == []
+    assert not controller.journal['affinities']
+    controller.restore()
+
+
+def test_existing_narrower_pin_is_not_widened(environment):
+    _, _, windows, controller, processes = environment
+    windows.masks[10] = (100, 0x100)
+    controller.apply(processes)
+    assert windows.masks[10][1] == 0x100
+    controller.restore()
+    assert windows.masks[10][1] == 0x100
+
+
+def test_external_affinity_change_is_preserved_on_restore(environment):
+    _, _, windows, controller, processes = environment
+    controller.apply(processes)
+    windows.masks[10] = (100, 0x00F)
+    controller.restore()
+    assert windows.masks[10][1] == 0x00F
+
+
+def test_pid_reuse_does_not_repin_unrelated_process(environment):
+    _, _, windows, controller, processes = environment
+    controller.apply(processes)
+    windows.masks[10] = (999, 0x00F)
+    controller.restore()
+    assert windows.masks[10] == (999, 0x00F)
+
+
+def test_protected_helper_affinity_leaves_no_journal_entry(environment):
+    _, _, windows, controller, processes = environment
+    windows.deny_affinity = True
+    controller.apply(processes)
+    assert not controller.journal['affinities']
+    assert controller.journal['priorities']  # caps and priority still applied
+    controller.restore()
+
+
+def test_journal_written_before_affinity_existed_still_loads(environment, tmp_path):
+    config, vbox, windows, _, _ = environment
+    (tmp_path / 'restore.json').write_text(json.dumps({'vms': {}, 'priorities': {}}))
+    controller = game.Controller(config, vbox, windows, tmp_path)
+    assert controller.journal['affinities'] == {}
+
+
+def test_unknown_journal_shape_is_still_refused(environment, tmp_path):
+    config, vbox, windows, _, _ = environment
+    (tmp_path / 'restore.json').write_text(json.dumps({'vms': {}, 'surprise': {}}))
+    with pytest.raises(ValueError, match='Invalid restore journal'):
+        game.Controller(config, vbox, windows, tmp_path)
+
+
+def test_affinity_cpus_must_leave_processors_for_the_game(tmp_path, monkeypatch):
+    monkeypatch.setattr(game.os, 'cpu_count', lambda: 12)
+    path = tmp_path / 'config.json'
+    config = configuration()
+    config['vm_affinity_cpus'] = 11
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match='at least two logical processors'):
+        game.load_config(path)
+    config['vm_affinity_cpus'] = 10
+    path.write_text(json.dumps(config))
+    assert game.load_config(path)['vm_affinity_cpus'] == 10
+    config['vm_affinity_cpus'] = 0
+    path.write_text(json.dumps(config))
+    assert game.load_config(path)['vm_affinity_cpus'] == 0
+
+
+def test_native_priority_journaled_before_change_and_restored(environment, tmp_path):
+    _, vbox, _, controller, processes = environment
+    vbox.machines['Docker']['vmprocpriority'] = 'flat'
+    original = vbox.priority
+
+    def checked(name, value, state):
+        saved = json.loads((tmp_path / 'restore.json').read_text())
+        assert saved['vms']['Docker']['priority_original'] == 'flat'
+        return original(name, value, state)
+
+    vbox.priority = checked
+    controller.apply(processes)
+    assert vbox.info('Docker')['vmprocpriority'] == 'low'
+    vbox.priority = original
+    assert controller.restore() == []
+    assert vbox.info('Docker')['vmprocpriority'] == 'flat'
+
+
+def test_native_priority_apply_failure_rolls_back_caps_and_priority(environment):
+    _, vbox, _, controller, processes = environment
+    vbox.fail_priority = 'mac-id'
+    with pytest.raises(RuntimeError, match='priority failure'):
+        controller.apply(processes)
+    assert vbox.info('Docker')['cpuexecutioncap'] == '85'
+    assert vbox.info('Docker')['vmprocpriority'] == 'default'
+    assert not controller.active
+
+
+def test_native_priority_restore_failure_is_retained_and_retried(environment):
+    _, vbox, _, controller, processes = environment
+    controller.apply(processes)
+    vbox.fail_priority = 'docker-id'
+    assert controller.restore()
+    assert controller.journal['vms']['Docker']['priority_original'] == 'default'
+    assert controller.restore() == []
+    assert not controller.active
+    assert vbox.info('Docker')['vmprocpriority'] == 'default'
+
+
+def test_external_native_priority_is_preserved(environment):
+    _, vbox, _, controller, processes = environment
+    controller.apply(processes)
+    vbox.machines['Docker']['vmprocpriority'] = 'high'
+    controller.restore()
+    assert vbox.info('Docker')['vmprocpriority'] == 'high'
+
+
+def test_legacy_vm_entry_restores_without_changing_priority(environment, tmp_path):
+    config, vbox, windows, _, _ = environment
+    path = tmp_path / 'restore.json'
+    path.write_text(json.dumps({'vms': {'Docker': {'uuid': 'docker-id', 'original': 100, 'applied': 85}}, 'priorities': {}}))
+    controller = game.Controller(config, vbox, windows, tmp_path)
+    controller.restore()
+    assert vbox.info('Docker')['cpuexecutioncap'] == '100'
+    assert vbox.priority_calls == []
+
+
+@pytest.mark.parametrize('state,action,flag', [
+    ('running', 'controlvm', 'vm-process-priority'),
+    ('poweroff', 'modifyvm', '--vm-process-priority'),
+])
+def test_native_priority_uses_supported_command_and_verifies(state, action, flag):
+    vbox = game.VBox('VBoxManage')
+    calls = []
+    vbox.call = lambda *args: calls.append(args)
+    vbox.info = lambda name: {'vmprocpriority': 'low'}
+    vbox.priority('uuid', 'low', state)
+    assert calls == [(action, 'uuid', flag, 'low')]
+    vbox.info = lambda name: {'vmprocpriority': 'default'}
+    with pytest.raises(RuntimeError, match='verification'):
+        vbox.priority('uuid', 'low', state)
+
+
+def test_restarted_controller_restores_native_priority(environment, tmp_path):
+    config, vbox, windows, controller, processes = environment
+    controller.apply(processes)
+    restarted = game.Controller(config, vbox, windows, tmp_path)
+    assert restarted.restore() == []
+    assert vbox.info('Docker')['vmprocpriority'] == 'default'
+    assert vbox.info('Mac')['vmprocpriority'] == 'default'
+
+
+@pytest.mark.parametrize('kind', ['priority', 'affinity'])
+def test_windows_restore_denial_keeps_recovery_journal(environment, kind):
+    _, _, windows, controller, processes = environment
+    controller.apply(processes)
+    original = getattr(windows, kind)
+    setattr(windows, kind, lambda process, value=None: original(process) if value is None else None)
+    assert controller.restore()
+    assert controller.journal['priorities' if kind == 'priority' else 'affinities']
+    setattr(windows, kind, original)
+    assert controller.restore() == []
+    assert not controller.active
