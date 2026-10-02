@@ -1688,6 +1688,21 @@ body.pane-dragging * {
   border-color: var(--menu);
   background: rgba(255, 255, 255, 0.055);
 }
+.term-session-cost {
+  height: 21px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border: 1px solid var(--border-bright);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+.term-session-cost.claude { color: #ff967d; }
+.term-session-cost.codex { color: #8cb4ff; }
+.term-session-cost.total { color: var(--green); border-color: var(--green); }
 .term-session-id.claude { color: #ff967d; }
 .term-session-id.codex { color: #8cb4ff; }
 .term-session-id.gemini { color: #67d9a0; }
@@ -7143,7 +7158,68 @@ function _renderOpenSessionIds(sids) {
         .catch(() => showToast('copy failed', { variant: 'error' }));
     });
     root.appendChild(btn);
+    const cost = document.createElement('span');
+    cost.className = 'term-session-cost ' + agent;
+    cost.dataset.sid = sid;
+    cost.textContent = _fmtChatCost(_chatCosts.get(sid));
+    cost.title = agent === 'codex'
+      ? 'Estimated from token usage at OpenAI list prices'
+      : 'Reported by Claude Code';
+    root.appendChild(cost);
   }
+  if (unique.length > 1) {
+    const total = document.createElement('span');
+    total.className = 'term-session-cost total';
+    total.id = 'termCostTotal';
+    total.title = 'Total for the open chats';
+    root.appendChild(total);
+  }
+  _paintChatCosts();
+  _pollChatCosts(unique);
+}
+
+const _chatCosts = new Map();
+let _chatCostTimer = null;
+let _chatCostSids = [];
+
+function _fmtChatCost(entry) {
+  if (!entry || entry.cost_usd == null) return '$\u2014';
+  const v = entry.cost_usd;
+  return (entry.estimated ? '~$' : '$') + (v < 100 ? v.toFixed(2) : v.toFixed(0));
+}
+
+function _paintChatCosts() {
+  const root = document.getElementById('termSessionIds');
+  if (!root) return;
+  let sum = 0, known = false;
+  root.querySelectorAll('.term-session-cost[data-sid]').forEach(el => {
+    const entry = _chatCosts.get(el.dataset.sid);
+    el.textContent = _fmtChatCost(entry);
+    if (entry && entry.cost_usd != null) { sum += entry.cost_usd; known = true; }
+  });
+  const total = document.getElementById('termCostTotal');
+  if (total) total.textContent = known ? 'total $' + (sum < 100 ? sum.toFixed(2) : sum.toFixed(0)) : 'total $\u2014';
+}
+
+async function _fetchChatCosts() {
+  if (!_chatCostSids.length) return;
+  try {
+    const r = await fetch('/api/session-costs?sids=' + encodeURIComponent(_chatCostSids.join(',')));
+    if (!r.ok) return;
+    const data = await r.json();
+    for (const sid of Object.keys(data)) _chatCosts.set(sid, data[sid]);
+    _paintChatCosts();
+  } catch (e) {}
+}
+
+function _pollChatCosts(sids) {
+  _chatCostSids = sids;
+  if (_chatCostTimer) { clearInterval(_chatCostTimer); _chatCostTimer = null; }
+  if (!sids.length) return;
+  _fetchChatCosts();
+  // Claude refreshes its status line every 5s and Codex grows its rollout each
+  // request, so a 5s poll shows each turn's cost as soon as the turn lands.
+  _chatCostTimer = setInterval(() => { if (!document.hidden) _fetchChatCosts(); }, 5000);
 }
 
 function _sendResizeForSid(sid, force) {
@@ -15204,6 +15280,14 @@ def api_usage():
     else:
         range_days = None
     return jsonify(get_usage_stats(range_days))
+
+
+@app.route("/api/session-costs")
+def api_session_costs():
+    from core.session_cost import session_costs
+
+    sids = [s for s in (request.args.get("sids") or "").split(",") if s][:8]
+    return jsonify(session_costs(sids))
 
 
 # ---------------------------------------------------------------------------
