@@ -4,7 +4,7 @@
   "poll_seconds": 5,
   "cooldown_seconds": 20,
   "discover_steam": true,
-  "vm_affinity_cpus": 4,
+  "vm_affinity_cpus": 0,
   "targets": {
     "background_cpu_pct": 30,
     "background_ram_pct": 70

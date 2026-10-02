@@ -60,9 +60,8 @@ def path_key(value: str) -> str:
 def affinity_mask(system_mask: int, cpus: int) -> int:
     """The highest `cpus` logical processors the system actually offers.
 
-    Games are left the low-numbered cores, which is where Windows schedules a
-    foreground process first. Pinning the guests to the top of the mask keeps
-    them off those cores entirely instead of merely slowing them down there.
+    This applies only where Windows permits affinity changes. VirtualBox's
+    protected worker processes may reject it; never infer exclusive game cores.
     """
     available = [bit for bit in range(system_mask.bit_length()) if system_mask >> bit & 1]
     if cpus >= len(available):
@@ -290,6 +289,16 @@ class VBox:
         else:
             raise RuntimeError(f'{name} is transitioning ({state}); will retry restoration.')
 
+    def priority(self, name, value, state):
+        if state in ('running', 'paused'):
+            self.call('controlvm', name, 'vm-process-priority', value)
+        elif state in ('poweroff', 'aborted', 'saved'):
+            self.call('modifyvm', name, '--vm-process-priority', value)
+        else:
+            raise RuntimeError(f'{name} is transitioning ({state}); will retry restoration.')
+        if self.info(name).get('vmprocpriority') != value:
+            raise RuntimeError(f'VM priority verification failed for {name}')
+
 
 class Controller:
     def __init__(self, config: dict, vbox, windows, state_dir: Path):
@@ -326,8 +335,15 @@ class Controller:
                 original = int(info['cpuexecutioncap'])
                 applied = min(original, int(profile['cpu_cap']))
                 self.journal['vms'][name] = {'uuid': info['UUID'], 'original': original, 'applied': applied}
+                # Native control changes protected VM worker thread priorities,
+                # unlike SetPriorityClass on the accessible launcher alone.
+                priority = info.get('vmprocpriority')
+                if priority not in {'default', 'flat', 'low', 'normal', 'high'}:
+                    raise RuntimeError(f'Cannot read a supported VM priority for {name}')
+                self.journal['vms'][name].update(priority_original=priority, priority_applied='low')
                 self.save()  # Recovery information must exist before the first mutation.
                 self.vbox.cap(info['UUID'], applied, info['VMState'])
+                self.vbox.priority(info['UUID'], 'low', info['VMState'])
             headless = path_key(ntpath.join(ntpath.dirname(self.vbox.executable), 'VBoxHeadless.exe'))
             for process in processes:
                 if path_key(process.path) != headless:
@@ -354,12 +370,12 @@ class Controller:
                                            'original': original, 'applied': applied}
         self.save()
         if self.windows.priority(process, applied) is None:
-            # CPU caps still apply. Protected wrappers are optional, and
-            # their unmodified priorities need no restoration journal.
+            # Native VM priority and CPU caps still apply. Protection includes
+            # the actual CPU-consuming worker, not just helper wrappers.
             self.unmodifiable_priorities.add((process.pid, process.created))
             del self.journal['priorities'][key]
             self.save()
-            logging.info('Leaving protected VBox helper priority unchanged: %s', process.pid)
+            logging.info('Windows process priority denied for VBox PID %s; native VM priority is used', process.pid)
 
     def apply_affinity(self, process):
         cpus = int(self.config.get('vm_affinity_cpus', 0))
@@ -384,7 +400,7 @@ class Controller:
             self.unmodifiable_affinities.add((process.pid, process.created))
             del self.journal['affinities'][key]
             self.save()
-            logging.info('Leaving protected VBox helper affinity unchanged: %s', process.pid)
+            logging.warning('Core affinity denied for VBox PID %s; no exclusive-core guarantee', process.pid)
 
     def restore(self):
         failures = []
@@ -395,6 +411,11 @@ class Controller:
                     self.vbox.cap(entry['uuid'], entry['original'], info['VMState'])
                 else:
                     logging.info('Preserving external CPU-cap change for %s', name)
+                if 'priority_original' in entry:
+                    if info.get('vmprocpriority') == entry['priority_applied']:
+                        self.vbox.priority(entry['uuid'], entry['priority_original'], info['VMState'])
+                    else:
+                        logging.info('Preserving external VM-priority change for %s', name)
                 del self.journal['vms'][name]
                 self.save()
             except Exception as exc:
@@ -404,7 +425,8 @@ class Controller:
                 process = Process(int(pid), entry['path'], entry['created'])
                 current = self.windows.priority(process)
                 if current == entry['applied']:
-                    self.windows.priority(process, entry['original'])
+                    if self.windows.priority(process, entry['original']) != entry['original']:
+                        raise RuntimeError(f'Windows priority restore pending for PID {pid}')
                 del self.journal['priorities'][pid]
                 self.save()
             except Exception as exc:
@@ -413,7 +435,8 @@ class Controller:
             try:
                 process = Process(int(pid), entry['path'], entry['created'])
                 if self.windows.affinity(process) == entry['applied']:
-                    self.windows.affinity(process, entry['original'])
+                    if self.windows.affinity(process, entry['original']) != entry['original']:
+                        raise RuntimeError(f'Windows affinity restore pending for PID {pid}')
                 del self.journal['affinities'][pid]
                 self.save()
             except Exception as exc:
@@ -603,6 +626,7 @@ def watch(config_path, state_dir, windows, vbox, max_seconds=None):
                       'targets': config['targets'], 'memory_changes_automatic': False,
                       'sample': sample, 'game_rules': rules,
                       'pending_restoration': controller.journal,
+                      'affinity_denied_pids': sorted(pid for pid, _ in controller.unmodifiable_affinities),
                       'ram_target_met_without_game': not games and sample['total_ram_used_pct'] <= config['targets']['background_ram_pct'],
                       'cpu_target_met': sample['background_cpu_pct'] is not None and sample['background_cpu_pct'] <= config['targets']['background_cpu_pct']}
             write_json(state_dir / 'status.json', status)

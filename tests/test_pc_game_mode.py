@@ -31,6 +31,18 @@ class FakeVBox:
         }
         self.fail = None
         self.calls = []
+        self.priority_calls = []
+        self.fail_priority = None
+        for vm in self.machines.values():
+            vm['vmprocpriority'] = 'default'
+
+    def priority(self, name, value, state):
+        if self.fail_priority == name:
+            self.fail_priority = None
+            raise RuntimeError('temporary priority failure')
+        row = next(v for k, v in self.machines.items() if name in (k, v['UUID']))
+        self.priority_calls.append((name, value, state))
+        row['vmprocpriority'] = value
 
     def info(self, name):
         return next(value.copy() for key, value in self.machines.items()
@@ -433,3 +445,76 @@ def test_affinity_cpus_must_leave_processors_for_the_game(tmp_path, monkeypatch)
     config['vm_affinity_cpus'] = 0
     path.write_text(json.dumps(config))
     assert game.load_config(path)['vm_affinity_cpus'] == 0
+
+
+def test_native_priority_journaled_before_change_and_restored(environment, tmp_path):
+    _, vbox, _, controller, processes = environment
+    vbox.machines['Docker']['vmprocpriority'] = 'flat'
+    original = vbox.priority
+
+    def checked(name, value, state):
+        saved = json.loads((tmp_path / 'restore.json').read_text())
+        assert saved['vms']['Docker']['priority_original'] == 'flat'
+        return original(name, value, state)
+
+    vbox.priority = checked
+    controller.apply(processes)
+    assert vbox.info('Docker')['vmprocpriority'] == 'low'
+    vbox.priority = original
+    assert controller.restore() == []
+    assert vbox.info('Docker')['vmprocpriority'] == 'flat'
+
+
+def test_native_priority_apply_failure_rolls_back_caps_and_priority(environment):
+    _, vbox, _, controller, processes = environment
+    vbox.fail_priority = 'mac-id'
+    with pytest.raises(RuntimeError, match='priority failure'):
+        controller.apply(processes)
+    assert vbox.info('Docker')['cpuexecutioncap'] == '85'
+    assert vbox.info('Docker')['vmprocpriority'] == 'default'
+    assert not controller.active
+
+
+def test_native_priority_restore_failure_is_retained_and_retried(environment):
+    _, vbox, _, controller, processes = environment
+    controller.apply(processes)
+    vbox.fail_priority = 'docker-id'
+    assert controller.restore()
+    assert controller.journal['vms']['Docker']['priority_original'] == 'default'
+    assert controller.restore() == []
+    assert not controller.active
+    assert vbox.info('Docker')['vmprocpriority'] == 'default'
+
+
+def test_external_native_priority_is_preserved(environment):
+    _, vbox, _, controller, processes = environment
+    controller.apply(processes)
+    vbox.machines['Docker']['vmprocpriority'] = 'high'
+    controller.restore()
+    assert vbox.info('Docker')['vmprocpriority'] == 'high'
+
+
+def test_legacy_vm_entry_restores_without_changing_priority(environment, tmp_path):
+    config, vbox, windows, _, _ = environment
+    path = tmp_path / 'restore.json'
+    path.write_text(json.dumps({'vms': {'Docker': {'uuid': 'docker-id', 'original': 100, 'applied': 85}}, 'priorities': {}}))
+    controller = game.Controller(config, vbox, windows, tmp_path)
+    controller.restore()
+    assert vbox.info('Docker')['cpuexecutioncap'] == '100'
+    assert vbox.priority_calls == []
+
+
+@pytest.mark.parametrize('state,action,flag', [
+    ('running', 'controlvm', 'vm-process-priority'),
+    ('poweroff', 'modifyvm', '--vm-process-priority'),
+])
+def test_native_priority_uses_supported_command_and_verifies(state, action, flag):
+    vbox = game.VBox('VBoxManage')
+    calls = []
+    vbox.call = lambda *args: calls.append(args)
+    vbox.info = lambda name: {'vmprocpriority': 'low'}
+    vbox.priority('uuid', 'low', state)
+    assert calls == [(action, 'uuid', flag, 'low')]
+    vbox.info = lambda name: {'vmprocpriority': 'default'}
+    with pytest.raises(RuntimeError, match='verification'):
+        vbox.priority('uuid', 'low', state)

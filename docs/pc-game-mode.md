@@ -30,10 +30,14 @@ Logs rotate at 1 MB with two backups. Every command supports `--config` and
 `--state-dir` before its command name.
 
 Default caps are **Docker-Ubuntu: 40% per virtual CPU** and
-**BlueBubbles-macOS: 25% per virtual CPU**, with BelowNormal Windows scheduling
-priority for accessible VBoxHeadless processes. VirtualBox's protected helper
-wrappers keep their existing priority if Windows denies access; CPU caps still
-apply without additional privileges. These percentages are not percentages of
+**BlueBubbles-macOS: 25% per virtual CPU**, with VirtualBox's native `low` priority
+scheme. It lowers the protected VM worker's thread priorities using
+`controlvm vm-process-priority low`, and restores the original scheme afterward.
+On the audited Windows host this changed the actual worker thread base priorities
+even though its process-level `PriorityClass` remained Normal. Accessible
+VBoxHeadless launchers also receive BelowNormal Windows scheduling priority.
+The protected processes include the actual VM workers, not just helper wrappers.
+These percentages are not percentages of
 the whole PC. With four vCPUs per VM on the audited 12-thread Ryzen 5600X, they
 give the guests a nominal budget of 2.6 logical CPUs, plus virtualization and
 Windows overhead. The watcher records measured background CPU in `status.json`.
@@ -41,18 +45,14 @@ Existing smaller CPU budgets are preserved.
 
 ## Core pinning
 
-CPU caps throttle how much work a guest may do, but Windows still schedules
-VBoxHeadless onto whichever logical processor is free, including the one the
-game is running on. That shows up as frame-time stutter rather than lower
-average FPS, so capping alone does not fix it.
-
-`vm_affinity_cpus` confines every accessible VBoxHeadless process to the
-highest N logical processors for as long as a game runs. The game keeps the
-low-numbered cores, which is where Windows places a foreground process first.
-On the audited 12-thread Ryzen 5600X, `4` gives the guests logical processors
-8-11 (two physical cores with their SMT siblings) and leaves the game eight
-threads it never has to share. Omitting the key, or setting it to `0`, disables
-pinning entirely and the previous cap-only behaviour is unchanged.
+`vm_affinity_cpus` optionally attempts to confine accessible VBoxHeadless
+processes to the highest N logical processors while a game runs. It is disabled
+by default (`0`). On the audited VirtualBox 7.2.12 Windows host, hardening denies
+affinity changes on the actual CPU-consuming workers; only launcher processes
+accept them. Windows CPU Sets changes are denied too. No exclusive game cores
+or frame-time improvement is claimed. `affinity_denied_pids` exposes rejected
+processes in status instead of reporting successful isolation. CPU caps and the
+native priority scheme remain effective without disabling VirtualBox hardening.
 
 Validation refuses a value that would leave fewer than two logical processors
 for the game and Windows. A narrower pin that was already in place is preserved
@@ -89,12 +89,11 @@ not activate the mode. Alt-tabbing keeps the mode active while the game runs.
 
 ## RAM profile and rollback
 
-The candidate baseline is **Docker-Ubuntu: 8192 MiB** and
-**BlueBubbles-macOS: 4096 MiB**, down from the audited 12288 and 6144 MiB.
-This could reclaim about 6 GiB, placing the audited baseline near 65–70% RAM.
-That is an estimate until booted and checked against real service health and
-memory pressure. The Docker guest was using about 7 GiB plus 4.3 GiB of existing
-swap; its available memory and application peaks need checking after resizing.
+The installed baseline verified on 2026-10-02 is **Docker-Ubuntu: 8192 MiB** and
+**BlueBubbles-macOS: 4096 MiB**, with four vCPUs each. Keep this headroom for
+Docker's model/build peaks and macOS messaging services. Idle vCPUs do not
+consume a full physical core each. Background host RAM was approximately 70%;
+that is a measured sample, not a guarantee for future workloads.
 
 VirtualBox memory ballooning does not return RAM to Windows. Shrinking a running
 container's memory limit also does not shrink the VirtualBox allocation. Neither
