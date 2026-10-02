@@ -37,7 +37,15 @@ def _state(tid: str) -> str:
 
 
 def _stopped(tid: str) -> bool:
-    return _state(tid) in {"T", "t"}
+    # Signals are delivered asynchronously; let the kernel reach the state the
+    # runtime requested before inspecting /proc, even on a busy CI host.
+    expected = pty_terminal.get_runtime_state(tid) == "paused"
+    deadline = time.monotonic() + 2
+    while True:
+        stopped = _state(tid) in {"T", "t"}
+        if stopped == expected or time.monotonic() >= deadline:
+            return stopped
+        time.sleep(0.01)
 
 
 @pytest.fixture()

@@ -166,6 +166,7 @@ def test_rollback_preserves_symlinks_modes_binary_and_deletions(tmp_path):
     paths = ["link", "executable", "deleted"]
     with store._connect() as db:
         db.execute("DELETE FROM fleet_integration_intents")
+    journal.patch = _workspace_patch(workspace, paths)
     journal.prepare(worker, paths)
     (root / "link").unlink()
     (root / "link").symlink_to("new.bin")

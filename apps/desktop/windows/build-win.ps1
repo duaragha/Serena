@@ -60,6 +60,10 @@ Write-Host "[windows] testing native Fleet locks and patch transport"
 & $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_file_lock.py") (Join-Path $RepoRoot "tests\test_fleet_patch_transport.py") -q
 Assert-LastExitCode "Native Fleet lock and patch tests"
 
+Write-Host "[windows] testing Fleet routing and integration with native Git and SQLite"
+& $Python -m pytest -q --tb=short tests/test_fleet_policy_store.py tests/test_fleet_comparison_profiles.py tests/test_fleet_difficult_retry.py tests/test_fleet_workers.py tests/test_fleet_supervisor.py tests/test_fleet_reports.py tests/test_fleet_autonomy.py tests/test_fleet_peers.py tests/test_fleet_capacity.py tests/test_coding_job_contract.py tests/test_fleet_integration_journal.py tests/test_fleet_windows_git_modes.py tests/test_fleet_checkout.py tests/test_fleet_shared_learning.py
+Assert-LastExitCode "Fleet routing and integration tests"
+
 Write-Host "[windows] testing Fleet database connection lifetime"
 & $Python -m pytest (Join-Path $RepoRoot "tests\test_fleet_connection_lifetime.py") (Join-Path $RepoRoot "tests\test_process_probe.py") -q
 Assert-LastExitCode "Fleet database lifetime tests"

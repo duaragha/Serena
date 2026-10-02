@@ -186,7 +186,8 @@ def test_expired_help_does_not_launch_or_retry(team):
     assert peers.projection(run["run_id"])["help"][0]["state"] == "expired"
 
 
-def test_capability_not_in_command_or_repr_and_mcp_is_available_to_both_providers(team):
+def test_capability_not_in_command_or_repr_and_mcp_is_available_to_both_providers(team, monkeypatch):
+    monkeypatch.setattr("fleet.workers._binary", lambda provider: provider)
     store, run, peers, legs, attempts, tokens = team
     request = WorkerRequest(
         run["run_id"],

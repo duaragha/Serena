@@ -1865,6 +1865,7 @@ def test_live_row_retry_restarts_failed_leg_without_waiting_for_sibling(
     fleet_env,
     monkeypatch,
 ):
+    wait_seconds = 30 if os.name == "nt" else 5
     agent_a_failed = threading.Event()
     agent_a_retried = threading.Event()
     release_agent_b = threading.Event()
@@ -1885,7 +1886,7 @@ def test_live_row_retry_restarts_failed_leg_without_waiting_for_sibling(
         if request.phase == "discover" and request.worker_key == "agent:a" and number == 2:
             agent_a_retried.set()
         if request.phase == "discover" and request.worker_key == "agent:b" and number == 1:
-            assert release_agent_b.wait(timeout=3)
+            assert release_agent_b.wait(timeout=wait_seconds * 4)
         return WorkerResult(
             True,
             f"{request.phase}:{request.provider}",
@@ -1906,8 +1907,8 @@ def test_live_row_retry_restarts_failed_leg_without_waiting_for_sibling(
     )
     thread.start()
     try:
-        assert agent_a_failed.wait(timeout=3)
-        deadline = time.monotonic() + 3
+        assert agent_a_failed.wait(timeout=wait_seconds)
+        deadline = time.monotonic() + wait_seconds
         failed_leg = None
         while time.monotonic() < deadline:
             snapshot = supervisor.get_run(run["run_id"])
@@ -1930,12 +1931,12 @@ def test_live_row_retry_restarts_failed_leg_without_waiting_for_sibling(
         )
         assert queued_leg["state"] == "queued"
         assert queued_leg["retry_requested"] is False
-        assert agent_a_retried.wait(timeout=3)
+        assert agent_a_retried.wait(timeout=wait_seconds)
     finally:
         release_agent_b.set()
         # Windows SQLite commits can outlast the retry-order assertion. Drain
         # this owned scheduler before fake providers and private paths restore.
-        thread.join(timeout=30 if os.name == "nt" else 5)
+        thread.join(timeout=wait_seconds * 2)
     assert not thread.is_alive()
     assert outcome["run"]["state"] == "completed"
     assert [call for call in calls if call[:2] == ("discover", "agent:a")] == [
