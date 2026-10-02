@@ -57,6 +57,19 @@ def path_key(value: str) -> str:
     return ntpath.normcase(ntpath.normpath(os.path.expandvars(value)))
 
 
+def affinity_mask(system_mask: int, cpus: int) -> int:
+    """The highest `cpus` logical processors the system actually offers.
+
+    Games are left the low-numbered cores, which is where Windows schedules a
+    foreground process first. Pinning the guests to the top of the mask keeps
+    them off those cores entirely instead of merely slowing them down there.
+    """
+    available = [bit for bit in range(system_mask.bit_length()) if system_mask >> bit & 1]
+    if cpus >= len(available):
+        return system_mask
+    return sum(1 << bit for bit in available[-cpus:])
+
+
 @dataclass(frozen=True)
 class Process:
     pid: int
@@ -104,6 +117,10 @@ class Windows:
         k.GetPriorityClass.argtypes = [wintypes.HANDLE]
         k.GetPriorityClass.restype = wintypes.DWORD
         k.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k.GetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_size_t),
+                                             ctypes.POINTER(ctypes.c_size_t)]
+        k.SetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.c_size_t]
+        k.GetCurrentProcess.restype = wintypes.HANDLE
         k.GetSystemTimes.argtypes = [ctypes.POINTER(wintypes.FILETIME)] * 3
         k.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
         k.CreateMutexW.restype = wintypes.HANDLE
@@ -163,6 +180,35 @@ class Windows:
             if not result:
                 raise ctypes.WinError(ctypes.get_last_error())
             return result
+        finally:
+            self.kernel.CloseHandle(handle)
+
+    def system_affinity(self) -> int:
+        process_mask, system_mask = ctypes.c_size_t(), ctypes.c_size_t()
+        if not self.kernel.GetProcessAffinityMask(self.kernel.GetCurrentProcess(),
+                                                  ctypes.byref(process_mask), ctypes.byref(system_mask)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return system_mask.value
+
+    def affinity(self, process: Process, mask: int | None = None) -> int | None:
+        current = self.process(process.pid)
+        if not current or current.created != process.created:
+            return None
+        handle = self.kernel.OpenProcess(0x1000 | (0x0200 if mask is not None else 0), False, process.pid)
+        if not handle:
+            if ctypes.get_last_error() == 5:
+                return None  # VirtualBox hardening protects some helper processes.
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if mask is not None and not self.kernel.SetProcessAffinityMask(handle, mask):
+                if ctypes.get_last_error() == 5:
+                    return None  # No affinity mutation occurred.
+                raise ctypes.WinError(ctypes.get_last_error())
+            process_mask, system_mask = ctypes.c_size_t(), ctypes.c_size_t()
+            if not self.kernel.GetProcessAffinityMask(handle, ctypes.byref(process_mask),
+                                                      ctypes.byref(system_mask)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return process_mask.value
         finally:
             self.kernel.CloseHandle(handle)
 
@@ -250,18 +296,23 @@ class Controller:
         self.config, self.vbox, self.windows = config, vbox, windows
         self.state_dir = state_dir
         self.journal_path = state_dir / 'restore.json'
-        self.journal = read_json(self.journal_path, {'vms': {}, 'priorities': {}})
-        if not isinstance(self.journal, dict) or set(self.journal) != {'vms', 'priorities'}:
+        self.journal = read_json(self.journal_path, {'vms': {}, 'priorities': {}, 'affinities': {}})
+        # A journal written before affinity pinning existed is still valid; anything
+        # else is refused rather than overwriting the saved original settings.
+        if not isinstance(self.journal, dict) or not (
+                {'vms', 'priorities'} <= set(self.journal) <= {'vms', 'priorities', 'affinities'}):
             raise ValueError('Invalid restore journal; refusing to overwrite the original settings.')
+        self.journal.setdefault('affinities', {})
         self.last_game_seen = None
         self.unmodifiable_priorities = set()
+        self.unmodifiable_affinities = set()
 
     def save(self):
         write_json(self.journal_path, self.journal)
 
     @property
     def active(self):
-        return bool(self.journal['vms'] or self.journal['priorities'])
+        return bool(self.journal['vms'] or self.journal['priorities'] or self.journal['affinities'])
 
     def apply(self, processes):
         try:
@@ -277,33 +328,63 @@ class Controller:
                 self.journal['vms'][name] = {'uuid': info['UUID'], 'original': original, 'applied': applied}
                 self.save()  # Recovery information must exist before the first mutation.
                 self.vbox.cap(info['UUID'], applied, info['VMState'])
+            headless = path_key(ntpath.join(ntpath.dirname(self.vbox.executable), 'VBoxHeadless.exe'))
             for process in processes:
-                if path_key(process.path) != path_key(ntpath.join(ntpath.dirname(self.vbox.executable), 'VBoxHeadless.exe')):
+                if path_key(process.path) != headless:
                     continue
-                key = str(process.pid)
-                if (process.pid, process.created) in self.unmodifiable_priorities:
-                    continue
-                entry = self.journal['priorities'].get(key)
-                if entry and entry['created'] == process.created:
-                    continue
-                original = self.windows.priority(process)
-                if original is None:
-                    continue
-                # Preserve Idle/BelowNormal if the user already selected either.
-                applied = original if original in (0x40, BELOW_NORMAL) else BELOW_NORMAL
-                self.journal['priorities'][key] = {'created': process.created, 'path': process.path,
-                                                   'original': original, 'applied': applied}
-                self.save()
-                if self.windows.priority(process, applied) is None:
-                    # CPU caps still apply. Protected wrappers are optional, and
-                    # their unmodified priorities need no restoration journal.
-                    self.unmodifiable_priorities.add((process.pid, process.created))
-                    del self.journal['priorities'][key]
-                    self.save()
-                    logging.info('Leaving protected VBox helper priority unchanged: %s', process.pid)
+                self.apply_affinity(process)
+                self.apply_priority(process)
         except Exception:
             self.restore()
             raise
+
+    def apply_priority(self, process):
+        key = str(process.pid)
+        if (process.pid, process.created) in self.unmodifiable_priorities:
+            return
+        entry = self.journal['priorities'].get(key)
+        if entry and entry['created'] == process.created:
+            return
+        original = self.windows.priority(process)
+        if original is None:
+            return
+        # Preserve Idle/BelowNormal if the user already selected either.
+        applied = original if original in (0x40, BELOW_NORMAL) else BELOW_NORMAL
+        self.journal['priorities'][key] = {'created': process.created, 'path': process.path,
+                                           'original': original, 'applied': applied}
+        self.save()
+        if self.windows.priority(process, applied) is None:
+            # CPU caps still apply. Protected wrappers are optional, and
+            # their unmodified priorities need no restoration journal.
+            self.unmodifiable_priorities.add((process.pid, process.created))
+            del self.journal['priorities'][key]
+            self.save()
+            logging.info('Leaving protected VBox helper priority unchanged: %s', process.pid)
+
+    def apply_affinity(self, process):
+        cpus = int(self.config.get('vm_affinity_cpus', 0))
+        if not cpus:
+            return
+        key = str(process.pid)
+        if (process.pid, process.created) in self.unmodifiable_affinities:
+            return
+        entry = self.journal['affinities'].get(key)
+        if entry and entry['created'] == process.created:
+            return
+        original = self.windows.affinity(process)
+        if original is None:
+            return
+        target = affinity_mask(self.windows.system_affinity(), cpus)
+        # Preserve a narrower pin the user already chose, exactly as the CPU caps do.
+        applied = original if original & ~target == 0 else target
+        self.journal['affinities'][key] = {'created': process.created, 'path': process.path,
+                                           'original': original, 'applied': applied}
+        self.save()
+        if self.windows.affinity(process, applied) is None:
+            self.unmodifiable_affinities.add((process.pid, process.created))
+            del self.journal['affinities'][key]
+            self.save()
+            logging.info('Leaving protected VBox helper affinity unchanged: %s', process.pid)
 
     def restore(self):
         failures = []
@@ -325,6 +406,15 @@ class Controller:
                 if current == entry['applied']:
                     self.windows.priority(process, entry['original'])
                 del self.journal['priorities'][pid]
+                self.save()
+            except Exception as exc:
+                failures.append(str(exc))
+        for pid, entry in list(self.journal['affinities'].items()):
+            try:
+                process = Process(int(pid), entry['path'], entry['created'])
+                if self.windows.affinity(process) == entry['applied']:
+                    self.windows.affinity(process, entry['original'])
+                del self.journal['affinities'][pid]
                 self.save()
             except Exception as exc:
                 failures.append(str(exc))
@@ -409,6 +499,14 @@ def load_config(path):
         raise ValueError('poll_seconds must be between 2 and 30.')
     if not 0 <= config.get('cooldown_seconds', 20) <= 120:
         raise ValueError('cooldown_seconds must be between 0 and 120.')
+    cpus = config.get('vm_affinity_cpus')
+    if cpus is not None:
+        if not isinstance(cpus, int) or isinstance(cpus, bool):
+            raise ValueError('vm_affinity_cpus must be an integer count of logical processors.')
+        # 0 disables pinning. Two logical processors are always left to the game
+        # and Windows, so the guests can never be given the whole machine.
+        if cpus and not 1 <= cpus <= max(1, (os.cpu_count() or 2) - 2):
+            raise ValueError('vm_affinity_cpus must leave at least two logical processors free.')
     for vm in config['vms']:
         if not 20 <= int(vm['cpu_cap']) <= 100:
             raise ValueError('CPU caps below 20% are deliberately unsupported.')

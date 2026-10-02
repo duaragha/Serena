@@ -39,6 +39,28 @@ give the guests a nominal budget of 2.6 logical CPUs, plus virtualization and
 Windows overhead. The watcher records measured background CPU in `status.json`.
 Existing smaller CPU budgets are preserved.
 
+## Core pinning
+
+CPU caps throttle how much work a guest may do, but Windows still schedules
+VBoxHeadless onto whichever logical processor is free, including the one the
+game is running on. That shows up as frame-time stutter rather than lower
+average FPS, so capping alone does not fix it.
+
+`vm_affinity_cpus` confines every accessible VBoxHeadless process to the
+highest N logical processors for as long as a game runs. The game keeps the
+low-numbered cores, which is where Windows places a foreground process first.
+On the audited 12-thread Ryzen 5600X, `4` gives the guests logical processors
+8-11 (two physical cores with their SMT siblings) and leaves the game eight
+threads it never has to share. Omitting the key, or setting it to `0`, disables
+pinning entirely and the previous cap-only behaviour is unchanged.
+
+Validation refuses a value that would leave fewer than two logical processors
+for the game and Windows. A narrower pin that was already in place is preserved
+rather than widened, matching how existing smaller CPU budgets are treated.
+Masks are journaled and restored exactly like caps and priorities, including
+after a crash, and a mask changed externally while a game ran is left alone.
+Journals written before this feature existed still load.
+
 The original settings are flushed to an atomic journal **before** changes.
 Recovery retains failed restores for another attempt, verifies process creation
 times against PID reuse, and preserves settings changed externally. A single
