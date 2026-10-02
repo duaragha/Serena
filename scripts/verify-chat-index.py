@@ -7,6 +7,7 @@ test a frozen candidate independently of its source checkout and user metadata.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -60,7 +61,7 @@ def verify(command: list[str]) -> None:
                                   capture_output=True, text=True, timeout=90)
             if done.returncode:
                 raise RuntimeError(f"Packaged index refresh failed: {done.stderr[-2000:]}")
-            with sqlite3.connect(root / "index/index.db") as conn:
+            with closing(sqlite3.connect(root / "index/index.db")) as conn:
                 return {row[0]: row[1:] for row in conn.execute(
                     "SELECT session_id, parent_session_id, is_teammate, is_archived, custom_title "
                     "FROM sessions")}
