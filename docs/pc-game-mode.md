@@ -43,6 +43,8 @@ give the guests a nominal budget of 2.6 logical CPUs, plus virtualization and
 Windows overhead. The watcher records measured background CPU in `status.json`.
 Existing smaller CPU budgets are preserved.
 
+Reference: [Oracle's native VM priority control](https://docs.oracle.com/en/virtualization/virtualbox/7.2/user/vboxmanage.html).
+
 ## Core pinning
 
 `vm_affinity_cpus` optionally attempts to confine accessible VBoxHeadless

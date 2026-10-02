@@ -518,3 +518,25 @@ def test_native_priority_uses_supported_command_and_verifies(state, action, flag
     vbox.info = lambda name: {'vmprocpriority': 'default'}
     with pytest.raises(RuntimeError, match='verification'):
         vbox.priority('uuid', 'low', state)
+
+
+def test_restarted_controller_restores_native_priority(environment, tmp_path):
+    config, vbox, windows, controller, processes = environment
+    controller.apply(processes)
+    restarted = game.Controller(config, vbox, windows, tmp_path)
+    assert restarted.restore() == []
+    assert vbox.info('Docker')['vmprocpriority'] == 'default'
+    assert vbox.info('Mac')['vmprocpriority'] == 'default'
+
+
+@pytest.mark.parametrize('kind', ['priority', 'affinity'])
+def test_windows_restore_denial_keeps_recovery_journal(environment, kind):
+    _, _, windows, controller, processes = environment
+    controller.apply(processes)
+    original = getattr(windows, kind)
+    setattr(windows, kind, lambda process, value=None: original(process) if value is None else None)
+    assert controller.restore()
+    assert controller.journal['priorities' if kind == 'priority' else 'affinities']
+    setattr(windows, kind, original)
+    assert controller.restore() == []
+    assert not controller.active
