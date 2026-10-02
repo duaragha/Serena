@@ -27,6 +27,8 @@ FUNCTIONS = (
     "_visibleRuntimeSids",
     "_machineBadge",
     "_renderOpenSessionIds",
+    "_fmtChatCost",
+    "_paintChatCosts",
     "_refreshGtkRuntimeStatus",
 )
 
@@ -38,7 +40,7 @@ const assert = require('node:assert/strict');
 // children, which is all the identity row builds.
 function el(tag) {
   const node = {
-    tag, textContent: '', title: '', type: '', children: [],
+    tag, textContent: '', title: '', type: '', children: [], dataset: {},
     classList: {
       _has: new Set(),
       add(c) { this._has.add(c); },
@@ -49,6 +51,10 @@ function el(tag) {
     appendChild(child) { this.children.push(child); return child; },
     replaceChildren() { this.children = []; },
     addEventListener() {},
+    querySelectorAll(selector) {
+      assert.equal(selector, '.term-session-cost[data-sid]');
+      return this.children.filter(c => c.classList.contains('term-session-cost') && c.dataset.sid);
+    },
   };
   // className and classList are two views of one thing in a real DOM, and the
   // page sets classes through both.
@@ -62,10 +68,17 @@ function el(tag) {
 }
 
 const root = el('div');
-const document = { getElementById: (id) => (id === 'termSessionIds' ? root : null), createElement: el };
+const document = { getElementById: (id) => (id === 'termSessionIds' ? root : root.children.find(c => c.id === id)), createElement: el };
 const window = { SERENA: { machine: { os: 'Linux', name: 'laptop' } } };
 const navigator = { clipboard: { writeText: () => Promise.resolve() } };
 function showToast() {}
+const _chatCosts = new Map([
+  ['c660e9ce-1111-2222-3333-444444444444', {cost_usd: 1.2}],
+  ['019fdfc8-5555-6666-7777-888888888888', {cost_usd: 0.25, estimated: true}],
+]);
+let polledCostSids = [];
+// Network scheduling is outside this DOM fixture; render and paint are real.
+function _pollChatCosts(sids) { polledCostSids = sids; }
 
 const SESSIONS = JSON.parse(process.env.SESSIONS);
 function _findClientSession(sid) { return SESSIONS[sid] || null; }
@@ -107,6 +120,9 @@ _gtkSplitSids = ['c660e9ce-1111-2222-3333-444444444444', '019fdfc8-5555-6666-777
 render();
 assert.deepEqual(pills(), ['claude c660e9ce', 'codex 019fdfc8']);
 assert.equal(badges().length, 1, 'one machine badge, not one per session');
+assert.deepEqual(root.querySelectorAll('.term-session-cost[data-sid]').map(c => c.textContent), ['$1.20', '~$0.25']);
+assert.equal(document.getElementById('termCostTotal').textContent, 'total $1.45');
+assert.deepEqual(polledCostSids, _gtkSplitSids);
 
 // Nothing open: the row gets out of the way entirely.
 _gtkSplitActive = false;
@@ -115,6 +131,7 @@ activeTermSid = null;
 render();
 assert.deepEqual(pills(), []);
 assert.ok(root.classList.contains('hidden'), 'an empty row must hide itself');
+assert.deepEqual(polledCostSids, [], 'closing the panes must stop cost polling');
 
 // The native GTK shell tracks its focused pane in a different variable.
 window.__nativeTerminalBridge = true;
