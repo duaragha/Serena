@@ -46,6 +46,28 @@ function prepare({ root, destination, source, stable, selected, tested, request,
       throw new Error('Full Dev promotion requires every registered feature');
     for (const feature of plan.all) git(root, ['merge-base', '--is-ancestor', feature.commit, devCommit]);
   }
+  // Reviewed, immutable adaptations for a particular released snapshot only.
+  // Never import the rest of a newer master while promoting an older Dev tag.
+  const adjustmentsFile = path.join(root, 'config/full-dev-adjustments.json');
+  const adjustmentCatalog = fs.existsSync(adjustmentsFile)
+    ? JSON.parse(fs.readFileSync(adjustmentsFile, 'utf8')) : { schema: 1, releases: [] };
+  if (adjustmentCatalog.schema !== 1 || !Array.isArray(adjustmentCatalog.releases))
+    throw new Error('Invalid full Dev adjustment catalog');
+  const matches = fullDev ? adjustmentCatalog.releases.filter(r => r.tag === devTag) : [];
+  if (matches.length > 1 || (matches.length && matches[0].commit !== devCommit))
+    throw new Error('Full Dev adjustments do not match the released commit');
+  const adjustments = matches[0]?.adjustments || [];
+  if (!Array.isArray(adjustments)) throw new Error('Invalid full Dev adjustments');
+  for (const a of adjustments) {
+    if (!/^[a-z][a-z0-9-]{0,63}$/.test(a.id) || !policy.SHA.test(a.commit)
+        || typeof a.reason !== 'string' || !a.reason.trim() || !Array.isArray(a.paths) || !a.paths.length
+        || a.paths.some(p => typeof p !== 'string' || !/^[a-zA-Z0-9_./-]+$/.test(p)
+          || p.startsWith('/') || p.split('/').some(s => s === '..' || s === '.') || p.startsWith('.git')
+          || [receiptPath, 'apps/desktop/package.json', 'apps/desktop/package-lock.json'].includes(p)))
+      throw new Error('Invalid full Dev adjustment');
+    git(root, ['merge-base', '--is-ancestor', a.commit, source]);
+    git(root, ['diff', '--exit-code', a.commit, source, '--', ...a.paths]);
+  }
   const version = policy.nextVersion(stable);
   if (git(root, ['tag', '--list', version]).trim()) throw new Error(`${version} already exists; review the stable baseline`);
 
@@ -67,6 +89,13 @@ function prepare({ root, destination, source, stable, selected, tested, request,
     if (!patch.trim()) throw new Error(`Empty feature patch: ${f.id}`);
     git(destination, ['apply', '--3way', '--index', '-'], patch);
     patches.push({ id: f.id, sha256: createHash('sha256').update(patch).digest('hex') });
+  }
+  for (const a of adjustments) {
+    const patch = git(root, ['diff', '--binary', devCommit, a.commit, '--', ...a.paths]);
+    if (!patch.trim()) throw new Error(`Empty full Dev adjustment: ${a.id}`);
+    git(destination, ['apply', '--3way', '--index', '-'], patch);
+    patches.push({ id: a.id, commit: a.commit, reason: a.reason, paths: a.paths,
+      sha256: createHash('sha256').update(patch).digest('hex') });
   }
   const desktop = path.join(destination, 'apps/desktop');
   for (const name of ['package.json', 'package-lock.json']) {

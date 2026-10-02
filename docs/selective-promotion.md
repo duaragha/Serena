@@ -114,7 +114,13 @@ installers and Dev updater manifests must already be published. Select every
 registered feature and acknowledge all additions as tested.
 
 The candidate retains stable's history as its parent, imports the exact Dev tree,
-and changes only the version files and promotion receipt. The receipt records the
+and changes the version files and promotion receipt. A released snapshot can also
+require narrowly reviewed main/platform adaptations declared in
+`config/full-dev-adjustments.json`: an exact Dev tag/commit, immutable adjustment
+commit, explicit paths and reason. The adjustment commit must be an ancestor of
+the reviewed source and those paths must still match. Only these patches are
+applied, and their SHA-256, paths, commit and reason are recorded in the receipt
+and release notes; unrelated newer master changes are excluded. The receipt records the
 Dev tag, commit and tree as `fullDev`; future selective promotions still recognize
 all installed features. This includes released changes absent from the feature
 catalog. A moved tag, incomplete Dev release, partial selection or stale stable

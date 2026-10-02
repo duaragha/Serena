@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "releases": [
+    {
+      "tag": "v0.3.10-dev.26",
+      "commit": "a869179b2e473f286cf6bdbb2185ca0e33d7b0e0",
+      "adjustments": [
+        {
+          "id": "main-compatibility",
+          "commit": "74278ff8ec7a5dff1b02b6b79211bf72ee47d90d",
+          "reason": "Enable native chat panes in main while preserving separate edition data; accept Git checkout line endings during Windows Fleet integration and make regression fixtures portable.",
+          "paths": [
+            "apps/desktop/profile.js",
+            "apps/desktop/tests/profile.test.cjs",
+            "fleet/integration_journal.py",
+            "fleet/isolation.py",
+            "tests/test_codex_brain.py",
+            "tests/test_computer_apps.py",
+            "tests/test_fleet_capacity.py",
+            "tests/test_fleet_integration_journal.py",
+            "tests/test_fleet_patch_transport.py",
+            "tests/test_fleet_peers.py",
+            "tests/test_fleet_supervisor.py",
+            "tests/test_fleet_workers.py",
+            "tests/test_terminal_peer_sleep.py",
+            "tests/test_workspace_desktop_editions.py"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -55,3 +55,40 @@ test('full promotion rejects moved tags, partial selections, missing testing and
   assert.throws(() => prepare({ ...options, tested: [] }), /Mark as tested/);
   assert.equal(fs.existsSync(options.destination), false);
 });
+
+test('released snapshot receives only pinned adaptation paths and records their exact patch', t => {
+  const { repo, options } = fixture(t);
+  fs.writeFileSync(path.join(repo, 'full-dev-probe.txt'), 'main compatibility adaptation\n');
+  fs.writeFileSync(path.join(repo, 'unreleased-change.txt'), 'must not reach main\n');
+  git(repo, ['add', '.']);
+  git(repo, ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'reviewed fix plus unrelated newer work']);
+  const fix = git(repo, ['rev-parse', 'HEAD']);
+  const adjustment = { id: 'main-compatibility', commit: fix, reason: 'Reviewed main adaptation', paths: ['full-dev-probe.txt'] };
+  const manifest = { schema: 1, releases: [{ tag: options.devTag, commit: options.devCommit, adjustments: [adjustment] }] };
+  fs.writeFileSync(path.join(repo, 'config/full-dev-adjustments.json'), JSON.stringify(manifest));
+  git(repo, ['add', '.']);
+  git(repo, ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'pin only reviewed adaptation']);
+  options.source = git(repo, ['rev-parse', 'HEAD']);
+  const plan = prepare(options);
+  assert.equal(fs.readFileSync(path.join(options.destination, 'full-dev-probe.txt'), 'utf8'), 'main compatibility adaptation\n');
+  assert.equal(fs.existsSync(path.join(options.destination, 'unreleased-change.txt')), false);
+  assert.deepEqual(git(options.destination, ['diff', '--name-only', options.devCommit, 'HEAD']).split('\n').sort(),
+    ['apps/desktop/package-lock.json', 'apps/desktop/package.json', 'config/stable-promotion.json', 'full-dev-probe.txt']);
+  assert.deepEqual(plan.patches.map(({ sha256, ...record }) => record), [adjustment]);
+  assert.match(plan.patches[0].sha256, /^[a-f0-9]{64}$/);
+  const fresh = { ...options, destination: path.join(path.dirname(options.destination), 'rejected') };
+  manifest.releases[0].commit = 'a'.repeat(40);
+  fs.writeFileSync(path.join(repo, 'config/full-dev-adjustments.json'), JSON.stringify(manifest));
+  assert.throws(() => prepare(fresh), /do not match/);
+  manifest.releases[0].commit = options.devCommit;
+  adjustment.paths = ['../escape'];
+  fs.writeFileSync(path.join(repo, 'config/full-dev-adjustments.json'), JSON.stringify(manifest));
+  assert.throws(() => prepare(fresh), /Invalid full Dev adjustment/);
+  adjustment.paths = ['full-dev-probe.txt'];
+  fs.writeFileSync(path.join(repo, 'config/full-dev-adjustments.json'), JSON.stringify(manifest));
+  fs.writeFileSync(path.join(repo, 'full-dev-probe.txt'), 'unreviewed later change\n');
+  git(repo, ['add', '.']);
+  git(repo, ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'later drift']);
+  assert.throws(() => prepare({ ...fresh, source: git(repo, ['rev-parse', 'HEAD']) }));
+  assert.equal(fs.existsSync(fresh.destination), false);
+});
