@@ -10,6 +10,9 @@ on:
         options: [verify, publish]
         default: verify
         required: true
+      resume_run:
+        description: Optional failed run whose exact candidate and successful Windows gate are reused
+        required: false
       dev_tag:
         description: Optional complete Dev release to promote (all features required)
         required: false
@@ -34,6 +37,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: serena-stable-promotion
@@ -51,11 +55,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - run: npm --prefix apps/desktop ci --ignore-scripts
       - name: Check all registered feature combinations
-        run: node --test tests/promotion-composition.test.cjs tests/full-promotion.test.cjs
+        run: node --test tests/promotion-composition.test.cjs tests/full-promotion.test.cjs tests/promotion-resume.test.cjs
       - name: Validate request and assemble only selected patches
         env:
           GH_TOKEN: ${{ github.token }}
+          PROMOTION_RESUME_RUN: ${{ inputs.resume_run }}
           PROMOTION_DEV_TAG: ${{ inputs.dev_tag }}
           PROMOTION_DEV_COMMIT: ${{ inputs.dev_commit }}
           PROMOTION_SOURCE: ${{ inputs.source }}
@@ -64,13 +70,26 @@ jobs:
           PROMOTION_TESTED: ${{ inputs.tested }}
           PROMOTION_REQUEST: ${{ inputs.request }}
           PROMOTION_MODE: ${{ inputs.mode }}
-        run: node scripts/prepare-promotion.cjs
+        run: |
+          if [ -n "$PROMOTION_RESUME_RUN" ]; then
+            node scripts/resume-promotion.cjs
+          else
+            node scripts/prepare-promotion.cjs
+          fi
+      - uses: actions/upload-artifact@v4
+        if: inputs.resume_run != ''
+        with:
+          name: candidate-windows
+          path: resumed-windows/*
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: candidate-source
           path: |
             candidate.bundle
             promotion-plan.json
+            resumed-from.json
           if-no-files-found: error
           retention-days: 14
 
@@ -129,6 +148,11 @@ jobs:
               browser.close()
           print('Sandboxed Chromium CDP launch passed')
           PYTHON
+      - name: Use reviewed browser synchronization fixtures for the resumed candidate
+        if: inputs.resume_run != ''
+        run: |
+          cp tests/test_terminal_peer_sleep_ui.py candidate/tests/test_terminal_peer_sleep_ui.py
+          cp tests/test_workspace_app.py candidate/tests/test_workspace_app.py
       - name: Candidate shell, sidebar and original CLI regression gates
         working-directory: candidate
         run: |
@@ -165,6 +189,12 @@ jobs:
         working-directory: candidate
         run: |
           .venv/bin/python -m pytest -q --tb=short tests/test_fleet_checkout.py tests/test_fleet_shared_learning.py
+      - name: Restore the exact candidate tree before packaging
+        if: inputs.resume_run != ''
+        working-directory: candidate
+        run: |
+          git restore tests/test_terminal_peer_sleep_ui.py tests/test_workspace_app.py
+          git diff --exit-code
       - name: Build stable AppImage without publishing
         working-directory: candidate/apps/desktop
         run: |
@@ -186,6 +216,7 @@ jobs:
           retention-days: 14
 
   windows:
+    if: inputs.resume_run == ''
     needs: prepare
     runs-on: windows-latest
     timeout-minutes: 60
@@ -260,6 +291,7 @@ jobs:
           retention-days: 14
 
   finish:
+    if: always() && needs.linux.result == 'success' && (needs.windows.result == 'success' || (inputs.resume_run != '' && needs.windows.result == 'skipped'))
     needs: [linux, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -43,8 +43,11 @@ def test_peers_sleep_visibly_and_a_click_wakes_one_immediately(workspace):
     # The frame is kept: the sleeping pane still renders its terminal.
     assert peer.locator(".xterm").count() == 1
 
-    page.evaluate("sid => document.querySelector(`.term-pane[data-sid='${sid}']`)"
-                  ".dispatchEvent(new PointerEvent('pointerdown', {bubbles: true}))", sids[1])
+    # JavaScript dispatch returns before Playwright services the fetch route.
+    # Wait for that specific click-triggered response, without running a sweep.
+    with page.expect_response(lambda response: response.url.endswith('/wake/' + sids[1])):
+        page.evaluate("sid => document.querySelector(`.term-pane[data-sid='${sid}']`)"
+                      ".dispatchEvent(new PointerEvent('pointerdown', {bubbles: true}))", sids[1])
 
     assert wakes == [sids[1]], "the click waited for the next sweep"
     assert "runtime-asleep" not in (peer.get_attribute("class") or "")
