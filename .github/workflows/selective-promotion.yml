@@ -116,7 +116,7 @@ jobs:
         working-directory: candidate
         run: |
           node --test tests/workspace*.test.mjs
-          .venv/bin/python -m pytest -q --tb=short tests/test_workspace*.py tests/test_computer*.py tests/test_app_accessibility.py tests/test_chat*.py tests/test_codex*.py tests/test_index_refresh_packaged.py tests/test_memory_tasks.py tests/test_scheduler*.py tests/test_journal.py tests/test_doctor*.py tests/test_security_policy.py tests/test_serena_policy.py tests/test_telegram_line.py tests/test_sidestore_publish.py tests/test_pc_game_mode.py tests/test_docker_cache_maintenance.py tests/test_agent_company.py tests/test_brain_router.py tests/test_brain_daemon_permissions.py tests/test_bounded_automation.py tests/test_session_identity.py
+          .venv/bin/python -m pytest -q --tb=short tests/test_workspace*.py tests/test_computer*.py tests/test_app_accessibility.py tests/test_chat*.py tests/test_codex*.py tests/test_index_refresh_packaged.py tests/test_memory_tasks.py tests/test_scheduler*.py tests/test_journal.py tests/test_doctor*.py tests/test_security_policy.py tests/test_serena_policy.py tests/test_telegram_line.py tests/test_sidestore_publish.py tests/test_pc_game_mode.py tests/test_docker_cache_maintenance.py tests/test_agent_company.py tests/test_brain_router.py tests/test_brain_daemon_permissions.py tests/test_bounded_automation.py tests/test_session_identity.py tests/test_session_cost.py
       - name: Prove selected Fleet model routing before packaging
         if: contains(fromJSON(inputs.selected), 'fleet-model-routing')
         working-directory: candidate

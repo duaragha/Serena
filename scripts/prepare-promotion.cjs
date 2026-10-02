@@ -42,8 +42,12 @@ function prepare({ root, destination, source, stable, selected, tested, request,
     if (git(root, ['rev-parse', `${devTag}^{commit}`]).trim() !== devCommit)
       throw new Error('Dev tag changed since review');
     git(root, ['merge-base', '--is-ancestor', devCommit, source]);
-    if (plan.all.length !== catalog.features.length)
-      throw new Error('Full Dev promotion requires every registered feature');
+    const available = catalog.features.filter(feature => {
+      try { git(root, ['merge-base', '--is-ancestor', feature.commit, devCommit]); return true; }
+      catch (error) { if (error.status === 1) return false; throw error; }
+    });
+    if (plan.all.length !== available.length || available.some(f => !plan.all.some(p => p.id === f.id)))
+      throw new Error('Full Dev promotion requires every registered feature in that release');
     for (const feature of plan.all) git(root, ['merge-base', '--is-ancestor', feature.commit, devCommit]);
   }
   // Reviewed, immutable adaptations for a particular released snapshot only.
