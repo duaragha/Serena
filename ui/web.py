@@ -1688,6 +1688,21 @@ body.pane-dragging * {
   border-color: var(--menu);
   background: rgba(255, 255, 255, 0.055);
 }
+.term-session-cost {
+  height: 21px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border: 1px solid var(--border-bright);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+.term-session-cost.claude { color: #ff967d; }
+.term-session-cost.codex { color: #8cb4ff; }
+.term-session-cost.total { color: var(--green); border-color: var(--green); }
 .term-session-id.claude { color: #ff967d; }
 .term-session-id.codex { color: #8cb4ff; }
 .term-session-id.gemini { color: #67d9a0; }
@@ -5105,9 +5120,8 @@ function showSessionContextMenu(evt, idx) {
   }
   // === HANDOFF FEATURE START === (remove this block to unwire the menu items)
   if (!inMultiSelect && !isReadOnlyTranscript) {
-    // Both directions, always. Another agent lands on its chat in the thread
-    // (reuse the linked one if it exists; spin one up if it doesn't). Handing off
-    // to the agent you're already on spins up a second chat of that agent.
+    // Every handoff spawns a new chat of that agent, linked into the thread,
+    // even when the thread already holds one (a link can carry two of an agent).
     items.push({ sep: true });
     for (const agent of _HANDOFF_AGENTS) {
       items.push({
@@ -7143,7 +7157,68 @@ function _renderOpenSessionIds(sids) {
         .catch(() => showToast('copy failed', { variant: 'error' }));
     });
     root.appendChild(btn);
+    const cost = document.createElement('span');
+    cost.className = 'term-session-cost ' + agent;
+    cost.dataset.sid = sid;
+    cost.textContent = _fmtChatCost(_chatCosts.get(sid));
+    cost.title = agent === 'codex'
+      ? 'Estimated from token usage at OpenAI list prices'
+      : 'Reported by Claude Code';
+    root.appendChild(cost);
   }
+  if (unique.length > 1) {
+    const total = document.createElement('span');
+    total.className = 'term-session-cost total';
+    total.id = 'termCostTotal';
+    total.title = 'Total for the open chats';
+    root.appendChild(total);
+  }
+  _paintChatCosts();
+  _pollChatCosts(unique);
+}
+
+const _chatCosts = new Map();
+let _chatCostTimer = null;
+let _chatCostSids = [];
+
+function _fmtChatCost(entry) {
+  if (!entry || entry.cost_usd == null) return '$\u2014';
+  const v = entry.cost_usd;
+  return (entry.estimated ? '~$' : '$') + (v < 100 ? v.toFixed(2) : v.toFixed(0));
+}
+
+function _paintChatCosts() {
+  const root = document.getElementById('termSessionIds');
+  if (!root) return;
+  let sum = 0, known = false;
+  root.querySelectorAll('.term-session-cost[data-sid]').forEach(el => {
+    const entry = _chatCosts.get(el.dataset.sid);
+    el.textContent = _fmtChatCost(entry);
+    if (entry && entry.cost_usd != null) { sum += entry.cost_usd; known = true; }
+  });
+  const total = document.getElementById('termCostTotal');
+  if (total) total.textContent = known ? 'total $' + (sum < 100 ? sum.toFixed(2) : sum.toFixed(0)) : 'total $\u2014';
+}
+
+async function _fetchChatCosts() {
+  if (!_chatCostSids.length) return;
+  try {
+    const r = await fetch('/api/session-costs?sids=' + encodeURIComponent(_chatCostSids.join(',')));
+    if (!r.ok) return;
+    const data = await r.json();
+    for (const sid of Object.keys(data)) _chatCosts.set(sid, data[sid]);
+    _paintChatCosts();
+  } catch (e) {}
+}
+
+function _pollChatCosts(sids) {
+  _chatCostSids = sids;
+  if (_chatCostTimer) { clearInterval(_chatCostTimer); _chatCostTimer = null; }
+  if (!sids.length) return;
+  _fetchChatCosts();
+  // Claude refreshes its status line every 5s and Codex grows its rollout each
+  // request, so a 5s poll shows each turn's cost as soon as the turn lands.
+  _chatCostTimer = setInterval(() => { if (!document.hidden) _fetchChatCosts(); }, 5000);
 }
 
 function _sendResizeForSid(sid, force) {
@@ -9545,21 +9620,23 @@ async function handoffSession(srcSid, targetAgent) {
     members = _pool.filter(s => s.group === srcChat.group);
   }
   const _byRecent = (a, b) => (b.last_timestamp || '').localeCompare(a.last_timestamp || '');
-  // Handing off to the agent you are already in means "carry this chat into a
-  // fresh one": landing back in the same chat did nothing useful. It spawns a
-  // second chat of that agent, briefed from this one and linked into the thread.
-  const srcAgent = ((srcChat || _findClientSession(srcSid) || {}).agent || 'claude').toLowerCase();
-  const sameAgent = srcAgent === targetAgent;
-  // Where we LAND: the thread's chat of the requested agent (most recent).
-  const targetChat = sameAgent ? null : members
-    .filter(s => (s.agent || 'claude').toLowerCase() === targetAgent)
-    .sort(_byRecent)[0] || null;
-  // What we BRIEF FROM: the latest work on the OTHER side of the thread (that's
-  // what you're handing over). No other-agent chat, or a same-agent handoff →
-  // brief from the chat you're in.
-  let briefFrom = (sameAgent ? null : members
-    .filter(s => (s.agent || 'claude').toLowerCase() !== targetAgent)
-    .sort(_byRecent)[0]) || srcChat || null;
+  // A handoff always spawns a NEW chat of the target agent, linked into the
+  // thread, however many chats of that agent the thread already holds: a link
+  // can carry two claude chats or two codex chats. Landing on the linked chat
+  // of the requested agent used to be the rule for any agent but the one you
+  // were in, and the menu hangs off the thread's row, whose chat is always the
+  // claude one, so only claude could ever get a second chat.
+  // What we BRIEF FROM: the chat you are in, when it is part of this thread.
+  // Otherwise the latest work on the OTHER side of the thread (what you are
+  // handing over), else the chat you opened the menu on.
+  const _inFront = (typeof window !== 'undefined' && window.__nativeTerminalBridge
+    && typeof _gtkCodeSid !== 'undefined') ? _gtkCodeSid
+    : (typeof focusedSid !== 'undefined' ? focusedSid : null);
+  let briefFrom = members.find(s => _inFront && s.session_id === _inFront)
+    || members
+      .filter(s => (s.agent || 'claude').toLowerCase() !== targetAgent)
+      .sort(_byRecent)[0]
+    || srcChat || null;
   let briefSid = briefFrom ? briefFrom.session_id : srcSid;
   try {
     briefSid = await _resolveHandoffSid(briefSid, 15000);
@@ -9584,52 +9661,11 @@ async function handoffSession(srcSid, targetAgent) {
     return;
   }
 
-  // === GROUP FEATURE === (land on the thread's chat of the requested agent)
-  if (targetChat) {
-    const targetSid = targetChat.session_id;
-    const targetLabel = _agentLabel(targetAgent);
-    if (targetSid === briefSid) {
-      // Target and brief-source are the same single chat — nothing to carry over;
-      // just open it.
-      openConv(targetSid);
-      toast.update('Opened ' + targetLabel + ' chat', 'success');
-      return;
-    }
-    // If the target is ALREADY on screen in the current split, just type the
-    // briefing in — don't re-openConv/re-mount (that would relayout and resize).
-    const alreadyVisible = _gtkSplitActive && _gtkSplitSids
-      && _gtkSplitSids.indexOf(targetSid) !== -1 && _activeTerms.has(targetSid);
-    if (alreadyVisible) {
-      if (window.__nativeTerminalBridge) {
-        window.gtkSend({ type: 'feed-text', sid: targetSid, text: resp.prompt, submit: true });
-        toast.update('Handed off to ' + targetLabel, 'success');
-      } else {
-        const ok = await _feedTerminalWhenReady(targetSid, resp.prompt, true, {
-          timeoutMs: 5000,
-          settleMs: 0,
-        });
-        toast.update(ok === 'pending' ? 'Handoff pending for ' + targetLabel + '; do not resend.' : ok ? 'Handed off to ' + targetLabel : 'Handoff did not reach ' + targetLabel,
-          ok === 'pending' ? 'warning' : ok ? 'success' : 'error');
-      }
-    } else {
-      openConv(targetSid);
-      const ok = await _feedTerminalWhenReady(targetSid, resp.prompt, true, {
-        timeoutMs: 15000,
-        settleMs: 1200,
-      });
-      toast.update(ok === 'pending' ? 'Handoff pending for ' + targetLabel + '; do not resend.' : ok ? 'Handed off to ' + targetLabel : 'Opened ' + targetLabel + ', but handoff may not have landed',
-        ok === 'pending' ? 'warning' : ok ? 'success' : 'error');
-    }
-    return;
-  }
-  // === GROUP FEATURE END ===
-
   const cwd = resp.cwd || '';
   const shortProj = cwd ? (cwd.split('/').filter(Boolean).pop() || '~') : '~';
   // Inherit the source chat's title so both halves of the handed-off thread
   // share a name. The shared group color makes them feel like one continuous
   // conversation across agents instead of "↪ Handoff from codex" duplicates.
-  // (srcChat was already resolved above for the existing-sibling reuse path.)
   const label = (briefFrom && briefFrom.display_title)
     || (srcChat && srcChat.display_title)
     || resp.source_title
@@ -15204,6 +15240,14 @@ def api_usage():
     else:
         range_days = None
     return jsonify(get_usage_stats(range_days))
+
+
+@app.route("/api/session-costs")
+def api_session_costs():
+    from core.session_cost import session_costs
+
+    sids = [s for s in (request.args.get("sids") or "").split(",") if s][:8]
+    return jsonify(session_costs(sids))
 
 
 # ---------------------------------------------------------------------------

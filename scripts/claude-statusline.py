@@ -70,6 +70,9 @@ try:
     from core.usage_aggregator import record_statusline
 
     record_statusline(data)
+    from core.session_cost import record_claude_cost
+
+    record_claude_cost(data)
 except Exception:
     pass  # A status line that cannot draw is worse than one without the tap.
 
