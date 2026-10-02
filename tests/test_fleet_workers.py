@@ -885,6 +885,8 @@ def test_a_research_leg_is_permitted_the_web_tools_it_is_required_to_use(monkeyp
 
     from fleet import workers
 
+    monkeypatch.setattr(workers, "_binary", lambda provider: provider)
+
     monkeypatch.setattr(workers, "claude_read_mcp_flags", lambda _mode: [])
 
     command = workers.worker_command(_claude_request())
@@ -899,6 +901,8 @@ def test_a_research_leg_is_permitted_the_web_tools_it_is_required_to_use(monkeyp
 def test_a_review_leg_gets_no_web_tools(monkeypatch):
     from fleet import workers
 
+    monkeypatch.setattr(workers, "_binary", lambda provider: provider)
+
     monkeypatch.setattr(workers, "claude_read_mcp_flags", lambda _mode: [])
 
     command = workers.worker_command(_claude_request(phase="verify", access_mode="review"))
@@ -912,6 +916,8 @@ def test_the_account_gateway_and_the_builtins_share_one_allowlist(monkeypatch):
     """Two --allowedTools flags would leave the CLI to pick one of them."""
 
     from fleet import workers
+
+    monkeypatch.setattr(workers, "_binary", lambda provider: provider)
 
     monkeypatch.setattr(
         workers, "claude_read_mcp_flags",
@@ -930,6 +936,8 @@ def test_a_write_leg_is_unchanged(monkeypatch):
     """Write legs skip permissions outright; they need no allowlist."""
 
     from fleet import workers
+
+    monkeypatch.setattr(workers, "_binary", lambda provider: provider)
 
     monkeypatch.setattr(workers, "claude_read_mcp_flags", lambda _mode: [])
 

@@ -59,7 +59,7 @@ function publish(root, dir, { command = run, authorization = {
   git(['push', 'origin', `${plan.commit}:refs/tags/${plan.version}`]);
   gh(['release', 'create', plan.version, '--repo', REPO, '--verify-tag', '--draft',
     '--title', `Serena ${plan.version.slice(1)}`, '--notes',
-    `Selected features: ${plan.features.map(f => f.id).join(', ')}\n\nBased on ${plan.baseTag}. Linux and Windows build gates passed. Original CLI terminals retained.`,
+    `${plan.fullDev ? `Complete Dev release: ${plan.fullDev.tag} (${plan.fullDev.commit}).` : `Selected features: ${plan.features.map(f => f.id).join(', ')}`}${plan.fullDev && plan.patches.length ? `\n\nMain adaptations: ${plan.patches.map(p => p.reason).join(' ')}` : ''}\n\nBased on ${plan.baseTag}. Linux and Windows build gates passed.`,
     ...names.map(name => path.join(dir, name)), receiptFile]);
   // The by-tag endpoint resolves published releases only, so it 404s on the
   // draft just created and every publish stopped here. Listing includes drafts.

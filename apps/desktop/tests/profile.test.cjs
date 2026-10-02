@@ -7,7 +7,7 @@ const { desktopProfile, backendEnvironment } = require('../profile');
 const { configure } = require('../scripts/configure-release.cjs');
 
 test('packaged identity cannot be switched by a development launch flag', () => {
-  assert.equal(desktopProfile('0.2.85', { argv: ['--dev'] }).structured, false);
+  assert.equal(desktopProfile('0.2.85', { argv: ['--dev'] }).channel, 'stable');
   assert.equal(desktopProfile('0.2.85-dev.1').structured, true);
   assert.equal(desktopProfile('0.2.85', { packaged: false, argv: ['--dev'] }).structured, true);
 });
@@ -19,7 +19,9 @@ test('editions separate mutable UI state but share native writer locks and real 
     assert.notEqual(stable[key], dev[key], key);
   }
   assert.equal(stable.SERENA_RUNTIME_LEASE_DIR, dev.SERENA_RUNTIME_LEASE_DIR);
-  assert.equal(stable.SERENA_STRUCTURED_WORKSPACE, '0');
+  assert.equal(stable.SERENA_STRUCTURED_WORKSPACE, '1');
+  assert.ok(stable.CHATS_DATA_DIR.endsWith('chats'));
+  assert.ok(dev.CHATS_DATA_DIR.endsWith('chats-dev'));
   assert.equal(dev.SERENA_STRUCTURED_WORKSPACE, '1');
   for (const key of ['HOME', 'USERPROFILE', 'CLAUDE_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME']) {
     assert.equal(dev[key], undefined, `${key} must not hide native history/auth`);

@@ -10,7 +10,7 @@ function desktopProfile(version, { packaged = true, argv = [] } = {}) {
     updateChannel: dev ? 'dev' : 'latest',
     name: dev ? 'Serena Dev' : 'Serena',
     slug: dev ? 'serena-dev' : 'serena',
-    structured: dev,
+    structured: true,
     version,
   });
 }
@@ -21,7 +21,7 @@ function backendEnvironment(profile, home) {
     SERENA_DESKTOP_CHANNEL: profile.channel,
     SERENA_DESKTOP_VERSION: profile.version,
     SERENA_STRUCTURED_WORKSPACE: profile.structured ? '1' : '0',
-    CHATS_DATA_DIR: path.join(home, '.local', 'share', profile.structured ? 'chats-dev' : 'chats'),
+    CHATS_DATA_DIR: path.join(home, '.local', 'share', profile.channel === 'dev' ? 'chats-dev' : 'chats'),
     SERENA_CONFIG_DIR: config,
     SERENA_CODING_MODEL_PATH: path.join(home, '.local', 'state', profile.slug, 'coding-model.json'),
     // Deliberately shared: editions must not become concurrent native writers.
