@@ -33,6 +33,7 @@ on:
       - "core/**"
       - "fleet/**"
       - "scripts/fleet_peer_smoke.py"
+      - "scripts/verify-chat-index.py"
   pull_request:
     paths:
       - ".github/workflows/windows-desktop.yml"
@@ -47,6 +48,7 @@ on:
       - "core/**"
       - "fleet/**"
       - "scripts/fleet_peer_smoke.py"
+      - "scripts/verify-chat-index.py"
   workflow_dispatch:
 
 # Validation only. Nothing here is allowed to touch a release.
