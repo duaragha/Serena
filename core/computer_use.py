@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import io
 import json
@@ -15,12 +16,44 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 
 from core.action_authority import BASIS_GRANT, build_request, default_authority
-from core.computer_platform import ComputerError, ComputerTransientError, Rect
+from core.computer_claude import computer_model
+from core.computer_platform import ComputerError, ComputerPaused, ComputerTransientError, Rect
 from core.visual_context import VisualPolicy
 
 MAX_ACTIONS = 12
 MAX_SESSION_SECONDS = 1800
 MAX_FRAME_AGE = 45
+# After resume, input waits until his hands have been off for this long: the
+# click on the resume button is itself physical input.
+RESUME_QUIET_SECONDS = 0.8
+# A post-action screenshot waits for the UI to react and stop painting, so the
+# model rarely spends a whole turn discovering that nothing had rendered yet.
+POST_ACTION_SETTLE_SECONDS = 1.0
+POST_ACTION_QUIET_SECONDS = 0.45
+LIVE_STATES = frozenset({"active", "paused", "resuming"})
+RELEASE_WAIT_SECONDS = 5.0
+# On his screen with accessibility steps available, her pixel input waits for
+# his hands to rest this long, and his input pauses her only while she is
+# using the mouse or keyboard and for this grace period after.
+HANDS_QUIET_SECONDS = 1.0
+HANDS_WAIT_SECONDS = 10.0
+PIXEL_GRACE_SECONDS = 2.0
+# A handoff whose reason reads like a sign-in puts her browser in sign-in mode:
+# Google and Shopify refuse logins while its automation port is open.
+SIGN_IN_REASON = re.compile(
+    r"\b(sign(?:[ -]?in|[ -]?up)|log[ -]?in|password|passcode|passkey|2fa|mfa|two[- ]factor|"
+    r"verification code|one[- ]time code|otp|captcha|oauth|consent)\b",
+    re.I,
+)
+
+
+class EventBus:
+    """One ordered event stream shared by every desktop the helper owns."""
+
+    def __init__(self):
+        self.condition = threading.Condition(threading.RLock())
+        self.events = deque(maxlen=256)
+        self.sequence = 0
 
 
 @dataclass
@@ -50,6 +83,29 @@ class Session:
     context_message_count: int = 0
     action_deadline: float = 0
     browser_checks: dict | None = None
+    desk: str = "host"
+    paused_reason: str = ""
+    paused_by_agent: bool = False
+    pauses: int = 0
+    resume_requested_at: float | None = None
+    last_physical_at: float = 0
+    # Until this monotonic time her pixel input shares his mouse and keyboard.
+    pixel_until: float = 0
+    # Her browser went into sign-in mode for this session's handoff.
+    signing_in: bool = False
+    input_hold: threading.Event = field(default_factory=threading.Event)
+    last_timing: dict | None = None
+    frame_delivered_at: float = 0
+    # The visual worker's model sees frames at this width; see computer_claude.
+    frame_width: int = 1920
+    worker_model: str = ""
+    worker_effort: str = ""
+    browser_batches: list = field(default_factory=list)
+    browser_origin: str = ""
+    recipe_overflow: bool = False
+    recipe_partial: bool = False
+    replay_results: dict = field(default_factory=dict)
+    replaying: bool = False
 
 
 def number(value, name, minimum, maximum):
@@ -61,33 +117,73 @@ def number(value, name, minimum, maximum):
 
 
 class ComputerController:
-    def __init__(self, desktop, *, authority=None, clock=time.time, indicator=None, publish=None):
+    def __init__(
+        self,
+        desktop,
+        *,
+        authority=None,
+        clock=time.time,
+        indicator=None,
+        publish=None,
+        bus=None,
+        desk="host",
+        launcher=None,
+    ):
         self.desktop = desktop
         self.authority = authority or default_authority()
         self.clock = clock
         self.indicator = indicator
         self.publish = publish
+        self.bus = bus or EventBus()
+        # "host" is his screen; "isolated" is Serena's own nested desktop.
+        self.desk = desk
+        # Opens an allow-listed app on her own desktop; None on his screen.
+        self.launcher = launcher
+        # Her browser read as text and driven by element, and her shell; both
+        # exist only on her own desktop (see computer_web / computer_shell).
+        self.web = None
+        self.terminal = None
+        # His desktop apps through accessibility (computer_apps); host desk only.
+        self.apps = None
+        # Her desktop's sign-in mode (computer_nested): sign_in() relaunches her
+        # browser without its automation port, signed_in(restart=) returns it.
+        self.sign_in = None
+        self.signed_in = None
         self.lock = threading.RLock()
         self.capture_lock = threading.Lock()
         self.action_lock = threading.Lock()
         self.session = None
-        self.events = deque(maxlen=256)
-        self.sequence = 0
-        self.condition = threading.Condition(self.lock)
         self.shutdown = threading.Event()
         self.policy = VisualPolicy()
         self.agent = None
         self.conversations = None
         self.indicator_rect = None
+        from core.computer_recipes import RecipeStore
+
+        self.recipes = RecipeStore(clock=clock)
+        self.replay_lock = threading.Lock()
+
+    @property
+    def events(self):
+        return self.bus.events
+
+    @property
+    def sequence(self):
+        return self.bus.sequence
+
+    @property
+    def condition(self):
+        return self.bus.condition
 
     def event(self, kind, **data):
-        with self.condition:
-            self.sequence += 1
-            event = {"id": self.sequence, "type": kind, "at": self.clock(), **data}
+        bus = self.bus
+        with bus.condition:
+            bus.sequence += 1
+            event = {"id": bus.sequence, "type": kind, "at": self.clock(), **data}
             if self.conversations:
                 self.conversations.record(event)
-            self.events.append(event)
-            self.condition.notify_all()
+            bus.events.append(event)
+            bus.condition.notify_all()
         if self.publish and kind not in {"frame", "delta"}:
             self.publish(event)
         return event
@@ -129,16 +225,22 @@ class ComputerController:
                     "source_session_id": s.source_session_id or None,
                     "source_agent": s.source_agent or None,
                     "context_message_count": s.context_message_count,
-                    "service_tier": "fast" if s.driver == "astra" else None,
+                    "worker_model": s.worker_model or None,
+                    "worker_effort": s.worker_effort or None,
                     "latest_frame": next(reversed(s.frames), None),
                     "focused_window": focused,
+                    "desk": self.desk,
+                    "paused_reason": s.paused_reason or None,
+                    "paused_by_agent": s.paused_by_agent,
+                    "pauses": s.pauses,
+                    "last_timing": s.last_timing,
                 }
             )
         return {
             "ok": True,
             "backend": self.desktop.name,
             "session": info,
-            "model": "gpt-6-astra",
+            "model": computer_model(),
             "stop_shortcut": "Ctrl+Alt+Shift+Escape",
             "event_id": self.sequence,
         }
@@ -180,12 +282,17 @@ class ComputerController:
                 raise ComputerError("no active window; choose a display explicitly")
             target = "window:" + window_id
         self.geometry(target)
+        # A task that just finished may still be closing its model client (about
+        # half a second for Claude); a back-to-back task waits instead of failing.
+        deadline = time.monotonic() + RELEASE_WAIT_SECONDS
+        while self._releasing() and time.monotonic() < deadline:
+            if self.session and self.session.state in LIVE_STATES:
+                break
+            time.sleep(0.05)
         with self.lock:
-            if self.session and self.session.state == "active":
+            if self.session and self.session.state in LIVE_STATES:
                 raise ComputerError("a computer session already owns this desktop; stop it first")
-            if self.action_lock.locked() or (
-                self.agent and self.agent.thread and self.agent.thread.is_alive()
-            ):
+            if self._releasing():
                 raise ComputerError("the previous session is still releasing input; retry shortly")
             grant = None
             if mode == "control":
@@ -208,6 +315,7 @@ class ComputerController:
                 source_session_id=source_session_id,
                 source_agent=source_agent,
                 browser_checks=browser_checks,
+                desk=self.desk,
             )
             self.session = s
         try:
@@ -225,13 +333,38 @@ class ComputerController:
         except Exception:
             self.stop("session startup failed")
             raise
-        self.event("started", session_id=s.id, mode=mode, target=target, expires_at=s.expires_at)
+        self.event(
+            "started",
+            session_id=s.id,
+            mode=mode,
+            target=target,
+            desk=self.desk,
+            expires_at=s.expires_at,
+        )
         return self.status()
+
+    def _enter_sign_in(self, s):
+        if not s.signing_in:
+            return  # he already resumed or stopped
+        try:
+            self.sign_in()
+            self.event("sign_in_mode", session_id=s.id)
+        except Exception as exc:
+            self.event("sign_in_mode_failed", session_id=s.id, error=str(exc)[:200])
+
+    def _releasing(self):
+        return self.action_lock.locked() or bool(
+            self.agent and self.agent.thread and self.agent.thread.is_alive()
+        )
 
     def current(self, session_id):
         s = self.session
         if not s or s.id != session_id:
             raise ComputerError("computer session not found")
+        if s.state in {"paused", "resuming"} and not s.cancelled.is_set():
+            raise ComputerPaused(
+                "paused: Raghav has the mouse and keyboard; after resume, observe before acting"
+            )
         if s.state != "active" or s.cancelled.is_set():
             raise ComputerError(f"computer session {s.state}: {s.reason}")
         if self.clock() >= s.expires_at:
@@ -244,25 +377,126 @@ class ComputerController:
             s = self.session
             if session_id and (not s or s.id != session_id):
                 return self.status()
-            if not s or s.state != "active":
+            if not s or s.state not in LIVE_STATES:
                 return self.status()
             # Cancellation is visible to the executor before waiting for any I/O.
             s.cancelled.set()
             s.state = "stopped"
             s.reason = str(reason)[:300]
             s.frames.clear()
+            leave_sign_in, s.signing_in = s.signing_in, False
         self.desktop.release()
+        if leave_sign_in and self.signed_in is not None:
+            # The handoff ended with the task; the port returns on next use.
+            with contextlib.suppress(Exception):
+                self.signed_in(restart=False)
         if s.grant_id:
             self.authority.revoke_grant(s.grant_id, reason=reason)
+        if (reason == "visual task finished" and s.mode == "control"
+                and s.desk == "isolated" and (s.browser_batches or s.recipe_partial)
+                and not s.recipe_overflow):
+            try:
+                self.recipes.save(s.request, s.browser_origin, s.browser_batches, partial=s.recipe_partial)
+            except (OSError, ComputerError):
+                self.event("recipe_save_failed", session_id=s.id)
         self.event("stopped", session_id=s.id, reason=s.reason)
         if self.agent:
             self.agent.cancel()
         return self.status()
 
     def physical_input(self):
+        """His real input pauses a control session; watch sessions ignore it.
+
+        With accessibility steps on his screen she works beside him, so his
+        input pauses her only while her own pixel input shares his mouse and
+        keyboard.
+        """
         s = self.session
-        if s and s.state == "active" and s.mode == "control":
-            self.stop("you took over with the mouse or keyboard")
+        if not s or s.mode != "control" or s.state not in LIVE_STATES:
+            return
+        s.last_physical_at = self.clock()
+        if s.state == "active" and (not self._beside_him(s) or time.monotonic() < s.pixel_until):
+            self.pause(s.id, "you took over with the mouse or keyboard")
+
+    def _beside_him(self, s):
+        return s.desk == "host" and self.apps is not None
+
+    def _wait_for_his_hands(self, s, frame):
+        """Pixel input on his screen only while his hands rest, on a frame taken after."""
+        deadline = time.monotonic() + HANDS_WAIT_SECONDS
+        while self.clock() - s.last_physical_at < HANDS_QUIET_SECONDS:
+            if self._input_cancelled(s):
+                raise ComputerError(self._cancel_reason(s))
+            if time.monotonic() >= deadline:
+                raise ComputerError(
+                    "Raghav is using his mouse and keyboard; use app steps, or act again once he stops"
+                )
+            time.sleep(0.1)
+        if s.last_physical_at > frame["captured_at"]:
+            raise ComputerError("Raghav used his screen after this screenshot; observe again")
+
+    def pause(self, session_id, reason, *, by_agent=False):
+        """Hold input without ending the task; its lease and context survive."""
+        with self.lock:
+            s = self.session
+            if not s or s.id != session_id or s.state != "active" or s.mode != "control":
+                return self.status()
+            s.state = "paused"
+            s.paused_reason = str(reason)[:300]
+            s.paused_by_agent = by_agent
+            s.pauses += 1
+            s.resume_requested_at = None
+            # An in-flight batch sees the hold before the next key or click.
+            s.input_hold.set()
+            # Anything captured before the takeover no longer describes the screen.
+            s.frames.clear()
+        self.desktop.release()
+        self.event("paused", session_id=s.id, reason=s.paused_reason, by_agent=by_agent)
+        return self.status()
+
+    def resume(self, session_id=None):
+        with self.lock:
+            s = self.session
+            if not s or (session_id and s.id != session_id):
+                raise ComputerError("computer session not found")
+            if s.state in {"active", "resuming"}:
+                return self.status()
+            if s.state != "paused":
+                raise ComputerError(f"computer session {s.state}: {s.reason}")
+            if self.clock() >= s.expires_at:
+                raise ComputerError("computer session expired")
+            if self.authority.lock_state()["engaged"]:
+                raise ComputerError("Serena's emergency stop is engaged")
+            s.state = "resuming"
+            s.resume_requested_at = self.clock()
+            leave_sign_in, s.signing_in = s.signing_in, False
+        if leave_sign_in and self.signed_in is not None:
+            # Only the flag: the next page or browser step brings the port back,
+            # so resume never waits on a browser restart.
+            try:
+                self.signed_in(restart=False)
+            except Exception as exc:
+                self.event("sign_in_mode_failed", session_id=s.id, error=str(exc)[:200])
+        self.event("resuming", session_id=s.id)
+        return self.status()
+
+    def settle_resume(self):
+        """Hand input back once his hands have been off for a moment."""
+        s = self.session
+        if not s or s.state != "resuming":
+            return False
+        quiet_since = max(s.resume_requested_at or 0, s.last_physical_at or 0)
+        if self.clock() - quiet_since < RESUME_QUIET_SECONDS:
+            return False
+        with self.lock:
+            if self.session is not s or s.state != "resuming":
+                return False
+            s.state = "active"
+            s.paused_reason = ""
+            s.paused_by_agent = False
+            s.input_hold.clear()
+        self.event("resumed", session_id=s.id)
+        return True
 
     def geometry(self, target):
         monitors = self.desktop.monitors()
@@ -318,12 +552,14 @@ class ComputerController:
             ):
                 self._assert_public(window)
 
-    def observe(self, session_id, *, max_width=1920):
+    def observe(self, session_id, *, max_width=None):
         from PIL import Image, ImageDraw
 
-        number(max_width, "max_width", 640, 2560)
+        if max_width is not None:
+            number(max_width, "max_width", 640, 2560)
         with self.capture_lock:
             s = self.current(session_id)
+            max_width = max_width or s.frame_width
             if self.desktop.locked():
                 self.stop("desktop locked")
                 raise ComputerError("desktop locked")
@@ -417,6 +653,7 @@ class ComputerController:
                 s.frames[frame["frame_id"]] = frame
                 while len(s.frames) > 4:
                     s.frames.popitem(last=False)
+                s.frame_delivered_at = time.monotonic()
             return frame
 
     def frame(self, session_id, frame_id):
@@ -425,6 +662,70 @@ class ComputerController:
         if not value or self.clock() >= value["expires_at"]:
             raise ComputerError("frame is expired; observe again before acting")
         return value
+
+    def zoom(self, session_id, frame_id, x, y, width, height, *, max_width=1280):
+        """A full-resolution crop of part of a frame, for reading small text.
+
+        Coordinates are in the frame's pixels. The crop is not a frame: it has
+        no id, so input can never be aimed with its coordinates. Privacy checks
+        and the indicator mask apply exactly as they do to observe.
+        """
+        from PIL import Image, ImageDraw
+
+        with self.capture_lock:
+            s = self.current(session_id)
+            frame = self.frame(session_id, frame_id)
+            for name, value, limit in (
+                ("x", x, frame["width"] - 1),
+                ("y", y, frame["height"] - 1),
+                ("width", width, frame["width"]),
+                ("height", height, frame["height"]),
+            ):
+                number(value, name, 1 if name in {"width", "height"} else 0, limit)
+            if x + width > frame["width"] or y + height > frame["height"]:
+                raise ComputerError("zoom region extends past the screenshot")
+            base = Rect(**frame["rect"])
+            sx, sy = base.width / frame["width"], base.height / frame["height"]
+            rect = Rect(
+                base.x + round(x * sx),
+                base.y + round(y * sy),
+                max(1, round(width * sx)),
+                max(1, round(height * sy)),
+            )
+            if self.geometry(s.target)[2] != frame["geometry"]:
+                raise ComputerError("display/window geometry changed; observe again")
+            if self.desktop.context().get("id") != frame["context"].get("id"):
+                raise ComputerError("foreground changed; observe again")
+            self._assert_public_region(rect)
+            image = self.desktop.capture(rect)
+            try:
+                if self.indicator_rect:
+                    masked = self.indicator_rect
+                    ImageDraw.Draw(image).rectangle(
+                        (
+                            masked.x - rect.x,
+                            masked.y - rect.y,
+                            masked.x + masked.width - rect.x,
+                            masked.y + masked.height - rect.y,
+                        ),
+                        fill=(33, 27, 41),
+                    )
+                image.thumbnail((int(max_width), 1600), Image.Resampling.LANCZOS)
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                buffer = io.BytesIO()
+                image.save(buffer, format="JPEG", quality=90, subsampling=0)
+                return {
+                    "zoom_of": frame_id,
+                    "region": {"x": x, "y": y, "width": width, "height": height},
+                    "width": image.width,
+                    "height": image.height,
+                    "note": "for reading only; aim input with the full screenshot's coordinates",
+                    "media_type": "image/jpeg",
+                    "data": base64.b64encode(buffer.getvalue()).decode(),
+                }
+            finally:
+                image.close()
 
     def next_frame(self, session_id, after_signature="", timeout=10):
         number(timeout, "timeout", 0, 20)
@@ -468,8 +769,10 @@ class ComputerController:
             "type",
             "wait",
             "screenshot",
+            "launch",
+            "handoff",
         }
-        for a in actions:
+        for index, a in enumerate(actions):
             if not isinstance(a, dict) or a.get("type") not in allowed:
                 raise ComputerError("unknown computer action")
             kind = a["type"]
@@ -484,9 +787,31 @@ class ComputerController:
                 "scroll_y",
                 "text",
                 "seconds",
+                "app",
+                "url",
+                "reason",
             }
             if set(a) - fields:
                 raise ComputerError("unexpected action fields")
+            if kind in {"launch", "handoff"} and index != len(actions) - 1:
+                # Both change who or what is in front; inspect before anything else.
+                raise ComputerError(f"{kind} must be the last action in its batch")
+            if kind == "launch":
+                if not self.launcher:
+                    raise ComputerError("launch works only on serena's own desktop")
+                if a.get("app") not in {"browser", "terminal"}:
+                    raise ComputerError("launch app must be browser or terminal")
+                url = a.get("url")
+                if url is not None and (
+                    a["app"] != "browser"
+                    or not isinstance(url, str)
+                    or not re.fullmatch(r"https?://[^\s]{1,2040}", url)
+                ):
+                    raise ComputerError("launch url must be one http(s) URL for the browser")
+            if kind == "handoff" and (
+                not isinstance(a.get("reason"), str) or not 1 <= len(a["reason"].strip()) <= 300
+            ):
+                raise ComputerError("handoff needs a 1–300 character reason for Raghav")
             if kind in {"move", "click", "double_click", "scroll"}:
                 self._point(frame, a.get("x"), a.get("y"), monitors)
             if kind in {"click", "double_click", "drag"} and a.get("button", "left") not in {
@@ -537,7 +862,12 @@ class ComputerController:
         if not self.action_lock.acquire(blocking=False):
             raise ComputerError("another action batch is running")
         try:
+            arrived = time.monotonic()
             s = self.current(session_id)
+            # Time since the model last received a screenshot: its decision time.
+            decision_ms = (
+                round((arrived - s.frame_delivered_at) * 1000) if s.frame_delivered_at else None
+            )
             digest = hashlib.sha256(
                 json.dumps([frame_id, actions, intent], sort_keys=True).encode()
             ).hexdigest()
@@ -549,12 +879,21 @@ class ComputerController:
             if s.mode != "control":
                 raise ComputerError("this session can watch but cannot send input")
             frame = self.frame(session_id, frame_id)
+            if self._beside_him(s):
+                self._wait_for_his_hands(s, frame)
+                # From here his input is a collision, and pauses her.
+                s.pixel_until = float("inf")
             _, monitors, geometry = self.geometry(s.target)
             if geometry != frame["geometry"]:
                 raise ComputerError("display/window geometry changed; observe again")
             if self.desktop.context().get("id") != frame["context"].get("id"):
                 raise ComputerError("foreground changed; observe again")
             self._validate_actions(actions, frame, monitors)
+            # A fresh baseline tells the settle loop what "the UI reacted" means,
+            # and re-checks privacy just before input.
+            baseline = frame["signature"]
+            with contextlib.suppress(ComputerTransientError):
+                baseline = self.observe(session_id)["signature"]
             authorization = build_request(
                 capability="computer.input",
                 intent=f"{s.request}; {intent}",
@@ -581,23 +920,26 @@ class ComputerController:
                 s.results.popitem(last=False)
             self.event("action_started", session_id=s.id, request_id=request_id, intent=intent)
             s.action_deadline = time.monotonic() + 15
+            input_started = time.monotonic()
+            preflight_ms = round((input_started - arrived) * 1000)
+            input_ms = 0
+            expected_focus = frame["context"].get("id")
             try:
                 for action in actions:
                     self.current(session_id)
                     if self._input_cancelled(s):
-                        raise ComputerError(
-                            "input batch deadline reached; inspect the partial result"
-                        )
+                        raise ComputerError(self._cancel_reason(s))
                     if self.authority.lock_state()["engaged"] or self.desktop.locked():
                         raise ComputerError("input stopped by lock")
                     if self.geometry(s.target)[2] != geometry:
                         raise ComputerError("target moved during the batch")
-                    if self.desktop.context().get("id") != frame["context"].get("id"):
+                    if self.desktop.context().get("id") != expected_focus:
                         raise ComputerError(
                             "foreground changed during the batch; inspect before continuing"
                         )
                     self._execute(s, action, frame, monitors)
                     receipt["actions_executed"] += 1
+                    expected_focus = self._clicked_focus(s, action, frame, monitors, expected_focus)
                 receipt.update(ok=True, status="executed")
             except Exception as exc:
                 receipt.update(
@@ -606,6 +948,7 @@ class ComputerController:
                     outcome_uncertain=True,
                 )
             finally:
+                input_ms = round((time.monotonic() - input_started) * 1000)
                 self.desktop.release()
                 self.authority.record_outcome(
                     authorization.request_id,
@@ -615,14 +958,44 @@ class ComputerController:
                     else receipt["error"],
                     receipt={k: v for k, v in receipt.items() if k != "data"},
                 )
-            if not s.cancelled.is_set():
+            if receipt["ok"] and actions[-1]["type"] == "handoff":
+                self.pause(
+                    s.id, "serena needs you: " + actions[-1]["reason"].strip(), by_agent=True
+                )
+                if (s.desk == "isolated" and self.sign_in is not None
+                        and SIGN_IN_REASON.search(actions[-1]["reason"])):
+                    s.signing_in = True
+                    # Restarting her browser takes seconds; the receipt does not wait.
+                    threading.Thread(
+                        target=self._enter_sign_in, args=(s,), name="computer-sign-in", daemon=True
+                    ).start()
+                receipt.update(
+                    status="handed_off",
+                    next=(
+                        "Raghav has the input now. End this turn; you continue from a fresh "
+                        "screenshot after he resumes."
+                    ),
+                )
+            post_frame = None
+            settle_ms = None
+            if not s.cancelled.is_set() and not s.input_hold.is_set():
+                settle_started = time.monotonic()
                 try:
-                    post_frame = self.observe(session_id)
+                    post_frame = self._post_action_frame(
+                        session_id,
+                        baseline,
+                        settle=actions[-1]["type"] not in {"wait", "screenshot"},
+                    )
                 except Exception as exc:
                     receipt["verification_error"] = str(exc)
-                    post_frame = None
-            else:
-                post_frame = None
+                settle_ms = round((time.monotonic() - settle_started) * 1000)
+            receipt["timing"] = s.last_timing = {
+                "decision_ms": decision_ms,
+                "preflight_ms": preflight_ms,
+                "input_ms": input_ms,
+                "settle_ms": settle_ms,
+                "capture_ms": post_frame["capture_ms"] if post_frame else None,
+            }
             self.event(
                 "action_finished",
                 session_id=s.id,
@@ -630,7 +1003,342 @@ class ComputerController:
             )
             return {**receipt, **({"frame": post_frame} if post_frame else {})}
         finally:
+            current = self.session
+            if current is not None and current.pixel_until == float("inf"):
+                current.pixel_until = time.monotonic() + PIXEL_GRACE_SECONDS
             self.action_lock.release()
+
+    # -- his desktop apps through accessibility --------------------------------
+    def apps_view(self, session_id, window=None):
+        """His windows, or one window's widgets as text with refs."""
+        s = self.current(session_id)
+        if self.apps is None:
+            raise ComputerError("app access exists only on his screen, with accessibility on")
+        self._scope_apps(s)
+        result = self.apps.snapshot(window) if window else self.apps.list()
+        s.frame_delivered_at = time.monotonic()
+        return result
+
+    def apps_run(self, session_id, window, steps, *, request_id, intent, confirmation_id=""):
+        """Press, fill, pick and read in his apps without his mouse or keyboard."""
+        if self.apps is None:
+            raise ComputerError("app access exists only on his screen, with accessibility on")
+        from core.computer_apps import DEFAULT_STEP_TIMEOUT, MAX_STEP_TIMEOUT, validate_steps
+
+        validate_steps(steps)
+        budget = sum(float(step.get("timeout", DEFAULT_STEP_TIMEOUT)) for step in steps) + 15
+
+        def execute(s):
+            self._scope_apps(s)
+            return self.apps.run(window, steps, cancelled=lambda: self._input_cancelled(s))
+
+        return self._structured_batch(
+            session_id,
+            request_id=request_id,
+            intent=intent,
+            payload=["apps", window, steps],
+            budget=min(budget, len(steps) * MAX_STEP_TIMEOUT + 15),
+            execute=execute,
+            confirmation_id=confirmation_id,
+        )
+
+    def _scope_apps(self, s):
+        """Only windows inside the session's scope: a display, a window, or all."""
+        if s.target == "desktop":
+            self.apps.scope = None
+            return
+        rect, _, _ = self.geometry(s.target)
+        self.apps.scope = (rect.x, rect.y, rect.width, rect.height)
+
+    # -- structured input on her own desktop ---------------------------------
+    def browser_snapshot(self, session_id):
+        """Her current page as an accessibility snapshot with element refs."""
+        s = self.current(session_id)
+        if self.web is None:
+            raise ComputerError("page snapshots exist only on serena's own desktop")
+        result = self.web.snapshot()
+        s.frame_delivered_at = time.monotonic()
+        return result
+
+    def browser(self, session_id, steps, *, request_id, intent, confirmation_id=""):
+        """Run a whole sequence of page steps in one call; stop at the first failure."""
+        if self.web is None:
+            raise ComputerError("browser steps exist only on serena's own desktop")
+        from core.computer_web import MAX_STEP_TIMEOUT, validate_steps
+
+        validate_steps(steps)
+        budget = sum(float(step.get("timeout", 5)) for step in steps) + 10
+
+        def execute(s):
+            from core.computer_recipes import bounded
+
+            result = self.web.run(steps, cancelled=lambda: self._input_cancelled(s))
+            saved = result.pop("_recipe_steps", [])
+            partial = result.pop("_recipe_partial", False)
+            starting_url = result.pop("_starting_url", "")
+            if result.get("ok") and not saved and not partial and not s.replaying:
+                s.recipe_overflow = True
+                s.browser_batches.clear()
+            if (result.get("ok") and (saved or partial) and s.desk == "isolated"
+                    and not s.replaying and not s.recipe_overflow and not s.recipe_partial):
+                try:
+                    batches = bounded([*s.browser_batches, *([saved] if saved else [])], partial=partial)
+                    with self.lock:
+                        if s.state == "active":
+                            if not s.browser_batches:
+                                s.browser_origin = starting_url
+                            s.browser_batches = batches
+                            s.recipe_partial = partial
+                except ComputerError:
+                    s.recipe_overflow = True
+                    s.browser_batches.clear()
+            return result
+
+        return self._structured_batch(
+            session_id,
+            request_id=request_id,
+            intent=intent,
+            payload=["browser", steps],
+            budget=min(budget, len(steps) * MAX_STEP_TIMEOUT + 10),
+            execute=execute,
+            confirmation_id=confirmation_id,
+        )
+
+    def replay(self, session_id, recipe_id, *, request_id, intent):
+        """Replay through browser receipts, retaining failures for transport retries."""
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", request_id):
+            raise ComputerError("supply a unique request_id (8–80 letters/digits/dashes)")
+        if not isinstance(intent, str) or not intent.strip() or len(intent) > 500:
+            raise ComputerError("describe the intended effect of this batch")
+        s = self.current(session_id)
+        if s.desk != "isolated" or s.mode != "control" or self.web is None:
+            raise ComputerError("replay requires control of serena's own browser")
+        if not self.replay_lock.acquire(blocking=False):
+            raise ComputerError("another recipe is running")
+        try:
+            key = (recipe_id, intent)
+            if request_id in s.replay_results:
+                old = s.replay_results[request_id]
+                if old["key"] != key:
+                    raise ComputerError("request_id was reused with a different recipe")
+                return {**old["result"], "replayed": True}
+            if len(s.replay_results) >= 100:
+                raise ComputerError("session replay limit reached")
+            recipe = self.recipes.load(recipe_id)
+            from core.computer_recipes import origin
+
+            batches = list(recipe["batches"])
+            if not batches:
+                raise ComputerError("recipe has no replayable prefix")
+            current = self.web.snapshot()
+            starting_url = recipe.get("starting_url", recipe["origin"])
+            if starting_url and origin(current.get("url", "")) != recipe["origin"]:
+                batches.insert(0, [{"goto": starting_url}])
+            result = {"ok": False, "recipe_id": recipe_id}
+            s.replay_results[request_id] = {"key": key, "result": result}
+            s.replaying = True
+            # A recovery suffix after replay is not a complete learnable flow.
+            s.recipe_overflow = True
+            s.browser_batches.clear()
+            receipts = []
+            for index, steps in enumerate(batches):
+                child_id = "recipe-" + hashlib.sha256(
+                    f"{request_id}:{recipe_id}:{index}".encode()
+                ).hexdigest()
+                try:
+                    batch = self.browser(s.id, steps, request_id=child_id, intent=intent)
+                except ComputerError as exc:
+                    batch = {"ok": False, "error": str(exc)}
+                if not batch.get("ok") and "snapshot" not in batch:
+                    with contextlib.suppress(Exception):
+                        batch.update(self.web.snapshot())
+                result.update(batch, batch=index + 1)
+                receipts.append(batch.get("action_receipt_id"))
+                if not batch.get("ok"):
+                    break
+            result["receipts"] = receipts
+            result["request_id"] = request_id
+            result["partial"] = recipe.get("partial", False)
+            if result["partial"] and result["ok"]:
+                result["next"] = "Recorded prefix finished; observe and continue the remaining task."
+            try:
+                self.recipes.outcome(recipe_id, result["ok"])
+            except (OSError, ComputerError):
+                result["recipe_update_failed"] = True
+            return result
+        finally:
+            s.replaying = False
+            self.replay_lock.release()
+
+    def shell(
+        self,
+        session_id,
+        *,
+        request_id="",
+        intent="",
+        command=None,
+        send=None,
+        enter=True,
+        read=False,
+        timeout=30,
+        confirmation_id="",
+    ):
+        """Her terminal as text: run a command, answer a prompt, or read output."""
+        if self.terminal is None:
+            raise ComputerError("the shell exists only on serena's own desktop")
+        if sum(bool(item) for item in (command, send is not None, read)) != 1:
+            raise ComputerError("shell takes exactly one of command, send, or read")
+        s = self.current(session_id)
+        if read:
+            result = self.terminal.read()
+            s.frame_delivered_at = time.monotonic()
+            return result
+        number(timeout, "timeout", 1, 600)
+        if command is not None:
+            payload = ["shell", command, timeout]
+
+            def execute(session):
+                return self.terminal.run(
+                    command, timeout=timeout, cancelled=lambda: self._input_cancelled(session)
+                )
+        else:
+            payload = ["send", send, enter]
+
+            def execute(_session):
+                return self.terminal.send(send, enter=enter)
+
+        return self._structured_batch(
+            session_id,
+            request_id=request_id,
+            intent=intent,
+            payload=payload,
+            budget=timeout + 10,
+            execute=execute,
+            confirmation_id=confirmation_id,
+        )
+
+    def _structured_batch(self, session_id, *, request_id, intent, payload, budget, execute, confirmation_id):
+        """Authority, receipts, idempotency and timing for non-pixel input."""
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", request_id):
+            raise ComputerError("supply a unique request_id (8–80 letters/digits/dashes)")
+        if not isinstance(intent, str) or not intent.strip() or len(intent) > 500:
+            raise ComputerError("describe the intended effect of this batch")
+        if not self.action_lock.acquire(blocking=False):
+            raise ComputerError("another action batch is running")
+        try:
+            arrived = time.monotonic()
+            s = self.current(session_id)
+            decision_ms = (
+                round((arrived - s.frame_delivered_at) * 1000) if s.frame_delivered_at else None
+            )
+            digest = hashlib.sha256(json.dumps([payload, intent], sort_keys=True).encode()).hexdigest()
+            if request_id in s.results:
+                old = s.results[request_id]
+                if old["digest"] != digest:
+                    raise ComputerError("request_id was reused with different actions")
+                return {**old["result"], "replayed": True}
+            if s.mode != "control":
+                raise ComputerError("this session can watch but cannot send input")
+            authorization = build_request(
+                capability="computer.input",
+                intent=f"{s.request}; {intent}",
+                source="automation",
+                target=s.target,
+                effect="external",
+                session_id=s.id,
+                authorization_basis=BASIS_GRANT,
+                grant_id=s.grant_id,
+                confirmation_id=confirmation_id,
+            )
+            decision = self.authority.authorize(authorization)
+            if not decision.allowed:
+                raise ComputerError(decision.reason)
+            receipt = {
+                "ok": False,
+                "status": "running",
+                "request_id": request_id,
+                "action_receipt_id": authorization.request_id,
+            }
+            s.results[request_id] = {"digest": digest, "result": receipt}
+            while len(s.results) > 100:
+                s.results.popitem(last=False)
+            self.event("action_started", session_id=s.id, request_id=request_id, intent=intent)
+            # A leftover pixel-batch deadline must not cancel this one.
+            s.action_deadline = time.monotonic() + budget
+            started = time.monotonic()
+            try:
+                result = execute(s)
+                ok = bool(result.get("ok", result.get("status") != "interrupted"))
+                receipt.update(result)
+                receipt.update(ok=ok, status=result.get("status", "executed" if ok else "failed"))
+                failed = next((item for item in result.get("steps", []) if not item.get("ok")), None)
+                if failed:
+                    # Which of the model's own steps broke, never page text:
+                    # the error's first line only, never its matches.
+                    receipt["failed_step"] = {
+                        "step": failed["step"],
+                        "detail": str(failed.get("detail", "")).split("\n")[0][:240],
+                    }
+            except Exception as exc:
+                receipt.update(status="failed", error=str(exc)[:500], outcome_uncertain=True)
+            finally:
+                run_ms = round((time.monotonic() - started) * 1000)
+                self.authority.record_outcome(
+                    authorization.request_id,
+                    status="completed" if receipt["ok"] else "failed",
+                    detail="structured input dispatched"
+                    if receipt["ok"]
+                    else str(receipt.get("error") or receipt.get("status")),
+                    receipt={k: receipt.get(k) for k in ("request_id", "status", "ok")},
+                )
+            receipt["timing"] = s.last_timing = {"decision_ms": decision_ms, "run_ms": run_ms}
+            s.frame_delivered_at = time.monotonic()
+            # Events stay small: page text and command output never enter them.
+            self.event(
+                "action_finished",
+                session_id=s.id,
+                **{
+                    k: receipt.get(k)
+                    for k in ("request_id", "ok", "status", "error", "timing", "failed_step")
+                    if k in receipt
+                },
+            )
+            return receipt
+        finally:
+            self.action_lock.release()
+
+    def _post_action_frame(self, session_id, baseline, *, settle=True):
+        """The screen once the UI has reacted and stopped painting, within a bound.
+
+        Signatures are hashes of a small grayscale thumbnail, so this compares
+        frames without decoding them. A batch with no visible effect returns
+        after the quiet window; a continuous animation returns at the cap.
+        """
+        if not settle:
+            return self.observe(session_id)
+        s = self.session
+        started = time.monotonic()
+        moved = False
+        last = None
+        while True:
+            frame = None
+            with contextlib.suppress(ComputerTransientError):
+                frame = self.observe(session_id)
+            if frame is not None:
+                if moved and last is not None and frame["signature"] == last["signature"]:
+                    return frame
+                moved = moved or frame["signature"] != baseline
+                last = frame
+            elapsed = time.monotonic() - started
+            if last is not None and (
+                elapsed >= POST_ACTION_SETTLE_SECONDS
+                or (not moved and elapsed >= POST_ACTION_QUIET_SECONDS)
+            ):
+                return last
+            if elapsed >= POST_ACTION_SETTLE_SECONDS + 1:
+                return self.observe(session_id)
+            if s.cancelled.wait(0.05) or s.input_hold.is_set():
+                raise ComputerError("input stopped before the result was captured")
 
     def _execute(self, s, a, frame, monitors):
         kind = a["type"]
@@ -639,18 +1347,18 @@ class ComputerController:
         if kind in {"click", "double_click"}:
             button = {"left": 1, "middle": 2, "right": 3}[a.get("button", "left")]
             for _ in range(2 if kind == "double_click" else 1):
-                if s.cancelled.is_set():
-                    raise ComputerError("input cancelled")
+                if self._input_cancelled(s):
+                    raise ComputerError(self._cancel_reason(s))
                 self.desktop.button(button, True)
                 self.desktop.button(button, False)
-                if kind == "double_click":
-                    s.cancelled.wait(0.07)
+                if kind == "double_click" and self._hold_wait(s, 0.07):
+                    raise ComputerError(self._cancel_reason(s))
         elif kind == "scroll":
             for axis, negative, positive in (("scroll_y", 4, 5), ("scroll_x", 6, 7)):
                 value = a.get(axis, 0)
                 for _ in range(math.ceil(abs(value) / 100)):
-                    if s.cancelled.is_set():
-                        raise ComputerError("input cancelled")
+                    if self._input_cancelled(s):
+                        raise ComputerError(self._cancel_reason(s))
                     button = positive if value > 0 else negative
                     self.desktop.button(button, True)
                     self.desktop.button(button, False)
@@ -661,7 +1369,7 @@ class ComputerController:
             self.desktop.button(button, True)
             try:
                 for p in path[1:]:
-                    if s.cancelled.wait(0.02) or self._input_cancelled(s):
+                    if self._hold_wait(s, 0.02):
                         raise ComputerError("drag cancelled")
                     self.desktop.move(*self._point(frame, **p, monitors=monitors))
             finally:
@@ -669,21 +1377,59 @@ class ComputerController:
         elif kind == "keypress":
             try:
                 for key in a["keys"]:
-                    if s.cancelled.is_set():
-                        raise ComputerError("keypress cancelled")
+                    if self._input_cancelled(s):
+                        raise ComputerError(self._cancel_reason(s))
                     self.desktop.key(key, True)
             finally:
                 self.desktop.release()
         elif kind == "type":
             self.desktop.type_text(a["text"], lambda: self._input_cancelled(s))
-        elif kind == "wait" and s.cancelled.wait(a.get("seconds", 0.5)):
+        elif kind == "wait" and self._hold_wait(s, a.get("seconds", 0.5)):
             raise ComputerError("wait cancelled")
+        elif kind == "launch":
+            self.launcher(a["app"], a.get("url"))
+
+    def _clicked_focus(self, s, action, frame, monitors, expected):
+        """On her own desktop, a click that raised the window it hit is intended.
+
+        "Click the browser, type the URL" then stays one batch instead of
+        costing a model round trip. Anything else taking focus, such as a popup
+        or a window elsewhere, still stops the batch. His screen stays strict.
+        """
+        if self.desk != "isolated" or action["type"] not in {"click", "double_click"}:
+            return expected
+        with contextlib.suppress(ComputerError):
+            current = self.desktop.context()
+            if current.get("id") == expected or not current.get("rect"):
+                return expected
+            point = self._point(frame, action["x"], action["y"], monitors)
+            if Rect(**current["rect"]).contains(*point):
+                return current.get("id")
+        return expected
+
+    def _hold_wait(self, s, seconds):
+        """Sleep, returning True as soon as the batch must stop."""
+        deadline = time.monotonic() + seconds
+        while (left := deadline - time.monotonic()) > 0:
+            if s.cancelled.wait(min(left, 0.02)) or self._input_cancelled(s):
+                return True
+        return self._input_cancelled(s)
 
     @staticmethod
     def _input_cancelled(s):
-        return s.cancelled.is_set() or (
-            s.action_deadline > 0 and time.monotonic() >= s.action_deadline
+        return (
+            s.cancelled.is_set()
+            or s.input_hold.is_set()
+            or (s.action_deadline > 0 and time.monotonic() >= s.action_deadline)
         )
+
+    @staticmethod
+    def _cancel_reason(s):
+        if s.cancelled.is_set():
+            return "input cancelled"
+        if s.input_hold.is_set():
+            return "Raghav took over; input stopped. After resume, observe before continuing"
+        return "input batch deadline reached; inspect the partial result"
 
     def close(self):
         self.stop("computer service stopped")

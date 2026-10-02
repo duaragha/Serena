@@ -1,0 +1,453 @@
+"""Her work in his real apps through accessibility, beside him rather than instead of him."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import secrets
+import shutil
+import subprocess
+import threading
+import time
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from test_computer_use import Desktop, act, begin
+
+from core import computer_use
+from core.action_authority import ActionAuthority
+from core.computer_apps import AppsError, HisApps, validate_steps
+from core.computer_platform import ComputerError
+from core.computer_use import ComputerController
+
+FIXTURE = Path(__file__).parent / "fixtures" / "atspi_app.py"
+
+
+class FakeApps:
+    def __init__(self):
+        self.runs = []
+        self.scope = None
+
+    def list(self):
+        return {"ok": True, "windows": [{"window": "w1", "app": "gedit", "title": "notes"}]}
+
+    def snapshot(self, window):
+        return {"ok": True, "window": window, "snapshot": '- push button "Save" [ref=a1]'}
+
+    def run(self, window, steps, *, cancelled=lambda: False):
+        self.runs.append((window, steps))
+        return {"ok": True, "steps": [{"step": 1, "ok": True, "did": "click"}], "snapshot": ""}
+
+
+@pytest.fixture
+def controller(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.computer_mcp.origin_arguments", lambda *args: {})
+    monkeypatch.setattr(computer_use, "HANDS_QUIET_SECONDS", 0.2)
+    monkeypatch.setattr(computer_use, "HANDS_WAIT_SECONDS", 0.6)
+    c = ComputerController(
+        Desktop(), authority=ActionAuthority(tmp_path / "authority.sqlite", publish_events=False)
+    )
+    c.desktop.env = {"DISPLAY": ":0"}
+    c.apps = FakeApps()
+    yield c
+    c.close()
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        [],
+        [{"press": {"ref": "12"}}],
+        [{"press": {"role": "button"}, "set_text": {"name": "x"}}],
+        [{"set_text": {"name": "Name"}}],
+        [{"select": {"role": "combobox"}}],
+        [{"menu": []}],
+        [{"wait_for": {"target": {"name": "a"}, "gone": {"name": "b"}}}],
+        [{"press": {"name": "Save", "selector": "#x"}}],
+        [{"press": {"name": "Save"}, "timeout": 99}],
+    ],
+)
+def test_malformed_app_steps_are_rejected_before_anything_runs(steps):
+    with pytest.raises(AppsError):
+        validate_steps(steps)
+
+
+def test_beside_him_his_input_pauses_her_only_during_her_pixel_input(controller):
+    c = controller
+    sid, _frame = begin(c)
+    c.physical_input()
+    # She is working through accessibility: his typing is not a takeover.
+    assert c.session.state == "active"
+    result = c.apps_run(
+        sid, "notes", [{"press": {"role": "button", "name": "Save"}}],
+        request_id="apps-save-0001", intent="save his notes",
+    )
+    assert result["ok"] and c.apps.runs[-1][0] == "notes"
+    c.physical_input()
+    assert c.session.state == "active"
+    # While her own mouse input shares his desk, his input is a collision.
+    c.session.pixel_until = time.monotonic() + 5
+    c.physical_input()
+    assert c.session.state == "paused"
+
+
+def test_her_pixel_input_waits_for_his_hands_and_a_frame_taken_after(controller):
+    c = controller
+    sid, frame = begin(c)
+    c.session.last_physical_at = c.clock() + 30  # his hands keep moving
+    with pytest.raises(ComputerError, match="using his mouse and keyboard"):
+        act(c, sid, frame, request_id="pixel-busy-0001")
+    c.session.last_physical_at = c.clock() - 5
+    stale = frame
+    c.session.last_physical_at = stale["captured_at"] + 0.01
+    time.sleep(0.25)
+    with pytest.raises(ComputerError, match="observe again"):
+        act(c, sid, stale, request_id="pixel-stale-0001")
+    fresh = c.observe(sid)
+    result = act(c, sid, fresh, request_id="pixel-quiet-0001")
+    assert result["ok"]
+    # Her input finished moments ago: his next move still pauses her.
+    assert c.session.pixel_until > time.monotonic()
+    c.physical_input()
+    assert c.session.state == "paused"
+
+
+def test_app_steps_need_control_and_never_repeat_on_retry(controller):
+    c = controller
+    watch, _frame = begin(c, mode="watch")
+    assert c.apps_view(watch)["windows"][0]["window"] == "w1"
+    with pytest.raises(ComputerError, match="cannot send input"):
+        c.apps_run(watch, "notes", [{"press": {"name": "Save"}}], request_id="apps-watch-0001",
+                   intent="save")
+    c.stop()
+    sid, _frame = begin(c)
+    steps = [{"press": {"name": "Save"}}]
+    first = c.apps_run(sid, "notes", steps, request_id="apps-once-0001", intent="save")
+    again = c.apps_run(sid, "notes", steps, request_id="apps-once-0001", intent="save")
+    assert first["ok"] and again["replayed"] and len(c.apps.runs) == 1
+    with pytest.raises(ComputerError, match="reused"):
+        c.apps_run(sid, "notes", [{"press": {"name": "Open"}}], request_id="apps-once-0001",
+                   intent="save")
+
+
+def test_a_chat_driving_his_screen_gets_app_tools_through_the_service(controller, monkeypatch):
+    from core import computer_mcp
+    from core.computer_service import ComputerServer
+
+    server = ComputerServer(controller)
+
+    class Client:
+        def ensure_running(self):
+            return server.dispatch("status", {}, operator=False)
+
+        def call(self, method, **params):
+            return server.dispatch(method, params, operator=method in {"begin", "run"})
+
+    monkeypatch.setattr(computer_mcp, "ComputerClient", Client)
+
+    async def scenario():
+        names = {tool.name for tool in await computer_mcp.mcp.list_tools()}
+        assert {"computer_apps", "computer_app"} <= names
+        started = await computer_mcp.computer_start(
+            "save his notes", mode="control", target="display:left", background=False
+        )
+        sid = started["session"]["id"]
+        listed = await computer_mcp.computer_apps(sid)
+        assert listed["windows"][0]["window"] == "w1"
+        snapshot = await computer_mcp.computer_apps(sid, window="notes")
+        assert '"Save"' in snapshot["snapshot"]
+        done = await computer_mcp.computer_app(
+            sid, "notes", [{"press": {"role": "button", "name": "Save"}}], "mcp-save-0001",
+            "save his notes",
+        )
+        assert done["ok"] and controller.apps.runs[-1][0] == "notes"
+        # The chat's app steps never took his input: his typing still does not pause her.
+        controller.physical_input()
+        assert controller.session.state == "active"
+        await computer_mcp.computer_stop()
+        assert controller.session.state == "stopped"
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        server.server_close()
+
+
+def test_her_own_desktop_offers_no_app_steps(controller):
+    from core.computer_tools import visual_tools
+
+    c = controller
+    sid, _frame = begin(c)
+    names = {tool.name for tool in visual_tools(c, sid)}
+    assert {"apps", "app", "act"} <= names
+    c.stop()
+    c.desk = "isolated"
+    sid, _frame = begin(c)
+    assert not {"apps", "app"} & {tool.name for tool in visual_tools(c, sid)}
+
+
+class FakeWindow:
+    def __init__(self, title):
+        self.title = title
+
+    def get_role_name(self):
+        return "frame"
+
+    def get_name(self):
+        return self.title
+
+    def get_state_set(self):
+        return SimpleNamespace(contains=lambda _state: False)
+
+    def get_child_count(self):
+        return 0
+
+
+class FakeApp:
+    def __init__(self, bus, name, *, hung=False):
+        self.app = SimpleNamespace(bus_name=bus)
+        self.path = "/org/a11y/atspi/accessible/root"
+        self.name, self.hung, self.asked = name, hung, 0
+        self.window = FakeWindow(f"{name} window")
+
+    def _answer(self, value):
+        self.asked += 1
+        if self.hung:
+            time.sleep(2)  # what a stopped process costs each libatspi call
+        return value
+
+    def get_process_id(self):
+        return 4_000_000  # no such process: his display cannot be ruled out
+
+    def get_child_count(self):
+        return self._answer(1)
+
+    def get_name(self):
+        return self._answer(self.name)
+
+    def get_child_at_index(self, _index):
+        return self.window
+
+
+def test_a_hung_app_costs_one_short_ping_and_comes_back_once_it_answers(monkeypatch):
+    from core import computer_apps
+
+    healthy = FakeApp(":1.5", "gedit")
+    hung = FakeApp(":1.9", "frozen", hung=True)
+    atspi = SimpleNamespace(
+        get_desktop=lambda _n: SimpleNamespace(
+            get_child_count=lambda: 2, get_child_at_index=lambda i: (healthy, hung)[i]
+        ),
+        set_timeout=lambda *_args: None,
+        StateType=SimpleNamespace(ACTIVE=1, ICONIFIED=2),
+    )
+    pings = []
+
+    def ping(_connection, bus, _path):
+        pings.append(bus)
+        if bus == ":1.9" and hung.hung:
+            time.sleep(2)
+        return True
+
+    apps = HisApps({"DISPLAY": ""})
+    apps.atspi = atspi
+    monkeypatch.setattr(apps, "_a11y_connection", lambda: object())
+    monkeypatch.setattr(apps, "_ping", ping)
+    try:
+        started = time.monotonic()
+        rows = apps.list()["windows"]
+        assert time.monotonic() - started < computer_apps.PROBE_SECONDS + 0.5
+        assert [row["app"] for row in rows] == ["gedit"]
+        assert hung.asked == 0  # libatspi never waited on it
+        # Skipped for the retry window: not even pinged again.
+        pings.clear()
+        assert [row["app"] for row in apps.list()["windows"]] == ["gedit"]
+        assert ":1.9" not in pings
+        # Once it answers and its retry window has passed, it is listed again.
+        hung.hung = False
+        apps.dead[(":1.9", hung.path)] = 0
+        assert sorted(row["app"] for row in apps.list()["windows"]) == ["frozen", "gedit"]
+        assert (":1.9", hung.path) not in apps.strikes
+    finally:
+        apps.close()
+
+
+def test_repeated_misses_back_off_but_never_hide_an_app_for_good():
+    from core import computer_apps
+
+    apps = HisApps({"DISPLAY": ""})
+    app = FakeApp(":1.9", "busy")
+    key = (":1.9", app.path)
+    waits = []
+    for _ in range(6):
+        apps._skip(app, 0.0)
+        waits.append(apps.dead[key])
+    assert waits[0] == computer_apps.RETRY_SECONDS
+    assert waits == sorted(waits) and waits[-1] == computer_apps.DEAD_APP_SECONDS
+    apps.close()
+
+
+def test_a_ping_that_reaches_nobody_is_not_trusted(monkeypatch):
+    apps = HisApps({"DISPLAY": ""})
+    monkeypatch.setattr(apps, "_a11y_connection", lambda: object())
+    monkeypatch.setattr(apps, "_ping", lambda *_args: False)
+    try:
+        # The wrong bus looks like every app is dead: fall back to asking each.
+        assert apps._responsive([FakeApp(":1.5", "a"), FakeApp(":1.6", "b")]) is None
+    finally:
+        apps.close()
+
+
+# -- a real GTK app on a private display ------------------------------------------
+
+
+def _needs(*names):
+    return pytest.mark.skipif(
+        not all(shutil.which(name) for name in names) or not os.environ.get("DBUS_SESSION_BUS_ADDRESS"),
+        reason="needs " + ", ".join(names) + " and a session bus with accessibility",
+    )
+
+
+@pytest.fixture
+def display(tmp_path):
+    xauthority = tmp_path / "xauthority"
+    xauthority.touch()
+    number = next(n for n in range(140, 199) if not Path(f"/tmp/.X11-unix/X{n}").exists())
+    name = f":{number}"
+    subprocess.run(
+        ["xauth", "-f", str(xauthority), "add", name, "MIT-MAGIC-COOKIE-1", secrets.token_hex(16)],
+        check=True,
+    )
+    env = {k: v for k, v in os.environ.items() if k != "NO_AT_BRIDGE"}
+    env.update(DISPLAY=name, XAUTHORITY=str(xauthority))
+    processes = [
+        subprocess.Popen(
+            ["Xvfb", name, "-auth", str(xauthority), "-screen", "0", "1280x800x24", "-nolisten", "tcp"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    ]
+    deadline = time.monotonic() + 5
+    while not Path(f"/tmp/.X11-unix/X{number}").exists():
+        assert time.monotonic() < deadline, "Xvfb did not start"
+        time.sleep(0.05)
+    processes.append(
+        subprocess.Popen(["metacity", "--replace", "--sm-disable"], env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    )
+    time.sleep(0.5)
+    yield env, processes
+    for process in reversed(processes):
+        process.terminate()
+    for process in processes:
+        process.wait(timeout=5)
+
+
+def _launch(env, processes, state, *extra):
+    processes.append(
+        subprocess.Popen(["/usr/bin/python3", str(FIXTURE), str(state), *extra], env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    )
+    deadline = time.monotonic() + 10
+    while not state.exists():
+        assert time.monotonic() < deadline, "the test app did not start"
+        time.sleep(0.05)
+
+
+def _x(env, *args):
+    return subprocess.run(["xdotool", *args], env=env, capture_output=True, text=True).stdout.strip()
+
+
+@_needs("Xvfb", "metacity", "xdotool", "xauth", "/usr/bin/python3")
+def test_she_works_in_his_app_while_he_types_in_another(display, tmp_path):
+    env, processes = display
+    app_state, his_state = tmp_path / "app.json", tmp_path / "his.json"
+    _launch(env, processes, app_state)
+    _launch(env, processes, his_state, "other")
+    apps = HisApps(env)
+    try:
+        deadline = time.monotonic() + 10
+        while True:
+            titles = {row["title"] for row in apps.list()["windows"]}
+            if {"Serena apps test", "His other app"} <= titles:
+                break
+            assert time.monotonic() < deadline, f"windows never appeared: {titles}"
+            time.sleep(0.3)
+        # State files are written before GTK maps the windows. Establish his
+        # focus explicitly instead of depending on app launch scheduling.
+        his_window = _x(env, "search", "--name", "^His other app$").split()[-1]
+        _x(env, "windowactivate", "--sync", his_window)
+        assert _x(env, "getactivewindow", "getwindowname") == "His other app"
+        pointer = _x(env, "getmouselocation")
+        snapshot = apps.snapshot("Serena apps test")["snapshot"]
+        assert '- push button "Add one" [ref=' in snapshot
+        assert '- password text "Password"' in snapshot
+
+        # He types into his own window the whole time she works in hers.
+        typing = threading.Thread(
+            target=_x, args=(env, "type", "--delay", "40", "notes from raghav"), daemon=True
+        )
+        typing.start()
+        result = apps.run("Serena apps test", [
+            {"press": {"role": "button", "name": "Add one"}},
+            {"press": {"role": "button", "name": "Add one"}},
+            {"set_text": {"role": "textbox", "name": "Name"}, "text": "Serena"},
+            {"check": {"role": "checkbox", "name": "Subscribe"}},
+            {"select": {"role": "combobox", "name": "Plan"}, "option": "Pro"},
+            {"press": {"role": "button", "name": "Open dialog"}},
+        ])
+        typing.join(timeout=10)
+        assert result["ok"], result["steps"]
+        dialog = apps.run("Confirm", [{"press": {"role": "button", "name": "OK"}}])
+        assert dialog["ok"], dialog["steps"]
+        refused = apps.run("Serena apps test", [{"set_text": {"name": "Password"}, "text": "hunter2"}])
+        assert not refused["ok"] and "hand off" in refused["steps"][0]["detail"]
+        time.sleep(0.3)
+
+        state = json.loads(app_state.read_text())
+        assert state == {"count": 2, "name": "Serena", "subscribe": True, "plan": "Pro",
+                         "confirmed": True, "typed": ""}
+        # His window kept focus and every key he typed; his pointer never moved.
+        assert json.loads(his_state.read_text())["typed"] == "notes from raghav"
+        assert _x(env, "getactivewindow", "getwindowname") == "His other app"
+        assert _x(env, "getmouselocation") == pointer
+    finally:
+        apps.close()
+
+
+@_needs("Xvfb", "metacity", "xdotool", "xauth", "/usr/bin/python3")
+def test_focus_guard_hands_his_focus_back_even_when_the_app_takes_it_late(display, tmp_path, monkeypatch):
+    from core import computer_apps
+    from core.computer_apps import _FocusGuard
+
+    env, processes = display
+    _launch(env, processes, tmp_path / "app.json")
+    _launch(env, processes, tmp_path / "his.json", "other")
+    deadline = time.monotonic() + 10
+    while _x(env, "getactivewindow", "getwindowname") != "His other app":
+        assert time.monotonic() < deadline, "his window never took focus"
+        time.sleep(0.1)
+    his = _x(env, "getactivewindow")
+    app_window = _x(env, "search", "--name", "^Serena apps test$").split()[-1]
+    app_pid = int(_x(env, "getwindowpid", app_window))
+
+    # This checks the delayed-focus lifecycle, not host scheduling latency.
+    # Several Xvfb/backend suites can compete for CPU during a release run.
+    monkeypatch.setattr(computer_apps, "FOCUS_LINGER_SECONDS", 5)
+    guard = _FocusGuard(env, app_pid).start()
+    guard.finish()  # the batch has returned; the guard lingers for a late dialog
+    time.sleep(0.3)
+    _x(env, "windowactivate", app_window)  # the app takes his focus afterwards
+    deadline = time.monotonic() + 4
+    while _x(env, "getactivewindow") != his or not guard.kept:
+        assert time.monotonic() < deadline, "his focus was not handed back"
+        time.sleep(0.02)
+    assert guard.kept
+
+    # Once the linger ends it stops guarding: focusing the app is then his choice.
+    time.sleep(computer_apps.FOCUS_LINGER_SECONDS)
+    _x(env, "windowactivate", app_window)
+    time.sleep(0.4)
+    assert _x(env, "getactivewindow") == app_window

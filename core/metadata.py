@@ -462,6 +462,21 @@ def delete_meta(session_id: str) -> None:
         _session_path(session_id).unlink(missing_ok=True)
 
 
+def restore_meta(session_id: str, entry: dict) -> bool:
+    """Put back a trashed chat's metadata, unless it has gained new state since.
+
+    Its link is part of what comes back: undoing a delete should return the
+    chat to the thread it was deleted from.
+    """
+    if not isinstance(entry, dict) or not entry:
+        return False
+    with _metadata_write_lock():
+        if _session_path(session_id).exists():
+            return False
+        _save_one(session_id, entry, group_change=True)
+    return True
+
+
 def get_all_meta() -> dict:
     """Get all metadata. Used during index rebuild to apply synced state."""
     return _load_all()

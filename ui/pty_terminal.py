@@ -253,6 +253,9 @@ def _spawn_windows_process(
     )
 
 
+CHROMIUM_PROCESS_ENV = ("NO_AT_BRIDGE", "CHROME_DESKTOP")
+
+
 def _terminal_environment(environ: dict[str, str]) -> dict[str, str]:
     """Describe our interactive renderer, not the service or agent launching it."""
 
@@ -262,6 +265,12 @@ def _terminal_environment(environ: dict[str, str]) -> dict[str, str]:
     # Automation hosts disable color for captured output. Their children here
     # have a real PTY and xterm renderer; those output policies do not apply.
     for key in ("NO_COLOR", "CLICOLOR", "FORCE_COLOR", "CLICOLOR_FORCE"):
+        env.pop(key, None)
+    # Chromium sets these for its own process only (the desktop app is
+    # Electron), and they leaked through its backend into every pane.
+    # NO_AT_BRIDGE=1 hid each GTK app launched from a pane from the
+    # accessibility bus, so computer use could not see or drive it.
+    for key in CHROMIUM_PROCESS_ENV:
         env.pop(key, None)
     home = env.get("HOME") or env.get("USERPROFILE") or os.path.expanduser("~")
     user_dirs = [
@@ -694,6 +703,20 @@ def tid_for_session(sid: str) -> str | None:
     return None
 
 
+def tids_for_session(sid: str) -> list[str]:
+    """Every terminal running this chat, whether or not it was registered.
+
+    A forced delete must not miss one: the mapping above is filled by the
+    spawn route, but the terminal's own session_id is what its lease binds.
+    """
+    with _registry_lock:
+        tids = {tid for tid, term in _terminals.items() if term.session_id == sid}
+        mapped = _session_tids.get(sid)
+        if mapped in _terminals:
+            tids.add(mapped)
+    return sorted(tids)
+
+
 def write(tid: str, data: bytes) -> bool:
     """Write manual or generic bridge input unless a work turn owns the PTY."""
     term = get(tid)
@@ -702,6 +725,10 @@ def write(tid: str, data: bytes) -> bool:
     with term.state_lock:
         if term.work_item_id:
             return False
+        # Typing into a sleeping pane is the same as clicking it: it wakes.
+        # A stopped child would buffer the keys and answer nothing.
+        if term.runtime_state == "paused":
+            _resume_locked(term)
     return _write_unchecked(term, data)
 
 
@@ -1178,6 +1205,7 @@ def pause(
             protected
             or term.runtime_busy
             or term.work_item_id is not None
+            or term.input_draft.strip()
             or term.runtime_state == "paused"
             or time.monotonic() - term.started_at < prewarm_seconds
             or (
@@ -1262,6 +1290,15 @@ def live_terminal_ids() -> list[str]:
         return list(_terminals.keys())
 
 
+def idle_seconds(tid: str) -> float:
+    """Seconds since this runtime last saw traffic in either direction."""
+    term = get(tid)
+    if not term:
+        return 0.0
+    with term.state_lock:
+        return max(0.0, time.monotonic() - term.last_activity)
+
+
 def get_runtime_state(tid: str) -> str:
     term = get(tid)
     if not term:
@@ -1278,10 +1315,19 @@ def resize(tid: str, rows: int, cols: int) -> bool:
         rows = max(MIN_ROWS, int(rows))
         cols = max(MIN_COLS, int(cols))
         term.proc.setwinsize(rows, cols)
+        changed = (term.rows, term.cols) != (rows, cols)
         term.rows, term.cols = rows, cols
-        return True
     except OSError:
         return False
+    if changed:
+        # A sleeping pane on screen keeps its last frame, but only at the size
+        # it was drawn. Stopped, it cannot answer the SIGWINCH, so a layout
+        # change would leave it garbled. Wake it to redraw; the sweep puts it
+        # back to sleep once it has settled again.
+        with term.state_lock:
+            if term.runtime_state == "paused":
+                _resume_locked(term)
+    return True
 
 
 # ── why did that pane die a second after it opened? ─────────────────────────

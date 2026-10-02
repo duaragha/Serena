@@ -1,6 +1,25 @@
 {
   "schema": 1,
   "initialStable": "v0.3.4",
+  "adoptedStable": [
+    {
+      "tag": "v0.3.10",
+      "commit": "80f5717898d97010dcfe5e708691dce9993cb40b",
+      "reason": "Published out of band on 2026-09-25 from the v0.3.10-dev.13 tree while Promote to Main was down; that tree holds every feature registered through durable-chat-unlink.",
+      "features": [
+        "sidebar-order",
+        "sidebar-performance",
+        "sidebar-projects",
+        "sidebar-compact",
+        "sidebar-utilities",
+        "fleet-report-visibility",
+        "terminal-status-line",
+        "linked-member-removal",
+        "serena-coding-visible",
+        "durable-chat-unlink"
+      ]
+    }
+  ],
   "features": [
     {
       "id": "sidebar-order",
@@ -78,9 +97,9 @@
     {
       "id": "durable-chat-unlink",
       "title": "Persistent unlink and safe chat deletion",
-      "devTag": "v0.3.10-dev.12",
+      "devTag": "v0.3.10-dev.13",
       "base": "e5f44112603a1b8014e1b7e6b7035593122b0014",
-      "commit": "31dd5147b3026875d20097a2a6f00439aaec24d4",
+      "commit": "c713c2b8a2aaaf1cb46a522aa09277c79c766a32",
       "requires": ["linked-member-removal"],
       "paths": [
         "core/autolink.py", "core/indexer.py", "core/metadata.py", "ui/web.py",
@@ -88,7 +107,159 @@
         "tests/test_autolink.py", "tests/test_group_unlink_member.py",
         "tests/test_session_recovery.py", "tests/test_web_terminal_performance.py",
         "tests/test_work_project_metadata.py", "tests/test_workspace_catalog.py",
-        "tests/test_workspace_pending_catalog_api.py", "tests/test_workspace_chat_trash.py"
+        "tests/test_workspace_pending_catalog_api.py", "tests/test_workspace_chat_trash.py",
+        "tests/test_terminal_reload_detach.py", "tests/test_terminal_split_exit.py"
+      ]
+    },
+    {
+      "id": "chat-nuke-trash",
+      "title": "Alt+Delete deletes a chat instantly, with Undo and a Trash bin",
+      "devTag": "v0.3.10-dev.14",
+      "commit": "41f8bc64bf4acf600165b7795214a59b0735c0d7",
+      "requires": ["durable-chat-unlink"],
+      "paths": [
+        "core/chat_trash.py", "core/indexer.py", "core/metadata.py", "core/workspace_lease.py",
+        "ui/pty_terminal.py", "ui/web.py",
+        "tests/test_chat_trash.py", "tests/test_workspace_browser.py",
+        "tests/test_workspace_chat_trash.py", "tests/test_workspace_pending_catalog_api.py"
+      ]
+    },
+    {
+      "id": "unlink-survives-handoff",
+      "title": "A chat removed from a thread stays out when a handoff resolves",
+      "devTag": "v0.3.10-dev.14",
+      "commit": "4a5866f45cf61735ea063c743d40a0db965c9214",
+      "requires": ["durable-chat-unlink"],
+      "paths": ["ui/web.py", "tests/test_unlink_survives_delete.py"]
+    },
+    {
+      "id": "chat-finished-toast",
+      "title": "Finished chats light up again and a toast names who finished",
+      "devTag": "v0.3.10-dev.14",
+      "commit": "5707c95d012bca659314fb9cf3e4631805a8a6ea",
+      "requires": [],
+      "paths": [
+        "cli.py", "core/chat_attention.py", "core/workspace_host.py", "ui/web.py", "ui/workspace_app.py",
+        "tests/test_chat_finished_signal.py", "tests/test_chat_finished_toast.py",
+        "tests/test_web_startup_signals.py"
+      ]
+    },
+    {
+      "id": "terminal-peer-sleep",
+      "title": "Merged-view terminal panes sleep when idle and wake on click",
+      "devTag": "v0.3.10-dev.15",
+      "commit": "fd313262f1881b717f5289eb559ef67887ef1a21",
+      "requires": ["chat-finished-toast"],
+      "paths": [
+        "ui/pty_terminal.py", "ui/web.py",
+        "tests/test_terminal_peer_sleep.py", "tests/test_terminal_peer_sleep_ui.py",
+        "tests/test_visible_panes_never_sleep.py"
+      ]
+    },
+    {
+      "id": "handoff-same-agent",
+      "title": "Hand off to the agent you are in spawns a second chat of it",
+      "devTag": "v0.3.10-dev.16",
+      "commit": "fa55e7327ecfddd049f45f09f26c3f743ed286cd",
+      "requires": [],
+      "paths": ["ui/web.py", "tests/workspace-handoff.test.mjs"]
+    },
+    {
+      "id": "app-browser-windows-tests",
+      "title": "In-app browser tests pass on Windows (file modes checked on POSIX only)",
+      "devTag": "v0.3.10-dev.17",
+      "commit": "80674a3b7a1ab5ac2c6f7331b7fbc54c5d388765",
+      "requires": [],
+      "paths": ["apps/desktop/tests/app-browser.test.cjs"]
+    },
+    {
+      "id": "panes-no-chromium-env",
+      "title": "Apps launched from chat panes are visible to accessibility (panes drop Chromium's NO_AT_BRIDGE)",
+      "devTag": "v0.3.10-dev.18",
+      "commit": "d3b52004801f502caf48b2353ff3e7f429cbd1a6",
+      "requires": [],
+      "paths": [
+        "apps/desktop/main.js",
+        "apps/desktop/runtime.js",
+        "apps/desktop/tests/shell.test.js",
+        "ui/pty_terminal.py",
+        "tests/test_terminal_environment.py"
+      ]
+    },
+    {
+      "id": "packaged-index-refresh",
+      "title": "New chats reach the sidebar again (packaged index refresh), so handoffs link",
+      "devTag": "v0.3.10-dev.19",
+      "commit": "0fe6ec58a588a05b42bddb24b92c34f30e08c411",
+      "requires": [],
+      "paths": ["apps/desktop/sidecar.py", "ui/web.py", "tests/test_index_refresh_packaged.py"]
+    },
+    {
+      "id": "packaged-voice-numpy",
+      "title": "Fix voice loading in desktop apps",
+      "devTag": "v0.3.10-dev.20",
+      "commit": "eeed5441d5bd57fbe3860dc22b92af9a32c531b6",
+      "requires": [],
+      "paths": [
+        "pyproject.toml",
+        "apps/desktop/sidecar.py",
+        "apps/desktop/windows/sidecar-win.py",
+        "apps/desktop/tests/test_voice_packaging.py",
+        "tests/test_desktop_dependencies.py"
+      ]
+    },
+    {
+      "id": "fleet-checkout-identity",
+      "title": "Keep Fleet learning tied to its owned checkout",
+      "devTag": "v0.3.10-dev.22",
+      "base": "17552c4baa237435ef993c654ca784b6b9527351",
+      "commit": "7c6566e5257c8b43bda5503883ec601ad39820fb",
+      "requires": [],
+      "paths": ["fleet/project_identity.py", "tests/test_fleet_checkout.py", "tests/test_fleet_shared_learning.py"]
+    },
+    {
+      "id": "fleet-model-routing",
+      "title": "Fleet model routing for Sol 6.1 and Claude 5.5",
+      "devTag": "v0.3.10-dev.22",
+      "base": "17552c4baa237435ef993c654ca784b6b9527351",
+      "commit": "7c6566e5257c8b43bda5503883ec601ad39820fb",
+      "requires": ["fleet-checkout-identity"],
+      "paths": [
+        "fleet/policy.py", "fleet/retry_policy.py", "fleet/supervisor.py",
+        "fleet/workers.py", "fleet/capacity.py",
+        "core/coding_job_contract.py",
+        "config/fleet.example.json", "docs/fleet-runtime.md",
+        "integrations/claude/fleet/SKILL.md", "integrations/codex/fleet/SKILL.md",
+        "tests/test_fleet_autonomy.py", "tests/test_fleet_comparison_profiles.py",
+        "tests/test_fleet_capacity.py",
+        "tests/test_fleet_difficult_retry.py", "tests/test_fleet_peers.py",
+        "tests/test_fleet_policy_store.py", "tests/test_fleet_process_recovery.py",
+        "tests/test_fleet_reports.py", "tests/test_fleet_supervisor.py",
+        "tests/test_fleet_workers.py", "tests/test_coding_job_contract.py"
+      ]
+    },
+    {
+      "id": "codex-0159-chat-index",
+      "title": "Codex chats show in history again and stop nesting under Claude chats",
+      "devTag": "v0.3.10-dev.24",
+      "base": "9e92636c8e1857f6cdad319715220abff02708c3",
+      "commit": "b96a3922e600072c2b1bc3a79be09867b22df271",
+      "requires": [],
+      "paths": [
+        "core/codex_scanner.py", "core/indexer.py",
+        "tests/test_codex_scanner_resident.py", "tests/test_codex_parent_candidate.py"
+      ]
+    },
+    {
+      "id": "windows-chat-index-refresh",
+      "title": "Keep new Windows chats visible after startup",
+      "devTag": "v0.3.10-dev.25",
+      "commit": "fddbd56ef6310343073e0d6e638897f603f5fc8d",
+      "requires": ["packaged-index-refresh", "codex-0159-chat-index"],
+      "paths": [
+        "apps/desktop/windows/sidecar-win.py",
+        "scripts/verify-chat-index.py",
+        "tests/test_chat_index_release.py"
       ]
     }
   ]

@@ -11,11 +11,37 @@ const catalog = require('../config/promotion-features.json');
 const root = path.resolve(__dirname, '..');
 const git = (args, cwd = root) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 
+test('Fleet routing requires identity while identity remains independently selectable', () => {
+  const routing = catalog.features.find(f => f.id === 'fleet-model-routing');
+  const identity = catalog.features.find(f => f.id === 'fleet-checkout-identity');
+  assert.deepEqual(routing.requires, [identity.id]);
+  assert.deepEqual(identity.requires, []);
+  assert.ok(catalog.features.indexOf(identity) < catalog.features.indexOf(routing));
+  assert.ok(routing.paths.every(file => !identity.paths.includes(file)));
+  assert.throws(() => selection(catalog, [routing.id], [routing.id]), /requires/);
+  assert.deepEqual(selection(catalog, [identity.id], [identity.id]).added.map(f => f.id), [identity.id]);
+  assert.deepEqual(selection(catalog, [routing.id, identity.id], [routing.id, identity.id]).added.map(f => f.id),
+    [identity.id, routing.id]);
+  assert.deepEqual(selection(catalog, [routing.id], [routing.id], [identity.id]).added.map(f => f.id), [routing.id]);
+});
+
+test('feature pins and reviewed bases remain in the promotion source history', () => {
+  const source = git(['rev-parse', 'HEAD']);
+  for (const feature of catalog.features) {
+    assert.doesNotThrow(() => git(['merge-base', '--is-ancestor', feature.commit, source]),
+      `${feature.id} lost its source ancestry; preserve the pinned commit when merging`);
+    if (feature.base) assert.doesNotThrow(() => git(['merge-base', '--is-ancestor', feature.base, feature.commit]),
+      `${feature.id} has a reviewed base outside its feature history`);
+  }
+});
+
 function historyFixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'serena-promotion-history-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const fixture = path.join(directory, 'repo');
   git(['clone', '--no-hardlinks', root, fixture]);
+  // Validate the catalog being reviewed, including edits not committed yet.
+  fs.copyFileSync(path.join(root, 'config/promotion-features.json'), path.join(fixture, 'config/promotion-features.json'));
   const source = git(['rev-parse', 'HEAD'], fixture);
   // Historical composition tests must still work after these versions ship.
   // Only remove tags inside this disposable clone, never from the source or remote.
@@ -25,35 +51,94 @@ function historyFixture(t) {
   return { directory, root: fixture, source };
 }
 
-test('every valid feature subset composes onto stable without importing unselected backend changes', t => {
+// Stable only moves forward. Features shipped in the newest adopted baseline
+// compose onto the original stable, as they did before it; features registered
+// after it compose onto that adopted tag, which is where a promotion applies them.
+const adoptedStable = (catalog.adoptedStable || []).at(-1) || null;
+const shippedInAdopted = new Set(adoptedStable ? adoptedStable.features : []);
+
+// Every subset doubles with each registered feature: eight after v0.3.10 took
+// the promotion's prepare job past its ten-minute limit and cancelled a publish.
+// Check the selections that matter instead: each feature with only what it
+// requires, all of them together, and all but one, which still catches a
+// feature that silently leans on another one's changes.
+function selectionsToCheck(features, installed) {
+  const ids = features.map(f => f.id);
+  const byId = new Map(catalog.features.map(f => [f.id, f]));
+  const withRequirements = id => {
+    const chosen = new Set();
+    const walk = x => {
+      if (chosen.has(x) || installed.includes(x)) return;
+      chosen.add(x);
+      for (const required of byId.get(x).requires) walk(required);
+    };
+    walk(id);
+    return chosen;
+  };
+  const candidates = [
+    ...ids.map(withRequirements),
+    new Set(ids),
+    ...ids.map(left => new Set(ids.filter(id => id !== left))),
+  ];
+  const seen = new Set();
+  const out = [];
+  for (const chosen of candidates) {
+    const selected = catalog.features.map(f => f.id).filter(id => chosen.has(id));
+    const key = selected.join(',');
+    if (!selected.length || seen.has(key)) continue;
+    seen.add(key);
+    out.push(selected);
+  }
+  return out;
+}
+
+function composeSelections(t, { features, stable, installed }) {
   const fixture = historyFixture(t);
   const source = fixture.source;
+  if (stable !== catalog.initialStable) {
+    const next = nextVersion(stable);
+    if (git(['tag', '--list', next], fixture.root)) git(['tag', '-d', next], fixture.root);
+  }
   let count = 0;
-  for (let bits = 1; bits < 2 ** catalog.features.length; bits++) {
-    const selected = catalog.features.filter((_, i) => bits & (1 << i)).map(f => f.id);
-    try { selection(catalog, selected, selected); } catch { continue; }
+  for (const selected of selectionsToCheck(features, installed)) {
+    try { selection(catalog, selected, selected, installed); } catch { continue; }
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'serena-selection-'));
     try {
       const destination = path.join(dir, 'candidate');
-      const result = prepare({ root: fixture.root, destination, artifacts: dir, source, stable: catalog.initialStable,
-        latest: catalog.initialStable, selected, tested: selected, request: 'a'.repeat(32), mode: 'verify' });
-      assert.deepEqual(result.features.map(f => f.id), selected);
+      const result = prepare({ root: fixture.root, destination, artifacts: dir, source, stable,
+        latest: stable, selected, tested: selected, request: 'a'.repeat(32), mode: 'verify' });
+      assert.deepEqual(result.features.map(f => f.id),
+        catalog.features.map(f => f.id).filter(id => installed.includes(id) || selected.includes(id)));
       for (const feature of catalog.features.filter(f => selected.includes(f.id)))
         assert.equal(result.features.find(f => f.id === feature.id).base, feature.base);
-      const changed = git(['diff', '--name-only', `${catalog.initialStable}..HEAD`], destination).split('\n');
+      const changed = git(['diff', '--name-only', `${stable}..HEAD`], destination).split('\n');
       const allowed = new Set(['apps/desktop/package.json', 'apps/desktop/package-lock.json', 'config/stable-promotion.json',
         ...catalog.features.filter(f => selected.includes(f.id)).flatMap(f => f.paths)]);
       assert.ok(changed.every(file => allowed.has(file)), changed.join('\n'));
-      for (const file of ['apps/desktop/main.js', 'apps/desktop/profile.js', 'core/workspace_host.py'])
-        assert.equal(git(['rev-parse', `HEAD:${file}`], destination), git(['rev-parse', `${catalog.initialStable}:${file}`]));
+      for (const file of ['apps/desktop/main.js', 'apps/desktop/profile.js', 'core/workspace_host.py'].filter(f => !allowed.has(f)))
+        assert.equal(git(['rev-parse', `HEAD:${file}`], destination), git(['rev-parse', `${stable}:${file}`]));
       const restored = path.join(dir, 'restored');
       git(['clone', '--branch', 'candidate', path.join(dir, 'candidate.bundle'), restored]);
       assert.equal(git(['rev-parse', 'HEAD'], restored), result.commit);
       count++;
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   }
-  assert.ok(count >= catalog.features.length, `too few valid selections: ${count}`);
-  t.diagnostic(`${count} valid selections verified`);
+  assert.ok(count >= features.length, `too few valid selections: ${count}`);
+  t.diagnostic(`${count} valid selections verified onto ${stable}`);
+}
+
+test('selected features compose onto stable without importing unselected backend changes', t => {
+  const features = adoptedStable ? catalog.features.filter(f => shippedInAdopted.has(f.id)) : catalog.features;
+  composeSelections(t, { features, stable: catalog.initialStable, installed: [] });
+});
+
+test('every feature registered after the adopted stable composes onto it', t => {
+  if (!adoptedStable) return t.skip('no adopted stable baseline');
+  const features = catalog.features.filter(f => !shippedInAdopted.has(f.id));
+  if (!features.length) return t.skip('nothing registered after the adopted stable');
+  try { git(['rev-parse', '--verify', `${adoptedStable.tag}^{commit}`]); }
+  catch { return t.skip(`${adoptedStable.tag} is not in this checkout`); }
+  composeSelections(t, { features, stable: adoptedStable.tag, installed: adoptedStable.features });
 });
 
 test('a second promotion retains the first release and refuses collisions or stale baselines', t => {
@@ -76,4 +161,42 @@ test('a second promotion retains the first release and refuses collisions or sta
   git(['fetch', path.join(fixture.directory, 'two'), 'candidate'], fixture.root);
   git(['tag', two.version, two.commit], fixture.root);
   assert.throws(() => prepare({ ...attempted, stable: one.version }), /already exists/);
+});
+
+test('promotion continues from an adopted out-of-band stable and names the next version above it', t => {
+  const [adopted] = catalog.adoptedStable || [];
+  if (!adopted) return t.skip('no adopted stable baseline');
+  const fixture = historyFixture(t);
+  try { git(['rev-parse', '--verify', `${adopted.tag}^{commit}`], fixture.root); }
+  catch { return t.skip(`${adopted.tag} is not in this checkout`); }
+  const next = nextVersion(adopted.tag);
+  if (git(['tag', '--list', next], fixture.root)) git(['tag', '-d', next], fixture.root);
+  // A throwaway feature committed on top of the source, registered only in this clone.
+  const probe = 'docs/promotion-adoption-probe.md';
+  fs.writeFileSync(path.join(fixture.root, probe), 'adoption probe\n');
+  git(['add', probe], fixture.root);
+  git(['-c', 'user.name=t', '-c', 'user.email=t@t.invalid', 'commit', '-q', '-m', 'probe'], fixture.root);
+  const commit = git(['rev-parse', 'HEAD'], fixture.root);
+  git(['tag', 'v9.9.9-dev.1', commit], fixture.root);
+  const registered = structuredClone(catalog);
+  registered.features.push({ id: 'adoption-probe', title: 'Adoption probe', devTag: 'v9.9.9-dev.1', commit,
+    requires: [], paths: [probe] });
+  fs.writeFileSync(path.join(fixture.root, 'config/promotion-features.json'), JSON.stringify(registered));
+  const options = { root: fixture.root, source: commit, stable: adopted.tag, latest: adopted.tag,
+    selected: ['adoption-probe'], tested: ['adoption-probe'], request: 'c'.repeat(32), mode: 'verify' };
+  const result = prepare({ ...options, destination: path.join(fixture.directory, 'adopted'), artifacts: fixture.directory });
+  assert.equal(result.version, next);
+  assert.equal(result.baseTag, adopted.tag);
+  assert.equal(result.baseCommit, adopted.commit);
+  assert.deepEqual(result.added, ['adoption-probe']);
+  assert.deepEqual(result.features.map(f => f.id), [...adopted.features, 'adoption-probe']);
+  const changed = git(['diff', '--name-only', `${adopted.tag}..HEAD`], path.join(fixture.directory, 'adopted')).split('\n');
+  assert.deepEqual(changed.sort(), ['apps/desktop/package-lock.json', 'apps/desktop/package.json',
+    'config/stable-promotion.json', probe].sort());
+  // Already-shipped features cannot be reapplied onto the adopted tree.
+  assert.throws(() => prepare({ ...options, destination: path.join(fixture.directory, 'again'),
+    selected: [adopted.features[0]], tested: [adopted.features[0]] }), /not already in main/);
+  registered.adoptedStable[0].commit = 'f'.repeat(40);
+  fs.writeFileSync(path.join(fixture.root, 'config/promotion-features.json'), JSON.stringify(registered));
+  assert.throws(() => prepare({ ...options, destination: path.join(fixture.directory, 'retagged') }), /reviewed baseline/);
 });

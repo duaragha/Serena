@@ -330,6 +330,15 @@ def _read_with_her_brain(text: str) -> tuple[str, dict[str, Any]] | None:
     if read is None:
         read = phone_intent.triage(text)
     kind, body = read
+    if kind == "answer" and isinstance(body, dict):
+        from memory import store
+
+        task_id = body.get("task_id")
+        if any(row["id"] == task_id for row in store.tasks_in_state("needs_triage")):
+            # Grounding can change while the model answers. Only a task still
+            # waiting on him can accept this intent; poll owns the queue write.
+            return "answer", {"task_id": task_id, "answer": text.strip()}
+        return "say", {"say": f"#{task_id} isn't waiting on an answer."}
     return ("task", {"brief": body}) if kind == "task" else ("say", {"say": body})
 
 
@@ -337,7 +346,7 @@ def _fingerprint(text: str) -> str:
     return hashlib.sha256(" ".join(text.lower().split()).encode("utf-8")).hexdigest()[:24]
 
 
-_TASK_LABELS = (("running", "running"), ("ready", "queued"),
+_TASK_LABELS = (("running", "running"), ("review", "PR awaiting merge"), ("ready", "queued"),
                 ("needs_triage", "waiting on you"), ("blocked", "blocked"))
 
 

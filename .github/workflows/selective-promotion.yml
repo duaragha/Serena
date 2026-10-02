@@ -37,7 +37,7 @@ jobs:
   prepare:
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -93,6 +93,9 @@ jobs:
         working-directory: candidate
         run: |
           npm --prefix apps/desktop test
+          if [ -f apps/desktop/tests/test_voice_packaging.py ]; then
+            .venv/bin/python -m pytest -q --tb=short tests/test_desktop_dependencies.py apps/desktop/tests/test_voice_packaging.py
+          fi
           if [ -f tests/test_workspace_chat_trash.py ]; then
             .venv/bin/python -m pytest -q --tb=short tests/test_group_unlink_member.py tests/test_autolink.py tests/test_session_recovery.py tests/test_external_runtime_metadata.py tests/test_work_project_metadata.py tests/test_workspace_chat_trash.py
           fi
@@ -100,6 +103,22 @@ jobs:
             .venv/bin/python -m pytest -q --tb=short tests/test_fleet_report_visibility.py tests/test_web_terminal_performance.py
           fi
           .venv/bin/python -m pytest -q --tb=short tests/test_workspace_browser.py tests/test_fleet_chat_sidebar.py tests/test_voice_created_chat_sidebar.py tests/test_session_sidebar_completeness.py tests/test_workspace_desktop_editions.py tests/test_terminal*.py tests/test_linked_terminal*.py tests/test_pty_terminal_runtime.py tests/test_desktop_shell_parity.py
+      - name: Prove selected Fleet model routing before packaging
+        if: contains(fromJSON(inputs.selected), 'fleet-model-routing')
+        working-directory: candidate
+        run: |
+          .venv/bin/python -m pytest -q --tb=short \
+            tests/test_fleet_policy_store.py tests/test_fleet_comparison_profiles.py \
+            tests/test_fleet_difficult_retry.py tests/test_fleet_workers.py \
+            tests/test_fleet_supervisor.py tests/test_fleet_reports.py \
+            tests/test_fleet_autonomy.py tests/test_fleet_peers.py \
+            tests/test_fleet_process_recovery.py tests/test_fleet_capacity.py \
+            tests/test_coding_job_contract.py
+      - name: Prove selected Fleet checkout identity before packaging
+        if: contains(fromJSON(inputs.selected), 'fleet-checkout-identity') || contains(fromJSON(inputs.selected), 'fleet-model-routing')
+        working-directory: candidate
+        run: |
+          .venv/bin/python -m pytest -q --tb=short tests/test_fleet_checkout.py tests/test_fleet_shared_learning.py
       - name: Build stable AppImage without publishing
         working-directory: candidate/apps/desktop
         run: |
@@ -109,6 +128,8 @@ jobs:
       - name: Boot actual packaged stable shell in isolated profile
         working-directory: candidate/apps/desktop
         run: xvfb-run -a node tests/smoke-appimage.js
+      - name: Prove chat history in the frozen stable candidate
+        run: python scripts/verify-chat-index.py --binary candidate/apps/desktop/build/sidecar/serena-web-sidecar/serena-web-sidecar
       - uses: actions/upload-artifact@v4
         with:
           name: candidate-linux
@@ -151,6 +172,10 @@ jobs:
           npm --prefix apps/desktop test
           if ($LASTEXITCODE -ne 0) { throw 'desktop tests failed' }
           ./apps/desktop/windows/build-win.ps1
+          if (Test-Path apps/desktop/tests/test_voice_packaging.py) {
+            ./.venv/Scripts/python.exe -m pytest -q --tb=short tests/test_desktop_dependencies.py apps/desktop/tests/test_voice_packaging.py
+            if ($LASTEXITCODE -ne 0) { throw 'desktop voice dependency and packaging tests failed' }
+          }
           if (Test-Path tests/test_workspace_chat_trash.py) {
             ./.venv/Scripts/python.exe -m pytest -q --tb=short tests/test_group_unlink_member.py tests/test_autolink.py tests/test_session_recovery.py tests/test_external_runtime_metadata.py tests/test_work_project_metadata.py
             if ($LASTEXITCODE -ne 0) { throw 'chat unlink and recoverable deletion tests failed' }
@@ -159,6 +184,25 @@ jobs:
             ./.venv/Scripts/python.exe -m pytest -q --tb=short tests/test_fleet_report_visibility.py
             if ($LASTEXITCODE -ne 0) { throw 'report visibility tests failed' }
           }
+      - name: Prove chat history in the frozen stable candidate
+        shell: pwsh
+        run: |
+          python scripts/verify-chat-index.py --binary candidate/apps/desktop/build/windows-sidecar/serena-web-sidecar/serena-web-sidecar.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Frozen chat history continuity failed' }
+      - name: Prove selected Fleet model routing before accepting Windows artifacts
+        if: contains(fromJSON(inputs.selected), 'fleet-model-routing')
+        working-directory: candidate
+        shell: pwsh
+        run: |
+          ./.venv/Scripts/python.exe -m pytest -q --tb=short tests/test_fleet_policy_store.py tests/test_fleet_comparison_profiles.py tests/test_fleet_difficult_retry.py tests/test_fleet_workers.py tests/test_fleet_supervisor.py tests/test_fleet_reports.py tests/test_fleet_autonomy.py tests/test_fleet_peers.py tests/test_fleet_process_recovery.py tests/test_fleet_capacity.py tests/test_coding_job_contract.py
+          if ($LASTEXITCODE -ne 0) { throw 'Fleet model routing tests failed' }
+      - name: Prove selected Fleet checkout identity before accepting Windows artifacts
+        if: contains(fromJSON(inputs.selected), 'fleet-checkout-identity') || contains(fromJSON(inputs.selected), 'fleet-model-routing')
+        working-directory: candidate
+        shell: pwsh
+        run: |
+          ./.venv/Scripts/python.exe -m pytest -q --tb=short tests/test_fleet_checkout.py tests/test_fleet_shared_learning.py
+          if ($LASTEXITCODE -ne 0) { throw 'Fleet checkout identity tests failed' }
       - uses: actions/upload-artifact@v4
         with:
           name: candidate-windows

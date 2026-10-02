@@ -96,7 +96,11 @@ def _state_dir() -> Path:
 def check_schedules(now: float | None = None) -> list[Finding]:
     """Disabled or wedged schedules, the outage that looks like an empty queue."""
 
-    from core.serena_scheduler import DEFAULT_DB_PATH, MAX_CONSECUTIVE_FAILURES
+    from core.serena_scheduler import (
+        DEFAULT_DB_PATH,
+        DISABLED_PROBE_SECONDS,
+        MAX_CONSECUTIVE_FAILURES,
+    )
 
     moment = time.time() if now is None else now
     path = Path(os.environ.get("SERENA_SCHEDULER_DB_PATH", "").strip() or DEFAULT_DB_PATH)
@@ -119,8 +123,9 @@ def check_schedules(now: float | None = None) -> list[Finding]:
         findings.append(Finding(
             "schedules.disabled", False,
             f"{len(disabled)} schedule(s) switched off after "
-            f"{MAX_CONSECUTIVE_FAILURES} failures: {names}. Nothing runs them again "
-            f"until they are resumed, so the queue looks idle rather than broken.",
+            f"{MAX_CONSECUTIVE_FAILURES} failures: {names}. Each is retried on its own "
+            f"every {DISABLED_PROBE_SECONDS // 60} minutes and still fails, so its "
+            f"cause has not cleared and the queue looks idle rather than broken.",
             fix=f"chats schedule resume {ids} --actor raghav",
         ))
 
@@ -158,7 +163,7 @@ def check_schedules(now: float | None = None) -> list[Finding]:
 
 
 def check_task_store() -> list[Finding]:
-    """A duplicate id refuses every write, so the phone line can queue nothing."""
+    """Report ambiguous task IDs while unrelated queue work stays available."""
 
     import re
     from collections import defaultdict
@@ -182,9 +187,9 @@ def check_task_store() -> list[Finding]:
         shown = "; ".join(f"#{tid}: {', '.join(names)}" for tid, names in sorted(duplicates.items()))
         return [Finding(
             "tasks.duplicate_ids", False,
-            f"{len(duplicates)} duplicate task id(s). enqueue_task refuses every write "
-            f"while this holds, so nothing he texts can be queued. {shown}",
-            fix="renumber the newer file's `id:` and filename to a free id",
+            f"{len(duplicates)} duplicate task id(s) isolated from dispatch and "
+            f"reconciliation; other tasks continue. {shown}",
+            fix="compare the conflicting files and dispatch receipts before reconciling their IDs",
         )]
     return [Finding("tasks", True, f"{len(by_id)} task(s), ids unique")]
 

@@ -11,7 +11,7 @@ import pytest
 
 
 @pytest.mark.parametrize("has_hup", [False, True])
-def test_web_server_starts_with_only_the_platforms_available_signals(tmp_path, has_hup):
+def test_web_server_starts_with_only_the_platforms_available_signals(tmp_path, has_hup, monkeypatch):
     source = Path(__file__).resolve().parents[1] / "ui/web.py"
     # run_web leaves through _shutdown_owned_runtimes, so the entry point is
     # both of these. Exec'ing only run_web would find the name missing and
@@ -57,8 +57,19 @@ def test_web_server_starts_with_only_the_platforms_available_signals(tmp_path, h
             extensions={},
         ),
     }
+    # Codex finishes are read from its rollouts by a watcher the server has to
+    # start itself; the Electron sidecar never did, so Codex chats stopped
+    # lighting up when they finished.
+    import sys
+
+    import core
+
+    watcher = SimpleNamespace(start=lambda: calls.append("codex-watcher"))
+    monkeypatch.setitem(sys.modules, "core.codex_attention_watcher", watcher)
+    monkeypatch.setattr(core, "codex_attention_watcher", watcher, raising=False)
     exec(compile(ast.Module(body=body, type_ignores=[]), str(source), "exec"), scope)
     scope["run_web"](host="127.0.0.1", port=8123)
+    assert "codex-watcher" in calls
     assert calls[-1] == {"host": "127.0.0.1", "port": 8123, "debug": False, "threaded": True}
     assert set(registered) == ({15, 2, 1} if has_hup else {15, 2})
     with pytest.raises(SystemExit) as stopped:

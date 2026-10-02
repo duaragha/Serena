@@ -4,7 +4,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { PromotionService, WORKFLOW_URL } = require('./promotion-service.cjs');
 
-function createPromotionWindow({ app, BrowserWindow, ipcMain, dialog, shell, profile }) {
+function createPromotionWindow({ app, BrowserWindow, ipcMain, dialog, shell, profile, log = () => {} }) {
   if (profile.channel !== 'dev') throw new Error('Release management is Dev-only');
   let window = null;
   const file = path.join(__dirname, 'promotion.html');
@@ -30,7 +30,11 @@ function createPromotionWindow({ app, BrowserWindow, ipcMain, dialog, shell, pro
           || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== trustedUrl)
         throw new Error('Untrusted release manager sender');
       try { return { ok: true, value: await handler(value) }; }
-      catch (error) { return { ok: false, error: error.message }; }
+      catch (error) {
+        // Persist it: a failure seen only in the window leaves nothing to diagnose later.
+        log(`releases ${name} failed: ${error.message}`);
+        return { ok: false, error: error.message };
+      }
     });
   }
   return async () => {

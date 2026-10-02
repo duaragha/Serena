@@ -52,6 +52,7 @@ class CodexBrainClient:
         base_instructions: str | None = None,
         service_tier: str | None = None,
         allow_user_hooks: bool = True,
+        turn_timeout: float = TURN_TIMEOUT_SECONDS,
     ) -> None:
         self.cwd = Path(cwd).expanduser().resolve()
         self.developer_instructions = developer_instructions
@@ -73,6 +74,8 @@ class CodexBrainClient:
         self.service_tier = service_tier
         self.accepted_service_tier = None
         self.allow_user_hooks = allow_user_hooks
+        # A computer-control turn runs a whole GUI task through tool calls.
+        self.turn_timeout = float(turn_timeout)
         self.environ = strip_metered_auth_env(dict(os.environ if environ is None else environ))
         self.tool_registry = tool_registry
         self.base_instructions = base_instructions or BASE_INSTRUCTIONS
@@ -328,7 +331,7 @@ class CodexBrainClient:
         try:
             completed = await asyncio.wait_for(
                 self._wait_for_turn(turn_id, delta_chunks, on_delta),
-                timeout=TURN_TIMEOUT_SECONDS,
+                timeout=self.turn_timeout,
             )
         except BaseException:
             with contextlib.suppress(Exception):

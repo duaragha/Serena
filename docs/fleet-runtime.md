@@ -220,6 +220,16 @@ cancellation, exact job membership, owner death, command/environment quoting,
 repeated handle lifetimes and rejected startup. Source tests alone do not prove
 these Windows-only behaviors; native and packaged acceptance are required.
 
+Fleet workers and the account-only capacity probe share the Codex binary resolver.
+On Windows, npm `.cmd`, `.bat` and `.ps1` launchers resolve to the installed native
+`codex.exe` for the current x64 or ARM64 architecture. Global npm installs and
+project-local `node_modules/.bin` installs support nested optional packages,
+hoisted optional packages and the legacy vendor layout. Explicit native paths
+remain valid. An unresolved shim keeps its worker diagnostic path; the capacity
+probe skips it and uses existing rollout telemetry when available. Missing usage
+stays unknown, without an unbounded wrapper tree or an invented account outage.
+These probes never start a model turn.
+
 ## Read-only process liveness
 
 Native process retry recognizes explicit Windows crash statuses (access
@@ -264,7 +274,8 @@ For a matched research comparison, use `activity: research`, `provider_mode: bal
 and begin the task with `Fleet research comparison: luna` or
 `Fleet research comparison: gemini`. Only Research changes: Luna max versus
 `gemini-3.8-flash-high` through the subscription-authenticated `agy` CLI.
-Analyze/Review/Refine retain Opus high/Sol high/Opus high. Ordinary defaults are unchanged.
+Analyze/Review/Refine retain Opus 5.5 xhigh/Sol 6.1 xhigh/Opus 5.5 xhigh.
+Ordinary defaults are unchanged by the pilot.
 
 Install the exact `fleet/gemini_research_agent.md` at
 `~/.gemini/config/agents/serena-fleet-research/agent.md`. The adapter verifies the
@@ -654,31 +665,47 @@ are updated together with a `run.retry_ownership_refreshed` receipt.
 
 ## The phase matrix and worker identity
 
-Fleet runs one locked model per phase, and every agent in that phase runs it:
-Research `gpt-5.6-luna` max, Code `gpt-6-astra` medium, Review `gpt-6-astra`
-medium, Fix `claude-opus-5` high. `fleet/policy.py` holds it as a hard
-contract, `validate_config` refuses a config that drifts from it, and
-`policy_models_match_contract` re-checks every run before it starts.
+The phase matrix approved on 2026-09-30 applies on both the laptop and PC:
 
-For coding runs, confirmed Claude exhaustion maps unfinished Fix to
-`gpt-6-astra` high. Code and Review are already `gpt-6-astra` medium and do not
-change. Explicit Claude-only runs retain their Opus stack. These are per-worker handoffs; healthy
-workers and completed phases keep their original routing.
+| Coding routing | Research | Code | Review | Fix |
+|---|---|---|---|---|
+| Mixed | `gpt-5.6-luna` max | `gpt-6.1-sol` xhigh | `claude-opus-5-5` xhigh | `claude-opus-5-5` xhigh |
+| Codex-only | `gpt-5.6-luna` max | `gpt-6.1-sol` xhigh | `gpt-6.1-sol` xhigh | `gpt-6.1-sol` xhigh |
+| Claude-only | `claude-sonnet-5-5` high | `claude-opus-5-5` xhigh | `claude-opus-5-5` xhigh | `claude-opus-5-5` xhigh |
+
+Pure research retains its provider order: Luna 5.6 max Research, Opus 5.5 xhigh
+Analyze, Sol 6.1 xhigh Review, and Opus 5.5 xhigh Refine. Provider-only research
+uses the same four-model sequence as its provider-only coding row.
+
+Fleet runs one locked model per phase, and every agent in that phase runs it.
+`fleet/policy.py` holds this as a hard contract, `validate_config` refuses a
+configuration that drifts from it, and `policy_models_match_contract` checks the
+saved run contract. In-flight runs preserve their frozen phase identities;
+new runs use this matrix. Explicit Claude versions accept only the exact slug
+or a dated snapshot of that version: Opus 5 cannot satisfy an Opus 5.5 request.
+
+Confirmed Claude exhaustion or terminal overload maps unfinished Review and Fix
+to `gpt-6.1-sol` xhigh when Codex has capacity. Explicit provider-only runs remain
+pinned unless the operator requests a handoff. Healthy workers and completed
+phases keep their original routing and receipts.
 
 Explicit coding Codex-only experiments may start their task with
 `Fleet comparison profile: sol` or `Fleet comparison profile: astra`.
-The two fixed Code/Review pairs are Sol xhigh/Sol high and Astra medium/Astra medium.
-Both keep Luna max Research and Astra high Fix. Each run persists the exact phase models;
+The two fixed Code/Review pairs are Sol 6.1 xhigh/Sol 6.1 xhigh and
+Astra 6 medium/Astra 6 medium. Both keep Luna 5.6 max Research and Sol 6.1
+xhigh Fix. Astra is an explicit comparison profile, not an automatic fallback.
+Each run persists the exact phase models;
 no mutable global experiment switch is used. Ordinary tasks retain the default stack.
 
 ### Bounded difficult retries
 
-A failed Code or Fix integration test may queue one extra attempt on `gpt-6-astra`
+A failed Code or Fix integration test may queue one extra attempt on `gpt-6.1-sol`
 `xhigh`. This is separate from quota recovery: the supervisor must observe a real
 nonzero test gate with concrete assertion, syntax, or type-check failure output,
 and Codex must have a positive capacity signal. Infrastructure failures, missing
 dependencies, malformed evidence, honest stops, Research, Review, and Claude-only
-runs do not qualify. Ambiguous failures stay failed.
+runs do not qualify. An attempt already using Sol 6.1 xhigh also does not
+qualify; the retry cannot improve its model or effort. Ambiguous failures stay failed.
 
 The failed patch is rolled back before retry. Only the failed leg changes model;
 its worker identity, prior attempt identity, and the other phases are preserved.
@@ -686,6 +713,8 @@ The frozen policy records a `difficult_retries` receipt and the event log record
 `leg.difficult_retry_queued`. A second implementation failure stays failed for
 operator review. This initial implementation covers integration-gate failures,
 not every error a worker may report in prose or encounter inside its workspace.
+Historical Astra xhigh difficult-retry receipts remain readable and valid;
+new retries use the approved Sol stack.
 
 Workers are Agent A through Agent D. `worker_key` is `agent:a`, not
 `codex:a`: the provider is a property of the phase, not of the worker, so one
@@ -697,8 +726,9 @@ handed to the other provider for capacity or a recorded difficult retry.
 Two consequences fall out of alternating providers, both deliberate:
 
 - **Sessions cannot span a provider change.** Default Code can continue the
-  Codex Research session; default Fix opens a Claude session. Review deliberately
-  does *not* continue Research or Code even though they land on Codex, because a
+  Codex Research session; Review opens an independent Claude session and Fix
+  can continue that review session. Review deliberately
+  does *not* continue Research or Code in provider-only runs either, because a
   reviewer that sat through the research cannot independently disagree with it.
   That suppression is one condition in `fleet_store.py`'s continuation lookup.
 - **A dead provider blocks its phases.** `no-claude:` and `no-codex:` pin a run
@@ -803,7 +833,7 @@ Before the existing difficult-retry escalation, an eligible supervisor-observed 
 test failure can synthesize a help request. A successful consultation queues **one same-owner,
 same-model retry per leg**, atomically with its receipt. Failed patches remain rolled back, healthy
 siblings continue, and the retry reads its incoming diagnosis. If the repair still fails, the existing
-single Astra xhigh difficult retry may apply. Quota/infra failures, permission denials, malformed
+single Sol 6.1 xhigh difficult retry may apply. Quota/infra failures, permission denials, malformed
 evidence, honest stops, and Claude-only automatic escalation remain outside this classifier. Explicit
 worker help messages work in either provider; failed/expired consultations stop boundedly rather
 than claiming repair. Main workers should consume help before finishing, not exit expecting advice

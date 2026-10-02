@@ -91,7 +91,7 @@ def _attached_task_list() -> str:
     from memory import store
 
     lines: list[str] = []
-    for state in ("running", "ready", "needs_triage", "blocked", "backlog"):
+    for state in ("running", "review", "ready", "needs_triage", "blocked", "backlog"):
         try:
             rows = store.tasks_in_state(state)
         except Exception:
@@ -354,7 +354,10 @@ def start_ready_fleet_task(payload: dict[str, Any]) -> ActionOutcome:
     output = {"task_id": task_id}
 
     def hold(detail: str, *, state: str = "blocked") -> ActionOutcome:
-        released = store.release_task_claim(task_id, owner, token, state=state)
+        options = {"state": state}
+        if state == "needs_triage":
+            options["result"] = detail
+        released = store.release_task_claim(task_id, owner, token, **options)
         # "blocked" here means the dispatcher could not even open the run, on
         # something it cannot clear itself -- GitHub auth it cannot renew, a
         # repository it cannot reach. Left quiet, the task simply never starts
@@ -718,6 +721,29 @@ def _auto_retry_transient(task: dict[str, Any], run_id: str, reason: str, headli
     return True
 
 
+def _review_batch(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bound PR reads while rotating past PRs that remain open for weeks."""
+
+    import sqlite3
+    import time
+    from contextlib import closing
+
+    from memory import store
+
+    if not tasks:
+        return []
+    path = store.MEMORY_DIR / ".fleet-dispatch.sqlite3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path, timeout=5)) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS pr_reviews (task_id INTEGER PRIMARY KEY, checked_at REAL)")
+        checked = dict(db.execute("SELECT task_id, checked_at FROM pr_reviews"))
+        batch = sorted(tasks, key=lambda task: (checked.get(task["id"], 0), task["id"]))[:MAX_RECONCILE_PER_TICK]
+        with db:
+            db.executemany("INSERT OR REPLACE INTO pr_reviews VALUES (?, ?)",
+                           [(task["id"], time.time()) for task in batch])
+    return batch
+
+
 def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
     """Close finished dispatched runs: deliver, record, and tell him.
 
@@ -735,7 +761,8 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
     if _configuration(payload):
         return ActionOutcome(False, "serena.fleet.reconcile accepts no schedule payload")
     closed: list[dict[str, Any]] = []
-    for task in store.tasks_in_state("running"):
+    tasks = store.tasks_in_state("running") + _review_batch(store.tasks_in_state("review"))
+    for task in tasks:
         if len(closed) >= MAX_RECONCILE_PER_TICK:
             break
         run_id = str(task.get("run_id") or "")
@@ -781,8 +808,13 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             record["error"] = str(error)
         if state == "completed" and checkout is not None:
             try:
-                delivery = agent_checkouts.deliver(
-                    checkout, task_id=task_id, brief=brief, run_id=run_id)
+                if task["state"] == "review":
+                    delivery = agent_checkouts.review_delivery(checkout)
+                    if delivery.status == "pr":
+                        continue
+                else:
+                    delivery = agent_checkouts.deliver(
+                        checkout, task_id=task_id, brief=brief, run_id=run_id)
             except agent_checkouts.CheckoutError as error:
                 # Leave the task running; the next tick retries the delivery.
                 record["error"] = f"delivery failed: {error}"
@@ -806,9 +838,11 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             record.update(delivery=delivery.status, url=delivery.url)
             card: dict[str, Any] = {"url": delivery.url}
             if delivery.status == "no_changes":
+                final = "done"
                 result, message = "done: no changes needed", (
                     f"#{task_id} done, no code changes needed: {headline}")
             elif delivery.status == "merged":
+                final = "done"
                 try:
                     shipped = agent_checkouts.ship(checkout)
                 except agent_checkouts.CheckoutError as error:
@@ -820,13 +854,18 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
                 card.update(status="merged", note=(
                     "📱 SideStore build started" if "codemagic" in shipped
                     else shipped))
+            elif delivery.status == "closed":
+                final = "blocked"
+                result = f"closed: {delivery.url}"
+                message = f"#{task_id} PR closed without merging: {headline}. {delivery.url}"
+                card.update(status="failed", reason=delivery.detail)
             else:
+                final = "review"
                 note = f" ({delivery.detail})" if delivery.detail else ""
                 result, message = f"pr: {delivery.url}", (
                     f"#{task_id} PR ready (4/4): {headline}{note}. {delivery.url}")
                 card.update(status="pr", note=delivery.detail)
             card.setdefault("status", "no_changes")
-            final = "done"
         else:
             reason = str(run.get("error") or state)[:200]
             carded = job_cards.enabled()
@@ -868,10 +907,15 @@ def reconcile_fleet_tasks(payload: dict[str, Any]) -> ActionOutcome:
             break
         task_id = int(task["id"])
         headline = " ".join(str(task["content"]).split())[:120]
+        blocker = str(task.get("result") or "")
         question = (f"#{task_id} needs one detail before i hand it off: \"{headline}\". "
-                    f"what exactly should change, and in which project? "
-                    f"reply \"#{task_id} <details>\".")
-        if _notify_phone(question, f"task:{task_id}:question", answers_request=True):
+                    + (f"{blocker}. which project is this for? " if blocker else
+                       "what exactly should change, and in which project? ")
+                    + f"reply \"#{task_id} <details>\".")
+        key = f"task:{task_id}:question"
+        if blocker:
+            key += ":" + hashlib.sha256((blocker + str(task['content'])).encode()).hexdigest()[:12]
+        if _notify_phone(question, key, answers_request=True):
             store.mark_task_asked(task_id)
             asked.append(task_id)
     from core import sidestore_publish
@@ -1106,6 +1150,123 @@ def check_phone_health(payload: dict[str, Any]) -> ActionOutcome:
 from core.knowledge_maintenance import scheduled_pass as maintain_knowledge
 
 
+def _withdraw_doctor_episode(path: Any, key: str) -> bool:
+    """Withdraw only this doctor's obsolete episode, without owning state locks."""
+
+    from core.notification_authority import NotificationAuthority
+    from core.sqlite_connection import connect_database
+
+    if not path.is_file():
+        return True
+    with connect_database(f"file:{path}?mode=ro", timeout=5, uri=True) as notices:
+        rows = notices.execute(
+            "SELECT notification_id FROM notifications WHERE dedupe_key = ? "
+            "AND kind = 'serena.doctor' AND delivered_at IS NULL "
+            "AND decision IN ('deferred', 'failed', 'pending_approval')",
+            (key,),
+        ).fetchall()
+    if not rows:
+        return True
+    authority = NotificationAuthority(path)
+    for row in rows:
+        result = authority.withdraw(str(row["notification_id"]), reason="doctor condition changed or cleared")
+        if result.decision not in {"sent", "suppressed"}:
+            return False
+    return True
+
+
+def _doctor_notice_key(where: str, failures: list[Any], channel: str) -> str | None:
+    """Keep one durable notice episode until the observed failures change.
+
+    Transport deduplication expires after an hour. A continuing outage does
+    not. Remember its content separately and consult the authority's durable
+    delivery record, so a failed send never counts as telling him.
+    """
+
+    import hashlib
+    import json
+    import os
+    import sqlite3
+    import uuid
+    from pathlib import Path
+
+    from core.notification_authority import DEFAULT_DB_PATH, DEFAULT_MAX_ATTEMPTS
+    from core.sqlite_connection import connect_database
+
+    path = Path(os.environ.get("SERENA_NOTIFICATION_DB_PATH", "").strip()
+                or DEFAULT_DB_PATH).expanduser()
+    state_path = path.with_name(path.stem + "-doctor.sqlite3")
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    content = []
+    for finding in failures:
+        detail = " ".join(str(finding.detail).split())
+        if finding.name == "brain.down":
+            # Its elapsed duration changes on every check; the cause does not.
+            detail = re.sub(r"down for [^:]+:", "down:", detail)
+            detail = re.sub(r"down about .+ at most", "down", detail)
+        content.append((str(finding.name), detail))
+    fingerprint = hashlib.sha256(json.dumps(
+        [channel, sorted(content)], ensure_ascii=False).encode("utf-8")).hexdigest()
+    with connect_database(state_path, timeout=5) as db:
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS doctor_notices ("
+            "machine TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, "
+            "notice_key TEXT NOT NULL)"
+        )
+    for _ in range(3):
+        with connect_database(state_path, timeout=5) as db:
+            row = db.execute(
+                "SELECT fingerprint, notice_key FROM doctor_notices WHERE machine = ?", (where,),
+            ).fetchone()
+            prior = dict(row) if row else None
+        if prior and (not failures or prior["fingerprint"] != fingerprint):
+            # Do not hold a state transaction while acquiring delivery's lock.
+            # If an old send owns it, preserve the episode for the next check.
+            try:
+                if not _withdraw_doctor_episode(path, str(prior["notice_key"])):
+                    return None
+            except sqlite3.Error:
+                return None
+        with connect_database(state_path, timeout=5) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT fingerprint, notice_key FROM doctor_notices WHERE machine = ?", (where,),
+            ).fetchone()
+            if (dict(row) if row else None) != prior:
+                continue  # Another doctor changed the episode; observe it again.
+            if not failures:
+                db.execute("DELETE FROM doctor_notices WHERE machine = ?", (where,))
+                return None
+            if prior and prior["fingerprint"] == fingerprint:
+                key = str(prior["notice_key"])
+            else:
+                # A new key also bypasses the earlier episode's hourly dedupe.
+                key = f"doctor:{where[:64]}:{fingerprint}:{uuid.uuid4()}"
+                db.execute(
+                    "INSERT INTO doctor_notices(machine, fingerprint, notice_key) "
+                    "VALUES (?, ?, ?) ON CONFLICT(machine) DO UPDATE SET "
+                    "fingerprint = excluded.fingerprint, notice_key = excluded.notice_key",
+                    (where, fingerprint, key),
+                )
+        if path.is_file():
+            try:
+                with connect_database(f"file:{path}?mode=ro", timeout=5, uri=True) as notices:
+                    delivered_or_queued = notices.execute(
+                        "SELECT 1 FROM notifications WHERE dedupe_key = ? AND "
+                        "(decision IN ('sent', 'deferred', 'pending_approval') OR "
+                        "(decision = 'failed' AND deliver_after IS NOT NULL "
+                        "AND attempts < ?)) LIMIT 1",
+                        (key, DEFAULT_MAX_ATTEMPTS),
+                    ).fetchone()
+            except sqlite3.Error:
+                # An unreadable delivery store cannot prove he heard it.
+                delivered_or_queued = None
+            if delivered_or_queued:
+                return None
+        return key
+    return None  # Concurrent checks are changing it; a later pass will observe it.
+
+
 def run_doctor(payload: dict[str, Any]) -> ActionOutcome:
     """Run the system doctor and tell him only when the answer changes.
 
@@ -1137,6 +1298,8 @@ def run_doctor(payload: dict[str, Any]) -> ActionOutcome:
         "failures": [finding.name for finding in report.failures],
         "warnings": [finding.name for finding in report.warnings],
     }
+    channel = str(payload.get("channel") or "telegram")
+    notice_key = _doctor_notice_key(where, report.failures, channel)
     if not broken:
         return ActionOutcome(True, "nothing broken", output=output)
     if not report.failures:
@@ -1153,6 +1316,8 @@ def run_doctor(payload: dict[str, Any]) -> ActionOutcome:
     # Name the machine: this runs on both, and "the repo is behind" means
     # something different depending on which one is saying it.
     summary = f"{where}: {lead.name}: {lead.detail}"[:DOCTOR_SUMMARY_LIMIT] + extra
+    if notice_key is None:
+        return ActionOutcome(True, summary, output=output)
     return ActionOutcome(
         True,
         summary,
@@ -1162,15 +1327,13 @@ def run_doctor(payload: dict[str, Any]) -> ActionOutcome:
             # Telegram by default: a machine that has gone wrong is worth
             # hearing about wherever he is, not only if he happens to be
             # sitting in front of the one that broke.
-            "channel": str(payload.get("channel") or "telegram"),
+            "channel": channel,
             # A failure stops work; a warning is a drift he should know about
             # before it becomes one. Neither is worth waking him for.
             "urgency": "normal",
-            # One notice per distinct shape of breakage, so a problem that
-            # persists for a day does not become an hourly nag. A new or fixed
-            # check changes the shape, and he hears about it then.
-            "dedupe_key": f"doctor:{where}:" + ",".join(
-                sorted(finding.name for finding in broken)),
+            # The episode survives process restarts and transport dedupe's
+            # hourly expiry. Changed failures or a recurrence get a new key.
+            "dedupe_key": notice_key,
         },
         output=output,
     )

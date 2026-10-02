@@ -899,3 +899,45 @@ def test_a_caller_with_no_address_is_not_treated_as_local(webhook_client):
     client, _instance = webhook_client
     response = client.get("/api/webhooks/pending", environ_overrides={"REMOTE_ADDR": ""})
     assert response.status_code == 403
+
+
+# ------------------------------------------------------------ dead leases
+
+
+def _hold_lease(scheduler, schedule_id, owner, moment):
+    import sqlite3
+
+    with sqlite3.connect(scheduler.path) as db:
+        db.execute(
+            "UPDATE schedules SET claim_token = 'old', claim_expires_at = ?, claim_owner = ? "
+            "WHERE schedule_id = ?",
+            (moment + 900, owner, schedule_id),
+        )
+
+
+def test_a_lease_left_by_a_killed_process_does_not_block_the_next_run(scheduler):
+    """A PC redeploy killed the phone poll mid-run and his texts sat unread 16 minutes."""
+
+    calls: list = []
+    scheduler.register_action("ping", lambda p: calls.append(p) or ActionOutcome(True))
+    record = _add(scheduler)
+    # pid 999999 does not exist: the process that held this lease is gone.
+    _hold_lease(scheduler, record["schedule_id"], "999999:linux:1", 1_000)
+
+    assert len(scheduler.tick(now=1_000)) == 1
+    assert len(calls) == 1
+
+
+def test_a_live_process_keeps_its_lease(scheduler):
+    import os
+
+    from core.serena_scheduler import _claim_owner
+
+    calls: list = []
+    scheduler.register_action("ping", lambda p: calls.append(p) or ActionOutcome(True))
+    record = _add(scheduler)
+    _hold_lease(scheduler, record["schedule_id"], _claim_owner(), 1_000)
+    assert os.getpid() > 0
+
+    assert scheduler.tick(now=1_000) == []
+    assert calls == []

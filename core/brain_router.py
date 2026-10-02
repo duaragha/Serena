@@ -164,6 +164,15 @@ def route_turn(
 ) -> RouteDecision:
     route_class, reason = classify_turn(payload)
     protocol = _clean_text(payload.get("protocol")) or "plain"
+    unavailable = payload.get("_unavailable_models")
+    if isinstance(unavailable, list) and unavailable:
+        # A model that failed to start a moment ago is out for this turn even
+        # when its provider still reports healthy.
+        capacity = dict(capacity or {})
+        models = dict(capacity.get("models") or {})
+        for name in unavailable:
+            models[str(name)] = {"usable": False, "reason": "failed to start moments ago"}
+        capacity["models"] = models
     if any(value is not None for value in (conversation_model, voice_model, reflex_model)):
         conversation = str(conversation_model or "sonnet")
         voice = str(voice_model or conversation)

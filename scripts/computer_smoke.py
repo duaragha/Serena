@@ -125,7 +125,7 @@ def main():
     state_path.unlink(missing_ok=True)
     client = ComputerClient()
     status = client.ensure_running()
-    if status.get("session") and status["session"]["state"] == "active":
+    if status.get("session") and status["session"]["state"] in {"active", "paused", "resuming"}:
         raise RuntimeError("an existing user session is active; smoke test will not interrupt it")
     env = desktop_environment()
     process = subprocess.Popen(
@@ -258,7 +258,7 @@ def main():
             assert any(
                 "serena_computer.act" in item.get("tool_calls", []) for item in observations
             ), observations
-            receipt["checks"]["astra_image_and_input"] = True
+            receipt["checks"]["model_image_and_input"] = True
         if args.watch:
             # Wait for the previous runner to finish closing its subscription process.
             time.sleep(1)

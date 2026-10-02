@@ -21,9 +21,18 @@ if not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 if __name__ == "__main__" and sys.argv[1:] == ["--workspace-runtime-check"]:
+    # The voice package loads lazily; exercise the runtime and compiled numpy
+    # code so a working workspace cannot conceal a mute packaged app.
+    import numpy as np
+
+    from voice.call import CallRuntime  # noqa: F401
+
+    if np.dot(np.array([2, 3]), np.array([4, 5])) != 23:
+        raise RuntimeError("packaged numpy runtime is unusable")
+    import jsonschema  # noqa: F401
+
     from core.workspace_claude import ClaudeWorkspace  # noqa: F401
     from core.workspace_codex import CodexWorkspace  # noqa: F401
-    import jsonschema  # noqa: F401
 
     raise SystemExit(0)
 
@@ -117,6 +126,14 @@ if __name__ == "__main__" and sys.argv[1:] == ["--fleet-peer-mcp"]:
     raise SystemExit(0)
 
 _repair_standard_streams()
+
+if __name__ == "__main__" and sys.argv[1:] == ["--index-refresh"]:
+    # Match the Linux sidecar's background scanner entry point. Dispatch before
+    # importing ui.web, so a refresh cannot start a second resident web runtime.
+    from core.indexer import update_index
+
+    update_index(skip_if_running=True)
+    raise SystemExit(0)
 
 if __name__ == "__main__" and sys.argv[1:2] == ["computer"]:
     from core.computer_cli import computer

@@ -170,7 +170,8 @@ def test_watch_and_operator_scope(controller):
     assert c.session.state == "active"
 
 
-def test_stop_during_batch_cancels_wait_and_releases_input(controller):
+@pytest.mark.parametrize("interruption", ["takeover", "stop"])
+def test_takeover_or_stop_during_batch_cancels_wait_and_releases_input(controller, interruption):
     c = controller
     sid, frame = begin(c)
     result = []
@@ -186,12 +187,18 @@ def test_stop_during_batch_cancels_wait_and_releases_input(controller):
     while not c.session.results and time.monotonic() < deadline:
         time.sleep(0.005)
     started = time.monotonic()
-    c.physical_input()
+    if interruption == "takeover":
+        c.physical_input()
+    else:
+        c.stop()
     worker.join(timeout=1)
     assert not worker.is_alive() and time.monotonic() - started < 1
     assert not result[0]["ok"] and not c.desktop.inputs
     assert not c.session.frames and c.desktop.releases
-    with pytest.raises(ComputerError, match="stopped"):
+    # His takeover pauses the task instead of ending it; stop still ends it.
+    expected = "paused" if interruption == "takeover" else "stopped"
+    assert c.session.state == expected
+    with pytest.raises(ComputerError, match=expected):
         c.observe(sid)
 
 
@@ -232,7 +239,7 @@ def test_mixed_mcp_image_and_dynamic_transport(controller):
     sid, frame = begin(controller, mode="watch")
     result = _handler_result(frame_content(frame))
     assert [item["type"] for item in result["contentItems"]] == ["inputText", "inputImage"]
-    assert [item.name for item in visual_tools(controller, sid)] == ["observe"]
+    assert [item.name for item in visual_tools(controller, sid)] == ["observe", "zoom"]
 
 
 def test_resident_tool_cannot_invent_permission(monkeypatch):
@@ -366,7 +373,7 @@ def test_mcp_chat_can_start_observe_and_stop_requested_watch(controller, monkeyp
 
 
 @pytest.mark.parametrize("mode", ["watch", "control"])
-def test_mcp_background_start_uses_existing_astra_runner(controller, monkeypatch, mode):
+def test_mcp_background_start_uses_the_claude_worker(controller, monkeypatch, mode):
     from core import computer_agent, computer_mcp
     from core.computer_service import ComputerServer
 
@@ -407,10 +414,9 @@ def test_mcp_background_start_uses_existing_astra_runner(controller, monkeypatch
         )
         assert started == [(mode, True)]
         assert result["driver"] == {
-            "kind": "astra",
-            "model": "gpt-6-astra",
-            "effort": "medium",
-            "service_tier": "fast",
+            "kind": "claude",
+            "model": "claude-opus-5-5",
+            "effort": "low",
         }
     finally:
         server.server_close()
@@ -588,7 +594,7 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, tmp_path,
                     seconds=30,
                 )
             )
-        assert result["session"]["driver"] == "astra"
+        assert result["session"]["driver"] == "claude"
         assert result["session"]["source_session_id"] == parent
         # Wait for everything that is asserted below, not just the first of
         # them: `options` is appended by the same background worker, and a
@@ -597,15 +603,17 @@ def test_watch_start_actually_produces_advice(controller, monkeypatch, tmp_path,
         # that says what was missing.
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
-            if controller.session.observation and options:
+            # The observation lands on the session a moment before its event
+            # is recorded as coaching; wait for both.
+            if controller.session.observation and options and store.coaching(parent):
                 break
             time.sleep(0.01)
         assert controller.session.observation == "open the next setup step"
         assert controller.session.last_inspected_at is not None
         assert options, "the watch worker never recorded its model options"
-        assert options[0]["model"] == "gpt-6-astra" and options[0]["effort"] == "medium"
-        assert options[0]["service_tier"] == "fast"
-        assert options[0]["allow_user_hooks"] is False
+        assert options[0]["model"] == "claude-opus-5-5" and options[0]["effort"] == "low"
+        assert {tool.name for tool in options[0]["tools"]} == {"observe", "zoom"}  # no input
+        assert controller.session.frame_width == 1280  # Claude would downsample wider
         assert model_events[0] == "start"
         assert isinstance(model_events[1], str)
         assert store.coaching(parent)[0]["text"] == controller.session.observation

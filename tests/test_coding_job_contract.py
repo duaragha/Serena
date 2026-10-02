@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -50,6 +52,35 @@ def _repo(path):
     return path.resolve()
 
 
+def test_repository_git_cannot_consume_the_callers_protocol_stdin():
+    # Run the production helper inside a process receiving protocol input. The
+    # disposable Git stand-in reads stdin, exposing inheritance on either OS.
+    script = """
+import subprocess, sys
+from pathlib import Path
+from core import coding_job_contract as contract
+original_run = subprocess.run
+def fixture_git(argv, *args, **kwargs):
+    assert argv[0] == "git"
+    command = [sys.executable, "-c", "import json, sys; print(json.dumps(sys.stdin.read()))"]
+    return original_run(command, *args, **kwargs)
+subprocess.run = fixture_git
+result = contract._git(Path.cwd(), "rev-parse", "--show-toplevel")
+print(result.stdout.strip())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        input='{"jsonrpc":"2.0","method":"tools/call"}\n',
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+
+    assert json.loads(result.stdout) == ""
+
+
 def test_repository_root_requires_git_and_never_falls_back_to_home(tmp_path) -> None:
     ordinary = tmp_path / "ordinary"
     ordinary.mkdir()
@@ -76,6 +107,23 @@ def test_ambiguous_projects_are_rejected_instead_of_guessed(tmp_path) -> None:
             projects_root=tmp_path,
             serena_root=first,
         )
+
+
+@pytest.mark.parametrize("brief,name", [
+    ("fix routines so exercises retain their sets and reps", "locket"),
+    ("fix whatsapp search so inbox results include older messages", "unified"),
+])
+def test_feature_vocabulary_resolves_one_available_repository(tmp_path, brief, name):
+    roots = [_repo(tmp_path / "locket"), _repo(tmp_path / "unified")]
+    assert resolve_repository_root(brief, roots=roots, projects_root=tmp_path) == tmp_path / name
+    with pytest.raises(RepositoryResolutionError):
+        resolve_repository_root(brief, roots=[], projects_root=tmp_path, serena_root=tmp_path / "missing")
+
+
+def test_mixed_feature_vocabulary_still_requires_a_project(tmp_path):
+    roots = [_repo(tmp_path / "locket"), _repo(tmp_path / "unified")]
+    with pytest.raises(RepositoryResolutionError):
+        resolve_repository_root("fix workouts in the inbox", roots=roots, projects_root=tmp_path)
 
 
 def test_project_path_beats_a_bare_name_mentioned_in_prose(tmp_path) -> None:

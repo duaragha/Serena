@@ -1115,6 +1115,32 @@ body.pane-dragging * {
 }
 .group-header.voice-chats-header:hover { color: #f3a6c9; }
 .voice-chats-section.collapsed { display: none; }
+.session-row.trashing { display: none; }
+.group-header.trash-header { cursor: pointer; user-select: none; }
+.trash-section.collapsed { display: none; }
+.trash-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 9px 5px 24px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.trash-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.trash-row-title { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trash-row-meta { font-size: 11px; opacity: 0.75; }
+.trash-restore {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-bright);
+  background: transparent;
+  border: 1px solid var(--border-bright);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.trash-restore:hover, .trash-restore:focus-visible { border-color: var(--accent); color: var(--accent); }
+.trash-restore:disabled { opacity: 0.4; cursor: default; }
 
 /* Agent badges (Claude / Codex / Serena) use inline SVG and currentColor. */
 .agent-icon {
@@ -1214,6 +1240,25 @@ body.pane-dragging * {
 }
 .session-row.needs-attention .session-title {
   color: #ffb84d;
+}
+/* A linked row's group stripe is also an inset shadow and is declared later;
+   the extra class keeps "finished" on top of it. */
+.session-row.needs-attention.has-group {
+  box-shadow: inset 4px 0 0 0 #f5a623;
+}
+.term-pane.needs-attention::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 2px solid #f5a623;
+  border-radius: 3px;
+  pointer-events: none;
+  z-index: 5;
+  animation: attention-pane-pulse 2.4s ease-in-out infinite;
+}
+@keyframes attention-pane-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
 }
 @keyframes attention-pulse {
   0%, 100% { background-color: transparent; }
@@ -1643,6 +1688,21 @@ body.pane-dragging * {
   border-color: var(--menu);
   background: rgba(255, 255, 255, 0.055);
 }
+.term-session-cost {
+  height: 21px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border: 1px solid var(--border-bright);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+.term-session-cost.claude { color: #ff967d; }
+.term-session-cost.codex { color: #8cb4ff; }
+.term-session-cost.total { color: var(--green); border-color: var(--green); }
 .term-session-id.claude { color: #ff967d; }
 .term-session-id.codex { color: #8cb4ff; }
 .term-session-id.gemini { color: #67d9a0; }
@@ -1688,6 +1748,23 @@ body.pane-dragging * {
   overflow: hidden;
 }
 .term-pane.hidden { display: none; }
+/* A pane asleep in a merged view still shows its last frame; the label says
+   why it is not moving and that a click brings it back. */
+.term-pane.runtime-asleep .xterm { opacity: 0.55; transition: opacity 0.2s ease; }
+.term-pane.runtime-asleep::before {
+  content: 'asleep \00b7 click to wake';
+  position: absolute;
+  top: 6px;
+  right: 18px;
+  z-index: 6;
+  padding: 2px 8px;
+  font: 11px var(--mono, monospace);
+  color: var(--text-dim, #9a9aa3);
+  background: rgba(23, 23, 27, 0.85);
+  border: 1px solid var(--border, #2a2a31);
+  border-radius: 4px;
+  pointer-events: none;
+}
 .term-pane .xterm,
 .term-pane .xterm-viewport,
 .term-pane .xterm-screen {
@@ -1845,6 +1922,15 @@ body.pane-dragging * {
 .toast.visible { opacity: 1; transform: translateY(0); }
 .toast.success { border-color: var(--green); color: var(--green); }
 .toast.error   { border-color: #f85149; color: #f85149; }
+.toast.finished { border-color: #f5a623; cursor: pointer; }
+.toast.finished::before {
+  content: '';
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f5a623;
+}
 .toast-spinner {
   width: 12px; height: 12px;
   border: 2px solid var(--border-bright);
@@ -1854,6 +1940,18 @@ body.pane-dragging * {
   flex-shrink: 0;
 }
 @keyframes toast-spin { to { transform: rotate(360deg); } }
+.toast-action {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 2px 10px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  cursor: pointer;
+}
 
 /* ── Context Menu ── */
 .ctx-menu {
@@ -4513,6 +4611,7 @@ function renderSessionList() {
     + '<span class="sidebar-utility-count">(' + voiceChats.length + ')</span></button>';
   html += '<div class="voice-chats-section' + (_collapsedState.voiceChats ? ' collapsed' : '')
     + '" id="voiceChatsSection" data-testid="voice-chats-section"><div class="sidebar-section-empty">No voice chats</div></div>';
+  html += _renderTrashSection();
 
   if (active.length) {
     html += '<div class="group-header active-header">\u25CF Active Terminals</div>';
@@ -4595,7 +4694,7 @@ function renderSessionList() {
 // localStorage: the desktop shell binds a fresh port each launch, so a
 // localStorage key lives on a throwaway origin and the state would silently
 // reset on every restart and never be shared with a browser tab.
-let _collapsedState = { fleetChats: true, voiceChats: true, starred: false, done: true, timeGroups: [] };
+let _collapsedState = { fleetChats: true, voiceChats: true, trash: true, starred: false, done: true, timeGroups: [] };
 let _collapsedLoaded = false;
 let _timeGroupsCollapsed = new Set();
 // Filtering starts with the matching history visible, without overwriting the
@@ -4623,6 +4722,7 @@ function _applyCollapsedState(raw) {
   const c = (raw && typeof raw === 'object') ? raw : {};
   if (typeof c.fleetChats === 'boolean') _collapsedState.fleetChats = c.fleetChats;
   if (typeof c.voiceChats === 'boolean') _collapsedState.voiceChats = c.voiceChats;
+  if (typeof c.trash === 'boolean') _collapsedState.trash = c.trash;
   if (typeof c.starred === 'boolean') _collapsedState.starred = c.starred;
   if (typeof c.done === 'boolean') _collapsedState.done = c.done;
   _collapsedState.timeGroups = Array.isArray(c.timeGroups) ? c.timeGroups.map(String) : [];
@@ -4666,6 +4766,14 @@ function toggleVoiceChatsCollapsed() {
   _saveCollapsedState();
   renderSessionList();
   document.querySelector('[data-testid="voice-chats-header"]')?.focus({preventScroll:true});
+}
+
+function toggleTrashCollapsed() {
+  _collapsedState.trash = !_collapsedState.trash;
+  _saveCollapsedState();
+  if (!_collapsedState.trash) refreshTrash();
+  renderSessionList();
+  document.querySelector('[data-testid="trash-header"]')?.focus({preventScroll:true});
 }
 
 function toggleStarredCollapsed() {
@@ -4805,6 +4913,7 @@ function renderSessionRow(s, idx, opts) {
   if (needsAttention) cls += ' needs-attention';
   if (opts.isChild) cls += ' child-session';
   if (_isSerenaVoiceSession(s)) cls += ' serena-voice';
+  if (_trashInFlight && _trashInFlight.has(s.session_id)) cls += ' trashing';
   // === GROUP FEATURE === (color stripe + link glyph + thread sibling cluster)
   const groupId = s.group || null;
   const groupColor = groupId ? _groupColor(groupId) : null;
@@ -5263,10 +5372,13 @@ async function bulkToggleStar() {
   } catch(e) {}
 }
 
-const _trashInFlight = new Set();
+// var, not const: renderSessionRow reads it, and a render that ran before this
+// line would otherwise hit the temporal dead zone.
+var _trashInFlight = new Set();
 
-async function _requestChatTrash(sid) {
-  const response = await fetch('/api/session/' + encodeURIComponent(sid), { method: 'DELETE' });
+async function _requestChatTrash(sid, opts) {
+  const force = opts && opts.force ? '?force=1' : '';
+  const response = await fetch('/api/session/' + encodeURIComponent(sid) + force, { method: 'DELETE' });
   const result = await response.json().catch(() => ({}));
   if (!response.ok || !result.ok) {
     const error = new Error(result.error || 'Move to trash failed (HTTP ' + response.status + ')');
@@ -5304,6 +5416,40 @@ function _forgetTrashedChat(sid) {
   selectedIds.delete(sid);
 }
 
+// Alt+Delete nukes a chat: no confirmation, and a running chat is stopped
+// rather than kept. The transcript still lands in the trash, so the undo
+// toast and the Trash section are the safety net. A plain delete is tried
+// first, so a chat that fails to delete for any other reason is never
+// stopped; the backend's lease check stays the authority on "stopped".
+async function _nukeChat(sid) {
+  try {
+    await _requestChatTrash(sid);
+  } catch (error) {
+    if (error.code !== 'session_owned') throw error;
+    const runtime = termSessions.get(sid);
+    if (runtime && !runtime.closing
+        && (runtime.structured ? typeof runtime.close === 'function' : runtime.tid && !window.__nativeTerminalBridge)) {
+      // A failed close is not fatal: the forced delete ends whatever is left.
+      await _stopChatForTrash(sid, runtime).catch(() => {});
+    }
+    await _requestChatTrash(sid, { force: true });
+  }
+  _forgetTrashedChat(sid);
+}
+
+function _hideTrashingRows() {
+  for (const row of document.querySelectorAll('.session-row[data-sid]')) {
+    if (_trashInFlight.has(row.dataset.sid)) row.classList.add('trashing');
+  }
+}
+
+function _undoTrashToast(sids, message) {
+  showToast(message, {
+    duration: 8000,
+    action: { label: 'Undo', run: () => restoreTrashed({ session_ids: sids }) },
+  });
+}
+
 async function deleteSession(sid) {
   if (_trashInFlight.has(sid)) return;
   const target = _findClientSession(sid);
@@ -5313,42 +5459,23 @@ async function deleteSession(sid) {
   }
   const title = target && target.display_title ? target.display_title : sid.slice(0, 8);
   _trashInFlight.add(sid);
+  _hideTrashingRows();
+  let trashed = false;
   try {
-    const ok = await showConfirm({
-      title: 'Move conversation to trash?',
-      body: 'Move "' + title + '" to recoverable trash?',
-      confirm: 'Move to Trash',
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await _requestChatTrash(sid);
-    } catch (error) {
-      if (error.code !== 'session_owned') throw error;
-      const runtime = termSessions.get(sid);
-      const canStop = runtime && !runtime.closing &&
-        (runtime.structured ? typeof runtime.close === 'function' : runtime.tid && !window.__nativeTerminalBridge);
-      if (!canStop) {
-        throw new Error('This chat is running in another window or its stop is unconfirmed. Close its terminal there, then try again.');
-      }
-      const stop = await showConfirm({
-        title: 'Stop this chat and move it to trash?',
-        body: 'Stop ' + _agentLabel(target?.agent || _agentOf(sid)) + ' in "' + title + '" and move this chat to recoverable trash? Other linked chats will keep running.',
-        confirm: 'Stop and move to trash',
-        danger: true,
-      });
-      if (!stop) return;
-      await _stopChatForTrash(sid, runtime);
-      // The backend lease check is still the authority, even after a stop receipt.
-      await _requestChatTrash(sid);
-    }
-    _forgetTrashedChat(sid);
+    await _nukeChat(sid);
+    trashed = true;
     updateSelectionInfo();
-    await loadSessions(currentProject);
   } catch(e) {
     showToast('Could not move chat to trash: ' + e.message, { variant: 'error' });
   } finally {
     _trashInFlight.delete(sid);
+  }
+  if (trashed) {
+    _undoTrashToast([sid], 'Moved "' + title + '" to trash');
+    refreshTrash();
+    await loadSessions(currentProject);
+  } else {
+    renderSessionList();
   }
 }
 
@@ -5360,39 +5487,98 @@ async function bulkDelete() {
     return;
   }
   if (ids.some(sid => _trashInFlight.has(sid))) return;
-  const n = ids.length;
-  const ok = await showConfirm({
-    title: 'Move ' + n + ' conversation' + (n === 1 ? '' : 's') + ' to trash?',
-    body: 'Chats go to recoverable trash. Running chats will be kept.',
-    confirm: 'Move to Trash',
-    danger: true,
-  });
-  if (!ok) return;
-  if (ids.some(sid => _trashInFlight.has(sid))) return;
   for (const sid of ids) _trashInFlight.add(sid);
+  _hideTrashingRows();
+  let trashed = [];
   try {
-    const response = await fetch('/api/sessions/bulk-delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids }),
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok || !Array.isArray(result.deleted)) throw new Error(result.error || 'Move to trash failed');
-    const deleted = ids.filter(sid => result.deleted.includes(sid));
-    for (const sid of deleted) _forgetTrashedChat(sid);
+    const results = await Promise.allSettled(ids.map(sid => _nukeChat(sid)));
+    trashed = ids.filter((_, i) => results[i].status === 'fulfilled');
+    const failed = results.filter(result => result.status === 'rejected');
     updateSelectionInfo();
-    await loadSessions(currentProject);
-    const failed = ids.filter(sid => !deleted.includes(sid));
     if (failed.length) {
-      const reason = result.errors?.find(item => failed.includes(item.id))?.error || 'Deletion was not confirmed';
-      showToast(failed.length + ' chat(s) kept: ' + reason, { variant: 'error' });
+      showToast(failed.length + ' chat(s) kept: ' + (failed[0].reason?.message || 'Deletion was not confirmed'), { variant: 'error' });
     }
-  } catch(e) {
-    showToast('Could not move chats to trash: ' + e.message, { variant: 'error' });
   } finally {
     for (const sid of ids) _trashInFlight.delete(sid);
   }
+  if (trashed.length) {
+    _undoTrashToast(trashed, 'Moved ' + trashed.length + ' chat' + (trashed.length === 1 ? '' : 's') + ' to trash');
+    refreshTrash();
+    await loadSessions(currentProject);
+  } else {
+    renderSessionList();
+  }
 }
+
+// === TRASH === Deleted chats, newest first, each restorable where it lived.
+let _trashState = { total: null, items: [] };
+let _trashRequest = null;
+
+function refreshTrash() {
+  if (_trashRequest) return _trashRequest;
+  _trashRequest = (async () => {
+    try {
+      const response = await fetch('/api/trash?limit=100');
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && Array.isArray(data.items)) {
+        _trashState = { total: typeof data.total === 'number' ? data.total : data.items.length, items: data.items };
+        renderSessionList();
+      }
+    } catch(e) {
+    } finally {
+      _trashRequest = null;
+    }
+  })();
+  return _trashRequest;
+}
+
+function _renderTrashSection() {
+  const collapsed = _collapsedState.trash;
+  const count = _trashState.total === null ? '' : ' <span class="sidebar-utility-count">(' + _trashState.total + ')</span>';
+  let html = '<button type="button" class="group-header trash-header sidebar-utility-header" data-testid="trash-header" aria-expanded="'
+    + (!collapsed) + '" aria-controls="trashSection" onclick="toggleTrashCollapsed()"'
+    + ' onkeydown="if(event.key === \'Enter\' || event.key === \' \') event.stopPropagation()">'
+    + '<span aria-hidden="true">' + (collapsed ? '▸' : '▾') + '</span> <span class="sidebar-utility-label">Trash</span>'
+    + count + '</button>';
+  html += '<div class="trash-section' + (collapsed ? ' collapsed' : '') + '" id="trashSection" data-testid="trash-section">';
+  if (!_trashState.items.length) html += '<div class="sidebar-section-empty">Trash is empty</div>';
+  for (const item of _trashState.items) {
+    const when = item.deleted_at ? usageUpdatedLabel(Date.parse(item.deleted_at) / 1000) : '';
+    html += '<div class="trash-row" data-testid="trash-row">'
+      + '<span class="trash-row-text"><span class="trash-row-title" title="' + escAttr(esc(item.title || '')) + '">' + esc(item.title || 'Untitled chat') + '</span>'
+      + '<span class="trash-row-meta">' + esc(_agentLabel(item.agent || '')) + (when ? ' · deleted ' + esc(when) : '') + '</span></span>'
+      + '<button type="button" class="trash-restore" data-trash-id="' + escAttr(esc(item.id)) + '"'
+      + (item.restorable === false ? ' disabled title="Its original location is taken or the transcript is missing"' : '')
+      + ' onclick="restoreTrashed({ids:[this.dataset.trashId]})">Restore</button></div>';
+  }
+  if (_trashState.total > _trashState.items.length) {
+    html += '<div class="sidebar-section-empty">Showing the newest ' + _trashState.items.length + '</div>';
+  }
+  return html + '</div>';
+}
+
+async function restoreTrashed(body) {
+  try {
+    const response = await fetch('/api/trash/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!Array.isArray(result.restored)) throw new Error(result.error || 'Restore failed (HTTP ' + response.status + ')');
+    if (result.errors?.length) {
+      showToast('Could not restore: ' + result.errors[0].error, { variant: 'error' });
+    }
+    if (result.restored.length) {
+      showToast('Restored ' + result.restored.length + ' chat' + (result.restored.length === 1 ? '' : 's'), { variant: 'success' });
+    }
+  } catch(e) {
+    showToast('Could not restore: ' + e.message, { variant: 'error' });
+  }
+  refreshTrash();
+  await loadSessions(currentProject);
+}
+// === TRASH END ===
 
 async function renameSession(sid) {
   const s = sessions.find(s => s.session_id === sid);
@@ -5918,6 +6104,9 @@ function _setPendingPartners(sid, partners) {
 const _termStarting = new Set();  // prevent duplicate PTYs from fast repeated opens
 let _webRuntimePollTimer = null;
 let _webRuntimeFocusSid = null;
+// Panes he has focused since they opened. A merged view's other panes are only
+// on screen, never used, so the server may put them to sleep once loaded.
+const _engagedTermSids = new Set();
 
 async function _pasteTerminalClipboard(sid, ws) {
   let images = [];
@@ -6147,37 +6336,103 @@ const _activeTerms = new Set();   // sids with a running terminal — cleared on
 const _gtkReadyTerms = new Set(); // sids whose GTK VTE has been built server-side
 const _activeMeta = new Map();    // sid -> { cwd, activatedAt } for /clear migration
 const _pseudoSessions = [];       // synthetic rows for brand-new chats (temp ids)
+// Who a pending handoff links with once it resolves. An empty list means its
+// thread was unlinked or disbanded meanwhile, so it links with nobody.
+function _pendingLinkMembers(pseudo) {
+  const members = Array.isArray(pseudo.pending_group_member_sids)
+    ? pseudo.pending_group_member_sids : [pseudo.pending_group_link_with];
+  return members.filter(Boolean);
+}
 const _resolvedPseudoSids = new Map(); // stale UI events can still resolve after migration
 // === ATTENTION === (sids of chats that finished a turn since user last
-// looked at them — visual glow on sidebar entry + split-view VTE)
+// looked at them — glow on the sidebar entry and its pane, plus a toast
+// naming the chat and the agent that finished)
 const _attentionSids = new Set();
 let _attentionPollTimer = null;
+let _attentionSeq = null;          // null until the first poll: its backlog is not news
+let _attentionPolling = false;
+const _pendingFinishToasts = [];   // finished while the window was hidden
 function _startAttentionPoll() {
   if (_attentionPollTimer) return;
-  const tick = async () => {
-    try {
-      const r = await fetch('/api/chat-attention');
-      if (!r.ok) return;
-      const data = await r.json();
-      const fresh = new Set(Object.keys(data.sessions || {}));
-      // Only re-render if the set actually changed
-      let changed = fresh.size !== _attentionSids.size;
-      if (!changed) {
-        for (const s of fresh) { if (!_attentionSids.has(s)) { changed = true; break; } }
-      }
-      if (changed) {
-        _attentionSids.clear();
-        for (const s of fresh) _attentionSids.add(s);
-        renderSessionList();
-        _applyAttentionToSplitView();
-      }
-    } catch(e) {}
-  };
-  tick();
-  _attentionPollTimer = setInterval(tick, 2000);
+  _pollAttention();
+  _attentionPollTimer = setInterval(_pollAttention, 2000);
+  document.addEventListener('visibilitychange', _flushFinishToasts);
+  window.addEventListener('focus', _flushFinishToasts);
 }
-function _clearAttention(sid) {
-  if (!_attentionSids.has(sid)) return;
+async function _pollAttention() {
+  if (_attentionPolling) return;
+  _attentionPolling = true;
+  try {
+    const url = '/api/chat-attention' + (_attentionSeq === null ? '' : '?since=' + _attentionSeq);
+    const r = await fetch(url);
+    if (!r.ok) return;
+    const data = await r.json();
+    if (Number.isInteger(data.seq)) _attentionSeq = data.seq;
+    const fresh = new Set(Object.keys(data.sessions || {}));
+    for (const event of (Array.isArray(data.events) ? data.events : [])) {
+      if (_isWatchingChat(event.sid)) {
+        // He watched it finish. A flag on the chat he is looking at is noise,
+        // and clearing it clears its thread on the server too.
+        for (const sid of [event.sid, ..._linkedGroupSids(event.sid, { liveOnly: false })]) fresh.delete(sid);
+        _clearAttention(event.sid, { force: true });
+        continue;
+      }
+      _queueFinishToast(event);
+    }
+    // Only re-render if the set actually changed
+    let changed = fresh.size !== _attentionSids.size;
+    if (!changed) {
+      for (const s of fresh) { if (!_attentionSids.has(s)) { changed = true; break; } }
+    }
+    if (changed) {
+      _attentionSids.clear();
+      for (const s of fresh) _attentionSids.add(s);
+      renderSessionList();
+      _applyAttentionToSplitView();
+    }
+    _flushFinishToasts();
+  } catch(e) {
+  } finally {
+    _attentionPolling = false;
+  }
+}
+function _isWatchingChat(sid) {
+  if (!sid || document.hidden || !document.hasFocus() || currentTab !== 'chats') return false;
+  if (!currentSessionId) return false;
+  return convMode === 'live' ? activeTermSid === sid : currentSessionId === sid;
+}
+function _queueFinishToast(event) {
+  const sid = event && event.sid;
+  if (!sid) return;
+  const local = _findClientSession(sid);
+  if (!local && !event.indexed) return;  // not a chat he has: headless jobs, scratch runs
+  if (event.quiet || _isFleetSession(local) || _isSerenaVoiceSession(local || sid)) return;
+  if (_pendingFinishToasts.some(item => item.sid === sid)) return;
+  const agent = (local && local.agent) || event.agent || 'claude';
+  let title = String((local && local.display_title) || event.title || '').trim() || sid.slice(0, 8);
+  if (title.length > 60) title = title.slice(0, 59) + '…';
+  _pendingFinishToasts.push({ sid, text: title + ' has finished (' + _agentLabel(agent) + ')' });
+}
+function _flushFinishToasts() {
+  if (document.hidden || !_pendingFinishToasts.length) return;
+  // Whatever he opened while the window was hidden has been seen already.
+  const due = _pendingFinishToasts.splice(0).filter(item => _attentionSids.has(item.sid));
+  const shown = due.length > 4 ? due.slice(-3) : due;
+  for (const item of shown) {
+    const toast = showToast(item.text, { variant: 'finished', duration: 6000 });
+    toast.el.title = 'Open this chat';
+    toast.el.addEventListener('click', () => {
+      toast.dismiss();
+      _clearAttention(item.sid);
+      openConv(item.sid);
+    });
+  }
+  if (due.length > shown.length) {
+    showToast((due.length - shown.length) + ' more chats finished', { variant: 'finished', duration: 6000 });
+  }
+}
+function _clearAttention(sid, opts) {
+  if (!_attentionSids.has(sid) && !(opts && opts.force)) return;
   _attentionSids.delete(sid);
   fetch('/api/chat-attention/clear', {
     method: 'POST',
@@ -6188,6 +6443,11 @@ function _clearAttention(sid) {
   _applyAttentionToSplitView();
 }
 function _applyAttentionToSplitView() {
+  // The panes of a linked split carry the same flag as their sidebar rows, so
+  // the half that finished while he worked in the other half says so.
+  for (const [sid, runtime] of termSessions) {
+    if (runtime && runtime.mount) runtime.mount.classList.toggle('needs-attention', _attentionSids.has(sid));
+  }
   if (!window.__nativeTerminalBridge) return;
   const flagged = Array.from(_attentionSids);
   window.gtkSend({ type: 'attention-state', sids: flagged });
@@ -6325,6 +6585,7 @@ function _sortNewestFirst(a, b) {
 
 async function _reconcilePseudos(fresh, opts) {
   opts = opts || {};
+  const _HANDOFF_RESOLVE_WINDOW_MS = 10 * 60 * 1000;
   let changed = false;
   for (const pseudo of [..._pseudoSessions]) {
     // Structured creation returns an authoritative ID through its own iframe.
@@ -6344,6 +6605,18 @@ async function _reconcilePseudos(fresh, opts) {
     // the pseudo was created. Pick the newest candidate to avoid stealing an
     // older session's id.
     const pseudoAgent = (pseudo.agent || 'claude').toLowerCase();
+    // A handoff pane is briefed the moment it opens, so its real session starts
+    // within seconds. One that never resolved (its transcript was not indexed)
+    // used to sit for an hour and then adopt whatever session of that agent
+    // started next — a headless job in another directory — renaming it and
+    // merging its group into the handoff's thread. Past the window, or when the
+    // candidate already belongs to a group or a live external runtime, it is
+    // somebody else's session.
+    const handoffOpen = s => !pseudo.pending_group_link_with || (
+      !s.group && !s.external_runtime_active &&
+      (Date.parse(_pseudoCandidateTs(s)) || 0) - (Date.parse(pseudo.first_timestamp) || 0)
+        <= _HANDOFF_RESOLVE_WINDOW_MS
+    );
     const _normCwd = c => (c || '').replace(/[\\/]+$/, '');
     // A placeholder with no cwd was spawned with Python's default, which is
     // $HOME. Comparing '' against the real session's resolved '/home/<user>'
@@ -6354,7 +6627,8 @@ async function _reconcilePseudos(fresh, opts) {
       (s.agent || 'claude').toLowerCase() === pseudoAgent &&
       _normCwd(s.cwd) === pseudoCwd &&
       _pseudoCandidateTs(s) &&
-      _pseudoCandidateTs(s) >= pseudo.first_timestamp
+      _pseudoCandidateTs(s) >= pseudo.first_timestamp &&
+      handoffOpen(s)
     );
     // Handoff-spawned partner: the real session's recorded cwd can differ from
     // the pseudo's (resolved path, Windows-slug source, home fallback), so the
@@ -6365,7 +6639,8 @@ async function _reconcilePseudos(fresh, opts) {
       candidates = fresh.filter(s =>
         (s.agent || 'claude').toLowerCase() === pseudoAgent &&
         _pseudoCandidateTs(s) &&
-        _pseudoCandidateTs(s) >= pseudo.first_timestamp
+        _pseudoCandidateTs(s) >= pseudo.first_timestamp &&
+        handoffOpen(s)
       );
     }
     if (!candidates.length) continue;
@@ -6392,10 +6667,10 @@ async function _reconcilePseudos(fresh, opts) {
       } catch(e) {}
     }
     // === GROUP FEATURE === (handoff auto-link: pair the new chat with its source)
-    if (pseudo.pending_group_link_with) {
+    if (pseudo.pending_group_link_with && _pendingLinkMembers(pseudo).length) {
       try {
         const linkSids = Array.from(new Set([
-          ...((pseudo.pending_group_member_sids || [pseudo.pending_group_link_with]).filter(Boolean)),
+          ..._pendingLinkMembers(pseudo),
           match.session_id,
         ]));
         const lr = await fetch('/api/group/link', {
@@ -6883,7 +7158,68 @@ function _renderOpenSessionIds(sids) {
         .catch(() => showToast('copy failed', { variant: 'error' }));
     });
     root.appendChild(btn);
+    const cost = document.createElement('span');
+    cost.className = 'term-session-cost ' + agent;
+    cost.dataset.sid = sid;
+    cost.textContent = _fmtChatCost(_chatCosts.get(sid));
+    cost.title = agent === 'codex'
+      ? 'Estimated from token usage at OpenAI list prices'
+      : 'Reported by Claude Code';
+    root.appendChild(cost);
   }
+  if (unique.length > 1) {
+    const total = document.createElement('span');
+    total.className = 'term-session-cost total';
+    total.id = 'termCostTotal';
+    total.title = 'Total for the open chats';
+    root.appendChild(total);
+  }
+  _paintChatCosts();
+  _pollChatCosts(unique);
+}
+
+const _chatCosts = new Map();
+let _chatCostTimer = null;
+let _chatCostSids = [];
+
+function _fmtChatCost(entry) {
+  if (!entry || entry.cost_usd == null) return '$\u2014';
+  const v = entry.cost_usd;
+  return (entry.estimated ? '~$' : '$') + (v < 100 ? v.toFixed(2) : v.toFixed(0));
+}
+
+function _paintChatCosts() {
+  const root = document.getElementById('termSessionIds');
+  if (!root) return;
+  let sum = 0, known = false;
+  root.querySelectorAll('.term-session-cost[data-sid]').forEach(el => {
+    const entry = _chatCosts.get(el.dataset.sid);
+    el.textContent = _fmtChatCost(entry);
+    if (entry && entry.cost_usd != null) { sum += entry.cost_usd; known = true; }
+  });
+  const total = document.getElementById('termCostTotal');
+  if (total) total.textContent = known ? 'total $' + (sum < 100 ? sum.toFixed(2) : sum.toFixed(0)) : 'total $\u2014';
+}
+
+async function _fetchChatCosts() {
+  if (!_chatCostSids.length) return;
+  try {
+    const r = await fetch('/api/session-costs?sids=' + encodeURIComponent(_chatCostSids.join(',')));
+    if (!r.ok) return;
+    const data = await r.json();
+    for (const sid of Object.keys(data)) _chatCosts.set(sid, data[sid]);
+    _paintChatCosts();
+  } catch (e) {}
+}
+
+function _pollChatCosts(sids) {
+  _chatCostSids = sids;
+  if (_chatCostTimer) { clearInterval(_chatCostTimer); _chatCostTimer = null; }
+  if (!sids.length) return;
+  _fetchChatCosts();
+  // Claude refreshes its status line every 5s and Codex grows its rollout each
+  // request, so a 5s poll shows each turn's cost as soon as the turn lands.
+  _chatCostTimer = setInterval(() => { if (!document.hidden) _fetchChatCosts(); }, 5000);
 }
 
 function _sendResizeForSid(sid, force) {
@@ -7086,6 +7422,7 @@ async function _syncWebRuntimePolicy() {
     .map(item => { const runtime = termSessions.get(item); return runtime && runtime.tid; })
     .filter(Boolean);
   const pinned = Boolean(_gtkCurrentGroup && _gtkPinnedGroups.has(_gtkCurrentGroup));
+  const syncStartedAt = performance.now();
   _webRuntimeSyncing = true;
   try {
     const r = await fetch('/api/terminal-runtime/sync', {
@@ -7097,6 +7434,9 @@ async function _syncWebRuntimePolicy() {
         standby_tids: sibling && sibling.tid ? [sibling.tid] : [],
         all_open_tids: standbyTids,
         protected_tids: protectedTids,
+        engaged_tids: [..._engagedTermSids]
+          .map(item => { const runtime = termSessions.get(item); return runtime && runtime.tid; })
+          .filter(Boolean),
         pin_both: pinned,
       }),
     });
@@ -7106,13 +7446,31 @@ async function _syncWebRuntimePolicy() {
       const info = data.states && data.states[runtime.tid];
       if (!info) continue;
       runtime.busy = !!info.busy;
+      // A click that woke this pane while the sweep was in flight wins over
+      // the sweep's stale answer.
+      if (runtime.wokeAt && runtime.wokeAt > syncStartedAt && info.state === 'paused') continue;
       _gtkRuntimeStates.set(runtimeSid, info.state || 'live');
+      runtime.mount.classList.toggle('runtime-asleep', info.state === 'paused');
     }
     _refreshGtkRuntimeStatus();
   } catch(e) {
   } finally {
     _webRuntimeSyncing = false;
   }
+}
+
+// Clicking a sleeping pane wakes it now, not on the next sweep: the frame
+// comes back to life under his cursor instead of two seconds later.
+function _wakeWebTerminal(sid) {
+  _engagedTermSids.add(sid);
+  const runtime = termSessions.get(sid);
+  if (!runtime || runtime.structured || !runtime.tid) return;
+  runtime.mount.classList.remove('runtime-asleep');
+  if (_gtkRuntimeStates.get(sid) !== 'paused') return;
+  runtime.wokeAt = performance.now();
+  _gtkRuntimeStates.set(sid, 'live');
+  _refreshGtkRuntimeStatus();
+  fetch('/api/terminal-runtime/wake/' + encodeURIComponent(runtime.tid), { method: 'POST' }).catch(() => {});
 }
 
 function _scheduleWebRuntimePolicy() {
@@ -7309,6 +7667,7 @@ function _activateTermPane(sid) {
   }
   activeTermSid = sid;
   _webRuntimeFocusSid = sid;
+  _wakeWebTerminal(sid);
   _setWebTerminalFocus(sid);
   const local = _findClientSession(sid);
   _gtkSplitActive = split;
@@ -7395,9 +7754,8 @@ function _adoptStructuredIdentity(sid, target) {
     if (!bucket.includes(target)) bucket.push(target);
     if (bucket.length >= 2) _fdLinkPair([...bucket], 0);
   }
-  if (pseudo.pending_group_link_with) {
-    const members = pseudo.pending_group_member_sids || [pseudo.pending_group_link_with];
-    _fdLinkPair(Array.from(new Set([...members.filter(Boolean), target])), 0);
+  if (pseudo.pending_group_link_with && _pendingLinkMembers(pseudo).length) {
+    _fdLinkPair(Array.from(new Set([..._pendingLinkMembers(pseudo), target])), 0);
   }
   _pseudoSessions.splice(_pseudoSessions.indexOf(pseudo), 1);
   const existing = _findClientSession(target);
@@ -8127,6 +8485,7 @@ async function startLiveTerminal(sid, opts) {
 
   mount.addEventListener('pointerdown', () => {
     _clearAttention(state.sid);
+    _wakeWebTerminal(state.sid);
     _setWebTerminalFocus(state.sid);
     if (activeTermSid !== state.sid) {
       activeTermSid = state.sid;
@@ -8252,6 +8611,7 @@ function _migrateLiveTerminalSid(oldSid, newSid) {
   termSessions.set(newSid, runtime);
   if (activeTermSid === oldSid) activeTermSid = newSid;
   if (_webRuntimeFocusSid === oldSid) _webRuntimeFocusSid = newSid;
+  if (_engagedTermSids.delete(oldSid)) _engagedTermSids.add(newSid);
   if (window.__termDrafts && window.__termDrafts.has(oldSid)) {
     window.__termDrafts.set(newSid, window.__termDrafts.get(oldSid));
     window.__termDrafts.delete(oldSid);
@@ -8337,6 +8697,7 @@ function teardownLiveTerminal(sid, { stop = true } = {}) {
     _setPendingPartners(other, _pendingPartnersOf(other).filter(x => x !== sid));
   }
   if (window.__termDrafts) window.__termDrafts.delete(sid);
+  _engagedTermSids.delete(sid);
   _unmarkActive(sid);
   if (s.cancelOutput) s.cancelOutput();
   // Deliberate teardown: stop the reconnect machinery before closing, or the
@@ -8780,7 +9141,14 @@ window.__gtkShortcut = function(action, sourceSid) {
     }
     case 'delete': {
       if (typeof selectedIds !== 'undefined' && selectedIds.size > 0) { bulkDelete(); return; }
-      const sid = focusedSid();
+      // Alt+Delete deletes without asking, so "that chat" must be exact: the
+      // pane he is typing in, else the row he arrowed to in the sidebar.
+      const active = document.activeElement;
+      const inPane = !!active && active !== document.body && !active.closest('#sessionList');
+      const row = typeof focusedIndex !== 'undefined' && focusedIndex >= 0 && sessions[focusedIndex]
+        ? sessions[focusedIndex].session_id : null;
+      const sid = sourceSid
+        || (inPane ? (activeTermSid || currentSessionId || row) : (row || currentSessionId));
       if (sid) deleteSession(sid);
       return;
     }
@@ -9594,6 +9962,22 @@ function _clearPendingThreadLinks(sids) {
   for (const sid of removed) _pendingTermPartners.delete(sid);
   for (const sid of _pendingTermPartners.keys()) {
     _setPendingPartners(sid, _pendingPartnersOf(sid).filter(other => !removed.has(other)));
+  }
+  // A handoff that has not resolved yet links its recorded members the moment
+  // it does, and that explicit link would pull a chat he just removed straight
+  // back in. Its pending_group_link_with stays: it still finds the new chat.
+  for (const pseudo of _pseudoSessions) {
+    if (!pseudo) continue;
+    // A front-door pair links whichever members resolve, so a removed pseudo
+    // leaves its pair rather than joining it later.
+    if (removed.has(pseudo.session_id)) delete pseudo.fd_pair_id;
+    if (!pseudo.pending_group_link_with) continue;
+    pseudo.pending_group_member_sids = removed.has(pseudo.session_id)
+      ? []
+      : _pendingLinkMembers(pseudo).filter(member => !removed.has(member));
+  }
+  for (const [pair, members] of Object.entries(_fdPairResolved)) {
+    _fdPairResolved[pair] = members.filter(member => !removed.has(member));
   }
 }
 
@@ -11299,6 +11683,7 @@ loadSessions();
 loadProjects();
 _startAttentionPoll();
 loadCollapsedState();
+refreshTrash();
 startLiveUsagePoll();
 setupLiveUsagePopover();
 // Pre-fetch counts for tabs
@@ -11637,6 +12022,18 @@ function showToast(message, opts) {
   const text = document.createElement('span');
   text.textContent = message;
   el.appendChild(text);
+  if (opts.action) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'toast-action';
+    button.textContent = opts.action.label;
+    button.addEventListener('click', () => {
+      button.disabled = true;
+      api.dismiss();
+      opts.action.run();
+    });
+    el.appendChild(button);
+  }
   stack.appendChild(el);
   requestAnimationFrame(() => el.classList.add('visible'));
 
@@ -12998,8 +13395,35 @@ def api_multiplex_status():
 # ─────────────────────────────────────────────────────────────────────────────
 @app.route("/api/chat-attention", methods=["GET"])
 def api_chat_attention():
+    """Flagged chats, plus finish events after `?since=<seq>` for the toast.
+
+    Each event carries what the toast needs from the index, because the page
+    only holds the sessions of the project it is showing.
+    """
     from core import chat_attention
-    return jsonify({"sessions": chat_attention.list_active()})
+
+    raw_since = request.args.get("since", "").strip()
+    since = int(raw_since) if raw_since.isdigit() else None
+    events, seq = chat_attention.events_since(since)
+    for event in events:
+        event.update(_finish_event_details(event["sid"]))
+    return jsonify({"sessions": chat_attention.list_active(), "events": events, "seq": seq})
+
+
+def _finish_event_details(sid: str) -> dict:
+    try:
+        session = get_session(sid)
+    except ValueError:
+        session = None
+    if not session:
+        return {"indexed": False}
+    return {
+        "indexed": True,
+        "agent": (session.get("agent") or "claude").lower(),
+        "title": session.get("display_title") or "",
+        # Run history and her permanent conversation are not chats he waits on.
+        "quiet": bool(_fleet_worker_marker(session["session_id"])) or _is_serena_voice_session(session),
+    }
 
 
 @app.route("/api/chat-finished", methods=["POST"])
@@ -13400,13 +13824,76 @@ def api_delete_session(session_id):
         return jsonify({"error": "Serena's permanent conversation cannot be deleted"}), 403
     if _fleet_worker_marker(session_id):
         return jsonify({"error": "Fleet worker chats are durable run history and cannot be deleted"}), 409
+    # ?force=1 is Alt+Delete: whatever still runs this chat is stopped first,
+    # here or in another window. The transcript still goes to the trash.
+    force = request.args.get("force") == "1"
+    if force:
+        _stop_session_runtimes(session_id)
+    deadline = time.monotonic() + (6.0 if force else 0.0)
+    while True:
+        try:
+            path = _delete_workspace_session(session_id, source="serena-web")
+            return jsonify({"ok": True, "path": path})
+        except SessionOwnedError:
+            if time.monotonic() >= deadline:
+                if force:
+                    return jsonify({"code": "session_owned", "error": "Another Serena window still holds this chat after it was stopped"}), 409
+                return jsonify({"code": "session_owned", "error": "Disconnect the session before deleting it; runtime ownership is still active or unconfirmed"}), 409
+            # The owner notices its agent exited and lets go of the lease.
+            time.sleep(0.25)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 404
+
+
+def _stop_session_runtimes(session_id):
+    """End every runtime this chat has, for a forced delete."""
+    tids = pty_terminal.tids_for_session(session_id)
+    if tids:
+        try:
+            from core.voice_inbox import get_default_voice_inbox
+
+            get_default_voice_inbox().finish_work_target(session_id, error="chat was deleted")
+        except Exception:
+            pass
+    for tid in tids:
+        pty_terminal.kill(tid)
     try:
-        path = _delete_workspace_session(session_id, source="serena-web")
-        return jsonify({"ok": True, "path": path})
-    except SessionOwnedError:
-        return jsonify({"code": "session_owned", "error": "Disconnect the session before deleting it; runtime ownership is still active or unconfirmed"}), 409
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 404
+        from core.workspace_lease import terminate_recorded_runtime
+
+        terminate_recorded_runtime(session_id)
+    except Exception as error:
+        print(f"[trash] could not stop {session_id[:8]}: {error}", flush=True)
+
+
+@app.route("/api/trash", methods=["GET"])
+def api_trash():
+    from core import chat_trash
+
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100)), 500))
+    except ValueError:
+        limit = 100
+    return jsonify(chat_trash.list_trash(limit))
+
+
+@app.route("/api/trash/restore", methods=["POST"])
+def api_trash_restore():
+    """Restore trash entries by id, or undo deletes by session id."""
+    from core import chat_trash
+
+    data = request.get_json(silent=True) or {}
+    restored, errors = [], []
+    requests = [("id", value) for value in data.get("ids") or []]
+    requests += [("session_id", value) for value in data.get("session_ids") or []]
+    for kind, value in requests:
+        try:
+            if not isinstance(value, str):
+                raise chat_trash.TrashError("Unknown trash entry")
+            result = chat_trash.restore(value) if kind == "id" else chat_trash.restore_latest(value)
+            restored.append(result["session_id"])
+        except (chat_trash.TrashError, OSError) as error:
+            errors.append({kind: value, "error": str(error)})
+    return jsonify({"ok": not errors, "restored": restored, "errors": errors}), (200 if restored or not errors else 409)
 
 
 @app.route("/api/sessions/bulk-delete", methods=["POST"])
@@ -14005,7 +14492,37 @@ def api_terminal_runtime_turn_start(tid):
     del active
     if not pty_terminal.mark_turn_started(tid, version):
         return jsonify({"ok": False, "error": "Terminal not found"}), 404
+    _watch_codex_turn(tid)
     return jsonify({"ok": True})
+
+
+def _watch_codex_turn(tid: str) -> None:
+    """Tail this Codex chat's own rollout for the end of the turn just sent.
+
+    The watcher's ambient scan covers only today's and yesterday's rollout
+    folders, and a resumed chat keeps writing to the folder of the day it was
+    created, so its finish would otherwise never be seen.
+    """
+    terminal = pty_terminal.get(tid)
+    sid = terminal.session_id if terminal else None
+    if not sid or (terminal.agent or "").lower() != "codex" or sid.startswith("new-"):
+        return
+    try:
+        from core import codex_attention_watcher
+
+        session = get_session(sid) or {}
+        codex_attention_watcher.watch(sid, session.get("file_path"))
+    except Exception as error:
+        print(f"[runtime] codex completion watch failed for {sid[:8]}: {error}", flush=True)
+
+
+@app.route("/api/terminal-runtime/wake/<tid>", methods=["POST"])
+def api_terminal_runtime_wake(tid):
+    """Thaw a sleeping pane the moment he clicks it, ahead of the next sweep."""
+    if not pty_terminal.get(tid):
+        return jsonify({"ok": False, "error": "Terminal not found"}), 404
+    woke = pty_terminal.resume(tid)
+    return jsonify({"ok": woke, "state": pty_terminal.get_runtime_state(tid)})
 
 
 @app.route("/api/terminal-runtime/migrate", methods=["POST"])
@@ -14035,6 +14552,15 @@ def api_terminal_runtime_migrate():
 _RUNTIME_IDLE_SECONDS = max(
     30, int(os.environ.get("SERENA_RUNTIME_IDLE_SECONDS", "600"))
 )
+# A merged view puts several panes on screen and only the focused one is being
+# used. The others sleep the way Serena Dev's native panes do: a peer he has
+# worked in sleeps after it has been quiet this long...
+_PEER_IDLE_SECONDS = 20.0
+# ...one he has not touched since the chat opened sleeps as soon as it has
+# loaded and settled, and stays asleep until he clicks it...
+_OPEN_SETTLE_SECONDS = 5.0
+# ...and a peer quiet for this long gives its memory back.
+_PEER_RECLAIM_SECONDS = 60.0
 
 
 @app.route("/api/terminal-runtime/sync", methods=["POST"])
@@ -14054,8 +14580,14 @@ def api_terminal_runtime_sync():
     visible_tids = {
         str(tid).strip() for tid in (data.get("visible_tids") or []) if str(tid).strip()
     }
+    # Panes he has focused since the chat opened. The rest have only been
+    # looked at, never used, so they may sleep the moment they have loaded.
+    engaged_tids = {
+        str(tid).strip() for tid in (data.get("engaged_tids") or []) if str(tid).strip()
+    }
     if focus_tid:
         visible_tids.add(focus_tid)
+        engaged_tids.add(focus_tid)
     pin_both = bool(data.get("pin_both"))
     # Sweep every runtime the server owns, not just the panes the client named.
     # The client used to send the focused pane and its linked sibling only, so
@@ -14074,8 +14606,23 @@ def api_terminal_runtime_sync():
         active, version = _terminal_file_snapshot(tid)
         busy = pty_terminal.refresh_turn_state(tid, active, version)
         working = busy or active is True or tid in protected_tids
-        if tid in visible_tids or pin_both:
+        if tid == focus_tid or pin_both:
             pty_terminal.resume(tid)
+        elif tid in visible_tids:
+            # A peer on screen. It keeps its last frame while asleep and wakes
+            # the instant he clicks or types into it, so it only has to be
+            # loaded (the start-up guard in pause()) and quiet. A turn still
+            # running, an unsent draft or Serena's work keeps it awake, which
+            # is also why a peer sleeps once its code run has finished.
+            if pty_terminal.pause(
+                tid,
+                protected=working,
+                min_idle_seconds=(
+                    _PEER_IDLE_SECONDS if tid in engaged_tids else _OPEN_SETTLE_SECONDS
+                ),
+            ) or pty_terminal.get_runtime_state(tid) == "paused":
+                if pty_terminal.idle_seconds(tid) >= _PEER_RECLAIM_SECONDS:
+                    reclaimed_mb += pty_terminal.reclaim_memory(tid)
         else:
             # EVERY unfocused pane has to prove it has been quiet, the linked
             # sibling included. The sibling used to sleep the instant focus left
@@ -14735,6 +15282,14 @@ def api_usage():
     return jsonify(get_usage_stats(range_days))
 
 
+@app.route("/api/session-costs")
+def api_session_costs():
+    from core.session_cost import session_costs
+
+    sids = [s for s in (request.args.get("sids") or "").split(",") if s][:8]
+    return jsonify(session_costs(sids))
+
+
 # ---------------------------------------------------------------------------
 # Shutdown
 # ---------------------------------------------------------------------------
@@ -14935,6 +15490,16 @@ def run_web(host="0.0.0.0", port=8080, open_browser=False):
     # not be the thing creating this.
     for _stranded in pty_terminal.sweep_stranded_agents():
         print(f"[serena] reaped stranded agent process {_stranded}", file=sys.stderr)
+
+    # Codex has no Stop hook: finished turns are read from its rollouts. Only
+    # the retired GTK app ever started this, so Codex chats stopped lighting
+    # up in the sidebar when the desktop moved to Electron.
+    try:
+        from core import codex_attention_watcher
+
+        codex_attention_watcher.start()
+    except Exception as error:
+        print(f"[codex-watcher] not started: {error}", file=sys.stderr)
 
     atexit.register(_shutdown_owned_runtimes)
 

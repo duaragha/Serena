@@ -175,3 +175,67 @@ def test_codex_exec_defaults_to_danger_full_access():
         param for param in cli.codex_exec.params if param.name == "danger_full_access"
     )
     assert sandbox_param.default is True
+
+
+def _failing_codex(path: Path) -> None:
+    path.write_text(
+        """#!/usr/bin/env python3
+import sys
+print("Error: No such file or directory (os error 2)", file=sys.stderr)
+sys.exit(1)
+""",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
+def test_codex_exec_reports_warnings_as_json(monkeypatch, tmp_path):
+    fake_codex = tmp_path / "codex"
+    _failing_codex(fake_codex)
+    monkeypatch.setattr(cli, "_detect_claude_sid", lambda: None)
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda command: str(fake_codex) if command == "codex" else None,
+    )
+    monkeypatch.setattr(indexer, "update_index", lambda: None)
+
+    result = CliRunner().invoke(
+        cli.main,
+        ["codex-exec", "--link-current", "--cwd", str(tmp_path), "task"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output.strip())
+    assert payload["ok"] is False
+    assert "No such file or directory" in payload["error"]
+    assert "codex reported no thread id; session not made visible" in payload["warnings"]
+
+
+def test_codex_exec_resolves_relative_cwd(monkeypatch, tmp_path):
+    fake_codex = tmp_path / "codex"
+    seen = tmp_path / "seen.json"
+    fake_codex.write_text(
+        f"""#!/usr/bin/env python3
+import json, os, sys
+argv = sys.argv
+open({str(seen)!r}, "w").write(json.dumps({{"cwd": os.getcwd(), "C": argv[argv.index("-C") + 1]}}))
+print(json.dumps({{"type": "item.completed", "item": {{"type": "agent_message", "text": "ok"}}}}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda command: str(fake_codex) if command == "codex" else None,
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(cli.main, ["codex-exec", "--cwd", "work", "task"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output.strip())["ok"] is True
+    seen_args = json.loads(seen.read_text())
+    assert seen_args["C"] == str((tmp_path / "work").resolve())
+    assert seen_args["cwd"] == seen_args["C"]

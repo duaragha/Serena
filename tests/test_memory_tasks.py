@@ -312,8 +312,117 @@ def test_an_id_naming_both_spaces_refuses_to_resolve(queue):
 def test_duplicate_task_identity_fails_closed(queue):
     path = legacy(queue)
     (path.parent / "001-second.md").write_bytes(path.read_bytes())
-    with pytest.raises(ValueError, match="duplicate task id"):
-        store.claim_next_task("worker")
+    assert store.claim_next_task("worker") is None
+    with pytest.raises(store.AmbiguousMemoryId, match="reconcile duplicate files"):
+        store.get_memory(1, "task")
+
+
+def test_task_edit_and_locket_stamp_replace_the_same_path(queue, monkeypatch):
+    """A slug change must never publish two task files, even briefly."""
+    path = legacy(queue, extra="custom: preserve me\nstate: running\nrun_id: run-a\n")
+    original = store._atomic_text
+    publications = []
+
+    def observe(target, text):
+        if target.parent == path.parent:
+            publications.append(target)
+            assert target == path
+        original(target, text)
+
+    monkeypatch.setattr(store, "_atomic_text", observe)
+    store.update_memory(1, content=BRIEF, find_type="task")
+    store.set_locket_id(1, 42, "task")
+    assert publications == [path, path]
+    assert list(path.parent.glob("*.md")) == [path]
+    row = store.get_memory(1, "task")
+    assert (row["content"], row["state"], row["run_id"], row["locket_id"]) == (BRIEF, "running", "run-a", "42")
+
+
+def test_type_moves_cannot_overwrite_the_other_id_space(queue):
+    task = store.enqueue_task(BRIEF, source_id="original-event")
+    claim = store.claim_next_task("worker")
+    assert store.mark_task_running(task["id"], "worker", claim["lease_token"], "original-run")
+    reference = store.add_memory("Unrelated reference note", "reference", _no_mirror=True)
+    assert task["id"] == reference
+    paths = [store._find_path(reference, kind) for kind in ("task", "reference")]
+    before = [path.read_bytes() for path in paths]
+    for origin, target in (("reference", "task"), ("task", "reference")):
+        with pytest.raises(store.AmbiguousMemoryId, match="already exists"):
+            store.update_memory(reference, content="Must not overwrite", mem_type=target, find_type=origin)
+    assert [path.read_bytes() for path in paths] == before
+
+
+def test_conflicting_ids_leave_other_dispatch_and_reconciliation_working(queue):
+    conflicted = store.enqueue_task(BRIEF, source_id="conflicted-event")
+    path = store._find_task_path(conflicted["id"])
+    copy = path.parent / "manually-renamed-copy.md"
+    copy.write_bytes(path.read_bytes())
+    before = (path.read_bytes(), copy.read_bytes())
+    healthy = store.enqueue_task(BRIEF, source_id="healthy-event")
+    claim = store.claim_next_task("worker")
+    assert claim["id"] == healthy["id"]
+    assert store.mark_task_running(healthy["id"], "worker", claim["lease_token"], "healthy-run")
+    assert [row["id"] for row in store.tasks_in_state("running")] == [healthy["id"]]
+    assert store.finish_task_run(healthy["id"], "healthy-run", "done")
+    assert (path.read_bytes(), copy.read_bytes()) == before
+    # Replaying the conflicted ingress cannot allocate another task or run.
+    with pytest.raises(store.AmbiguousMemoryId, match="source receipt"):
+        store.enqueue_task(BRIEF, source_id="conflicted-event")
+    with pytest.raises(store.AmbiguousMemoryId):
+        store.mark_task_asked(conflicted["id"])
+    assert len(list(path.parent.glob("*.md"))) == 3
+
+
+def test_running_duplicate_is_not_finished_or_requeued(queue):
+    task = store.enqueue_task(BRIEF)
+    claim = store.claim_next_task("worker")
+    assert store.mark_task_running(task["id"], "worker", claim["lease_token"], "run-a")
+    path = store._find_task_path(task["id"])
+    copy = path.parent / "001-sync-conflict.md"
+    copy.write_bytes(path.read_bytes())
+    before = path.read_bytes()
+    assert store.tasks_in_state("running") == []
+    with pytest.raises(store.AmbiguousMemoryId):
+        store.finish_task_run(task["id"], "run-a", "done")
+    assert store.claim_next_task("worker", now=10**10) is None
+    assert path.read_bytes() == copy.read_bytes() == before
+
+
+def test_duplicate_cannot_disable_the_real_fleet_schedule_handlers(queue, monkeypatch):
+    from core import job_cards, scheduler_actions
+    from core.serena_scheduler import MAX_CONSECUTIVE_FAILURES, SerenaScheduler
+    from fleet import supervisor
+
+    monkeypatch.setenv("SERENA_CONTROL_PLANE_DB_PATH", str(queue / "control.sqlite3"))
+    monkeypatch.setenv("SERENA_DISPATCH_CONFIG", str(queue / "no-publication-config.json"))
+    conflicted = store.enqueue_task(BRIEF, source_id="conflicted-event")
+    healthy = store.enqueue_task(BRIEF, source_id="healthy-event")
+    # Put the healthy task into a real run receipt before introducing a
+    # duplicate into the sourced ready task. No model/provider is dispatched.
+    claim = store.claim_next_task("worker")
+    assert claim["id"] == conflicted["id"]
+    assert store.release_task_claim(claim["id"], "worker", claim["lease_token"], state="blocked")
+    claim = store.claim_next_task("worker")
+    assert store.mark_task_running(healthy["id"], "worker", claim["lease_token"], "healthy-run")
+    path = store._find_task_path(conflicted["id"])
+    store._task_metadata(store._parse_file(path), state="ready")
+    (path.parent / "duplicate.md").write_bytes(path.read_bytes())
+    observed = []
+    monkeypatch.setattr(supervisor, "get_run", lambda run_id: observed.append(run_id) or None)
+    monkeypatch.setattr(job_cards, "show", lambda *args, **kwargs: True)
+    monkeypatch.setattr(scheduler_actions, "_task_label", lambda task: "test task")
+    scheduler = SerenaScheduler(queue / "scheduler.sqlite3", handlers={
+        "serena.fleet.start": scheduler_actions.start_ready_fleet_task,
+        "serena.fleet.reconcile": scheduler_actions.reconcile_fleet_tasks,
+    }, notifier=None)
+    schedules = [scheduler.add_schedule(action=action, interval_seconds=60,
+                 actor="test", requires_approval=False, first_run_at=1_000_000)
+                 for action in ("serena.fleet.start", "serena.fleet.reconcile")]
+    for tick in range(MAX_CONSECUTIVE_FAILURES + 2):
+        runs = scheduler.tick(now=1_000_000 + tick * 61)
+        assert len(runs) == 2 and all(run.ok for run in runs)
+    assert observed == ["healthy-run"] * (MAX_CONSECUTIVE_FAILURES + 2)
+    assert all(scheduler.require(s["schedule_id"])["state"] == "active" for s in schedules)
 
 
 @pytest.mark.parametrize("seconds", [0, -1, float("nan"), float("inf"), 86401])
@@ -423,3 +532,101 @@ def test_a_requirement_he_states_is_work_not_chat(brief):
 ])
 def test_vague_or_chatty_text_still_gets_one_question(brief):
     assert store.classify_task(brief) == "needs_triage"
+
+
+def test_a_specific_brief_is_not_bounced_for_using_his_own_verbs(queue):
+    """#106 sat in triage for a day because 'allow' and 'swap' were not listed."""
+
+    brief = ("Locket workouts: allow swapping an exercise during an active workout "
+             "without ending the session or losing logged sets; search the existing "
+             "exercise database first, then offer AI-assisted lookup for missing "
+             "exercises, and save confirmed additions for future searches.")
+    assert store.classify_task(brief) == "ready"
+    # A long brief with no listed verb still counts on its own specificity.
+    assert store.classify_task(
+        "the workout timer on the Locket session screen resets itself to zero every "
+        "time the app returns from the background, so a logged set loses its elapsed "
+        "time and the summary at the end reports the wrong duration entirely") == "ready"
+    # Vagueness is still vagueness, however long he rambles.
+    assert store.classify_task("it is still broken") == "needs_triage"
+    assert store.classify_task(
+        "hey so anyway i was thinking about the thing we talked about the other day "
+        "and you know how it goes sometimes with these things when they happen") == "needs_triage"
+
+
+def test_his_answer_settles_triage_instead_of_being_graded_again(queue):
+    """He answered #106 three times; the classifier bounced every one."""
+
+    task = store.enqueue_task("locket is broken", source_id="imessage:x")
+    assert task["state"] == "needs_triage"
+    answered = store.answer_triage(task["id"], "the workouts tab, swapping exercises")
+    assert answered["state"] == "ready"
+    thin = store.enqueue_task("fix it", source_id="imessage:y")
+    assert store.answer_triage(thin["id"], "yeah")["state"] == "needs_triage"
+
+
+@pytest.mark.parametrize("brief,expected", [
+    ("Fix routines so exercises keep their logged sets and reps", "locket"),
+    ("Fix whatsapp message search so inbox results load older messages", "unified"),
+    ("Fix exercise suggestions in Unified when a workout message arrives", "unified"),
+    ("Fix exercise messages in the inbox when a workout is saved", ""),
+    ("Fix search results so the dashboard shows the next page", ""),
+])
+def test_queue_project_inference_is_specific_and_rejects_mixed_domains(queue, brief, expected):
+    from core.task_projects import infer_task_project
+
+    assert infer_task_project(brief) == expected
+    task = store.enqueue_task(brief)
+    named = infer_task_project(brief, domains=False)
+    assert task["project_hint"] == named
+    assert store.get_memory(task["id"])["project_hint"] == named
+
+
+def test_project_only_answer_unsticks_a_complete_brief_but_not_a_vague_one(queue):
+    task = store.enqueue_task("Fix the dashboard charts so values refresh when selecting another day")
+    claim = store.claim_next_task("dispatcher")
+    assert store.release_task_claim(task["id"], "dispatcher", claim["lease_token"],
+                                    state="needs_triage", result="which repository?")
+    assert store.mark_task_asked(task["id"])
+    answered = store.answer_triage(task["id"], "locket")
+    assert (answered["state"], answered["project_hint"], answered["asked_at"], answered["result"]) == (
+        "ready", "locket", "", "")
+    thin = store.enqueue_task("fix it")
+    answered = store.answer_triage(thin["id"], "unified")
+    assert (answered["state"], answered["project_hint"]) == ("needs_triage", "unified")
+
+
+def test_dispatch_triage_bounce_clears_a_previous_question_receipt(queue):
+    task = store.enqueue_task(BRIEF)
+    claim = store.claim_next_task("dispatcher")
+    path = store._find_task_path(task["id"])
+    store._task_metadata(store._parse_file(path), asked_at=123)
+    assert store.release_task_claim(task["id"], "dispatcher", claim["lease_token"],
+                                    state="needs_triage", result="which repo?\nstate: done")
+    bounced = store.get_memory(task["id"])
+    assert bounced["asked_at"] == ""
+    assert bounced["result"] == "which repo? state: done"
+    assert store.mark_task_asked(task["id"])
+
+
+def test_a_mixed_project_answer_does_not_silently_reuse_an_existing_hint(queue):
+    task = store.enqueue_task("fix it", project_hint="locket")
+    assert store.mark_task_asked(task["id"])
+    answered = store.answer_triage(task["id"], "it's in both locket and unified")
+    assert (answered["state"], answered["project_hint"], answered["asked_at"]) == (
+        "needs_triage", "", "")
+    assert "multiple projects" in answered["result"]
+    assert store.claim_next_task("dispatcher") is None
+    corrected = store.answer_triage(task["id"], "unified")
+    assert (corrected["state"], corrected["project_hint"]) == ("needs_triage", "unified")
+    assert store.answer_triage(task["id"], "it's in locket")["state"] == "needs_triage"
+
+
+def test_project_only_correction_keeps_genuine_earlier_specification(queue):
+    task = store.enqueue_task("fix it")
+    answered = store.answer_triage(task["id"], "fix dashboard charts so values refresh after selecting another day")
+    claim = store.claim_next_task("dispatcher")
+    assert store.release_task_claim(task["id"], "dispatcher", claim["lease_token"], state="needs_triage")
+    corrected = store.answer_triage(task["id"], "it's in locket")
+    assert answered["state"] == corrected["state"] == "ready"
+    assert corrected["project_hint"] == "locket"

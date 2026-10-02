@@ -400,7 +400,7 @@ def test_state_block_cannot_silently_reinflate_past_its_budget(monkeypatch):
 
 
 def test_haiku_start_failure_retries_then_skips_the_failed_model(monkeypatch):
-    """A missing Haiku once added the same failed start to every casual turn."""
+    """A missing fast model once added the same failed start to every casual turn."""
 
     from core.brain_router import route_turn
 
@@ -423,8 +423,8 @@ def test_haiku_start_failure_retries_then_skips_the_failed_model(monkeypatch):
     async def run_provider(_client, payload, *, provider, on_delta=None, route=None):
         del on_delta
         attempts.append((provider, route.model, dict(payload)))
-        if route.model == "claude-haiku-4-5":
-            raise RuntimeError("Haiku model is unavailable")
+        if route.model == "claude-opus-5-5":
+            raise RuntimeError("Opus 5.5 model is unavailable")
         return {
             "ok": True,
             "provider": provider,
@@ -452,7 +452,7 @@ def test_haiku_start_failure_retries_then_skips_the_failed_model(monkeypatch):
     assert first["ok"] is True
     assert second["ok"] is True
     assert [(provider, model) for provider, model, _payload in attempts] == [
-        ("claude", "claude-haiku-4-5"),
+        ("claude", "claude-opus-5-5"),
         ("claude", "claude-sonnet-5"),
         ("claude", "claude-sonnet-5"),
     ]

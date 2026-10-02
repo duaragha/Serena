@@ -173,7 +173,13 @@ def summary(facts: dict[str, Any], answers: list[dict[str, Any]] | None = None) 
         "person (\"you\"), plain and factual. Use ONLY what is in FACTS and in HIS ANSWERS. "
         "Do not add feelings, reasons, food, or any person or place that is not written "
         "there. Do not mention commits by message; a count and project names are enough. "
-        "If something is marked low confidence, say \"probably\". No markdown.\n\n"
+        "If something is marked low confidence, say \"probably\". "
+        "A pronoun (him, her, them) means the person FACTS put with him at that time -- "
+        "if FACTS has Sarim around 7:30am, \"i was driving him to school\" that morning "
+        "means you drove Sarim. Never give a pronoun a name he only used for something "
+        "else: in \"i drove him to school ... rushil got chinese\", Rushil got the food, "
+        "he is not who was driven. If FACTS names no one for that time, say someone. "
+        "No markdown.\n\n"
         f"FACTS: {json.dumps(trimmed, ensure_ascii=False)}\n\nHIS ANSWERS: {json.dumps(said, ensure_ascii=False)}"
     )
     try:
@@ -212,9 +218,8 @@ def render_html(day: str, facts: dict[str, Any], text: str,
             f"<li>{_e(p['name'])}{' (probably)' if p.get('confidence') in ('medium', 'low') else ''}"
             f"{' · ' + _e(p['when']) if p.get('when') else ''}</li>" for p in people)
         parts.append(f"<h3>People</h3><ul>{items}</ul>")
-    timeline = _timeline(facts)
-    if timeline:
-        parts.append("<h3>Timeline</h3><ul>" + "".join(f"<li>{_e(line)}</li>" for _, line in timeline) + "</ul>")
+    # No timeline: he found a list of every short stop ("8:47am · stopped 2 min")
+    # noise in his journal (2026-09-24). The summary already says where he went.
     if facts.get("commits"):
         items = "".join(f"<li>{_e(c['repo'])}: {c['count']} commit{'s' if c['count'] != 1 else ''}</li>"
                         for c in facts["commits"])

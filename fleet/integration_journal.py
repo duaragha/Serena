@@ -92,6 +92,7 @@ class IntegrationJournal:
         branch = _git(self.root, "symbolic-ref", "--quiet", "HEAD", check=False)
         self.identity["target_branch"] = branch.stdout.strip() or _git(self.root, "rev-parse", "HEAD").stdout.strip()
         self.document = None
+        self.patch = patch
 
     def load(self):
         with self.store._connect() as db:
@@ -122,8 +123,33 @@ class IntegrationJournal:
         return True
 
     def prepare(self, workspace_root, paths, *, rollback_ref=""):
+        # git apply writes Git's checkout representation, which need not be
+        # the worker's bytes when autocrlf/eol filters are active. Derive the
+        # exact expected image in a private index before touching user files.
+        from fleet.isolation import _git, _baseline_path_entry
+        import subprocess
+        post = capture(Path(workspace_root), paths)
+        with tempfile.TemporaryDirectory(prefix="fleet-postimage-") as temporary:
+            environment = {**os.environ, "GIT_INDEX_FILE": str(Path(temporary) / "index")}
+            _git(self.root, "read-tree", self.identity["base_head"], env=environment)
+            applied = subprocess.run(
+                ["git", "-C", str(self.root), "apply", "--cached", "-"],
+                input=self.patch.encode("utf-8", errors="surrogateescape"),
+                capture_output=True, env=environment, check=False,
+            )
+            if applied.returncode:
+                raise JournalError("could not project integration postimage: " + applied.stderr.decode(errors="replace")[:400])
+            tree = _git(self.root, "write-tree", env=environment).stdout.strip()
+            for name in paths:
+                expected = _baseline_path_entry(self.root, tree, name, filters=True)
+                if expected is None:
+                    post[name] = None
+                elif post[name] is None:
+                    raise JournalError("integration postimage disagrees with worker path: " + name)
+                else:
+                    post[name]["data"] = base64.b64encode(expected[1]).decode("ascii")
         document = {"version": 1, "identity": self.identity,
-                    "pre": capture(self.root, paths), "post": capture(Path(workspace_root), paths),
+                    "pre": capture(self.root, paths), "post": post,
                     "rollback_ref": rollback_ref}
         encoded = _encoded(document)
         with self.store._connect() as db:

@@ -1,7 +1,8 @@
 # Computer use
 
-Serena can watch the laptop's X11 desktop and complete bounded GUI tasks with
-GPT-6 Astra. A single local helper owns capture and input. CLI, MCP and the
+Serena can watch the laptop's X11 desktop and complete bounded GUI tasks with a
+Claude visual worker (Opus 5.5 at low effort by default; GPT-6 Astra until
+2026-09-25). A single local helper owns capture and input. CLI, MCP and the
 resident brain all use that helper; none creates a separate input executor.
 
 ## Use it
@@ -9,9 +10,129 @@ resident brain all use that helper; none creates a separate input executor.
 ```bash
 chats computer status
 chats computer watch "tell me when the download finishes" --target desktop
+chats computer run "log into the shopify cli and link the storefront"   # her own desktop
 chats computer run "fill in this form using the details I gave you" --target active
+chats computer resume
 chats computer stop
 ```
+
+## Serena's own desktop
+
+`run` defaults to `--target isolated`: Serena's own desktop, a nested X server
+(Xephyr) with its own pointer, keyboard, focus, browser profile and terminal.
+Her XTest input goes to that server, so your cursor and keyboard focus never
+move and you keep working while a GUI task runs. The Xephyr window on your
+screen is the live viewer; the helper places it on your rightmost secondary
+monitor. Minimizing it does not stop her. Closing it closes her desktop and
+stops any task there.
+
+```bash
+chats computer desktop open       # start or adopt it, with a browser and terminal
+chats computer desktop show|hide  # raise or minimize the viewer
+chats computer desktop launch browser https://example.com
+chats computer desktop launch terminal
+chats computer desktop close      # browser logins survive in its own profile
+```
+
+Her desktop is a separate X server with its own clipboard, so the helper
+bridges CLIPBOARD text between the two while her desktop is open. Everything you
+copy reaches her desktop, including what was on your clipboard when it opened,
+so Ctrl+V works in the viewer. Her copies reach your clipboard only while the
+viewer is your focused window, meaning you copied inside it; the worker pressing
+Ctrl+C while you work elsewhere never replaces your clipboard. When your
+clipboard empties (a password manager's timeout, or its owner quitting), hers
+empties too. Text up to 200 KB is bridged; images and larger transfers are not.
+
+### Fast paths: shell and page steps
+
+On her desktop the worker has two tools that skip screenshots:
+
+- **`shell`** runs a command in a tmux session (private socket `serena-desktop`)
+  that her terminal window is attached to, so you watch every command in the
+  viewer. The output and exit code come back as text. A multi-line command is
+  written to a 0600 file in her private `shell/` directory and run as one
+  `bash <file>` (the file deletes itself once bash has it open), so loops and
+  heredocs cost one call; its `cd` and `export` do not carry over. Nothing may
+  end in `&`. `send` answers a prompt
+  and `read` shows recent output. Her terminal's `$BROWSER` opens her own Edge
+  profile, so sign-in pages that CLIs launch (gcloud, Shopify) open on her
+  desktop, not in your browser.
+- **`page`** returns her current page as an accessibility snapshot in which
+  every element has a ref (the same snapshot Playwright MCP gives models).
+  **`browser`** runs up to 25 steps in one call through Playwright over CDP:
+  goto, click, fill, select, check, press, read, wait_for, tab and back. Each
+  action waits for its own target, a click that opens a tab continues in it,
+  and the batch stops at the first failure and returns a fresh snapshot.
+  Password fields refuse `fill`; the worker hands off instead. Input goes through
+  CDP, never XTest, so it never touches your pointer or trips takeover.
+  Links show their target on a `/url:` line and `goto` accepts that path, so a
+  list page (search results, Hacker News) becomes one batch of goto+read pairs
+  rather than a click, read and back per item. Those URLs are data that changes,
+  so a task that followed a link path is never saved as a replayable flow;
+  URLs she types herself still are. A target that matches several
+  elements fails with `matches` (each one's `nth`, ref, role, name and url) so
+  one retry picks the right one; `back` waits only for the history navigation
+  to commit, not for the page's images.
+
+Her Edge starts with `--remote-debugging-port=0`. The helper attaches only to a
+loopback port whose listener it verifies belongs to her profile. An Edge started
+before that flag existed is restarted once, with its tabs restored. Receipts,
+authority, idempotency and pause/resume work as they do for `act`. Events record
+which step failed but never page text or command output.
+
+Measured on 2026-09-25 with a local copy of the Firebase "add to existing
+project" wizard (8 clicks across 6 pages), the same prose instructions, and
+Opus 5.5 on her desktop:
+
+| Worker tools | Wall time | Model decisions |
+|---|---|---|
+| Screenshots only (`observe`/`act`) | 45.6 s | 8 |
+| With `page`/`browser` | 19.6–26.1 s | 3–4 |
+
+The page actions themselves took 2–6 s in total. What remains is one decision
+per new page, about 2–3.5 s each, because the worker cannot see a page before it
+loads. Sonnet 5 measured the same here (20.0–26.4 s). The first decision, about
+4–5 s, is mostly the linked chat's history. Replaying a flow that is already
+known and trimming that history are the next levers.
+
+Her browser uses its own persistent profile under
+`~/.config/serena/computer/isolated/browser-profile`. It cannot share your
+running browser's profile, so sign in there once, in the viewer, for each site
+she needs. Her terminal is a separate `gnome-terminal-server` instance on her
+display, running as you.
+
+**Sign-in mode.** Her browser normally runs with a loopback automation port for
+her page and browser steps. Google ("This browser or app may not be secure") and
+Shopify (accounts.shopify.com bouncing back to the email step) refuse human
+sign-ins while that port is open.
+
+- `chats computer desktop sign-in [URL]` (MCP: `computer_desktop action=sign_in`)
+  restarts her browser without the port, with its tabs restored (URL, if given,
+  opens as a tab), and records `signing_in` in `runtime.json`. A browser already
+  running without the port is adopted, never restarted under you.
+- While in this mode, nothing restarts it: page and browser steps refuse with
+  "Raghav is signing in … hand back first".
+- `chats computer desktop signed-in` (MCP: `action=signed_in`) restarts it with
+  the port and `--restore-last-session`. Your logins stay in the profile.
+- A worker handoff on her desktop whose reason names a sign-in, login, password,
+  code or MFA enters sign-in mode by itself. Resuming, or stopping the task,
+  clears the flag, and the next page step brings the port back, so resume never
+  waits on a browser restart.
+
+A chat driving her desktop directly (`background=false`) has the same fast paths
+as the worker: `computer_page` (snapshot), `computer_browser` (a step batch) and
+`computer_shell` (command, send or read), next to observe/act/zoom.
+
+Use `window:ID` or `display:NAME` only when the task needs your own open windows.
+A watch session on your screen and a control session on her desktop can run at
+the same time. Each has its own HUD card; hers sits below yours and has a
+**view** button that raises the viewer. `status` lists both under `sessions`,
+and `session` is the first one still running.
+
+X clients reach her display with a per-start cookie: the server reads it from a
+private file and clients find it in your Xauthority file, keyed by display
+number. CPU and RAM are shared with your desktop, and her desktop does not
+reduce model reasoning time.
 
 `active` freezes the currently focused window at session start. If starting from
 a terminal, use `window:ID` or `display:NAME` for the intended application.
@@ -29,11 +150,11 @@ Both `watch` and `run` stream text updates in the terminal. `--detach` leaves
 the task running with a visible desktop indicator; `chats computer events`
 reattaches to its updates. `--speak` sends completed observations through
 Serena's existing local voice output. `chats computer steer "new instruction"`
-steers the active Astra turn without starting a second controller.
+steers the active worker turn without starting a second controller.
 
 The desktop indicator is a compact, movable HUD card. Drag its header to move it
 out of the way; its current position and size are sent back to the helper so the
-card stays masked from screenshots. The header shows whether Astra is starting,
+card stays masked from screenshots. The header shows whether the worker is starting,
 thinking, watching, or has seen a changed screen. The context row identifies the
 focused application and window title from the latest captured frame (in a
 browser this normally includes the selected tab) and the selected display or
@@ -75,11 +196,143 @@ the task; model-written arguments cannot invent permission. The existing
 one screenshot of the active window.
 
 Stop with **Ctrl+Alt+Shift+Escape**, the visible stop button, `Ctrl+C` in an
-attached computer command, or `chats computer stop`. Physical mouse/keyboard
-input stops a control session. Watch sessions allow normal user input. A lock,
-expired lease, disconnected indicator, or failed input monitor also stops the
-session. Cinnamon already owns Ctrl+Alt+Escape, so that shorter shortcut is not
-used. Failure to register the actual stop shortcut prevents startup.
+attached computer command, or `chats computer stop`. The shortcut is grabbed on
+your screen and stops sessions on both desktops. Watch sessions allow normal
+user input. A lock, expired lease, disconnected indicator, or failed input
+monitor also stops the session. Cinnamon already owns Ctrl+Alt+Escape, so that
+shorter shortcut is not used. Failure to register the actual stop shortcut
+prevents startup. Metacity on her desktop reads your GNOME keybindings, which
+bind Shift+Ctrl+Alt+Escape there, so her display relies on the host grab.
+
+### Takeover pauses, resume continues
+
+Physical input on the desktop being controlled **pauses** the session instead
+of ending it: on your screen any mouse movement, click or key; on her desktop a
+click or key inside the viewer (your pointer merely crossing it does not
+count). The pause holds input at once, including mid-batch, clears frames taken
+before the takeover, and keeps the lease, task and model thread.
+
+Resume with the HUD's **resume** button, `chats computer resume`, MCP
+`computer_resume`, or the resident brain's `resume` operation. Input returns
+only after your hands have been off for 0.8 seconds, because the click on
+resume is itself input. The worker then starts a new turn on the same task
+with a fresh screenshot and is told not to repeat finished steps. A paused
+session still expires with its lease.
+
+The worker can also hand off: an `act` batch ending in `handoff {reason}` pauses
+the session with "serena needs you: …" on the HUD. It uses this for passwords,
+passcodes, MFA and payment details, which it never types. You type them in the
+viewer, press resume, and it continues.
+
+## His apps, beside him
+
+On his own screen, `apps` and `app` let her work in his real windows while he
+keeps using the computer. They go through the session's AT-SPI accessibility
+bus, the one screen readers use. Every GTK, Qt and LibreOffice window publishes
+its widgets there: role, name, state, text, value, and the actions a screen
+reader can invoke. Pressing a button, replacing a field's text or picking a list
+item that way reaches the widget directly. His pointer never moves, his typing
+is never interrupted, and his keyboard focus stays where it is.
+
+- `apps` with no window lists his windows (`w3`, app, title). With a window (a
+  ref, or words from its title or app), it lists that window's visible widgets,
+  each with a ref (`a12`) valid until the next snapshot.
+- `app` runs up to 25 steps in one call and stops at the first failure:
+  `press`, `set_text`, `check`/`uncheck`, `select` (combo boxes, lists),
+  `set_value`, `read`, `menu` (a path of names) and `wait_for`. Targets are a
+  ref, or a role (`button`, `textbox`, `checkbox`, `combobox`, … or an AT-SPI
+  role) and a name.
+- A dialog the app raises is its own window, addressed by its title. If a step
+  makes the app take focus while he was in another app, his focus goes straight
+  back and the dialog stays open behind, still taking steps. A guard watches
+  the active window every 40 ms for the whole batch and 1.5 s after it, so a
+  dialog that maps late is caught too. If he moves to another window himself,
+  that window becomes the one it guards. It hands focus back at most three
+  times per batch and never touches the pointer.
+- Verified live on Cinnamon (Muffin), 2026-09-26, with xed's File > Open... run
+  through accessibility while he was in Edge. Muffin's focus-stealing
+  prevention usually kept the file dialog from taking focus at all. On the run
+  where it did take it, and on a forced steal, his window was back before a
+  100 ms trace could see the change. The pointer stayed where it was.
+- Password fields refuse text, like the browser's.
+- Only windows on his display within the session's scope are visible. Her own
+  desktop's apps share the bus but are filtered out. Chromium stamps its process
+  title over its environment, so for those processes the check is which display
+  holds their windows.
+- Chromium and Electron apps (Edge, VS Code, the Serena app) publish nothing
+  unless started with `--force-renderer-accessibility`. Their windows are listed
+  with "contents hidden", and the worker uses screenshots for them, until
+  `chats computer accessibility apply` has run and the app has restarted (see
+  below).
+- Before walking any app, a listing pings every registered app at once over
+  its own connection to the accessibility bus, with a 0.3 s deadline. A hung
+  or stopped app (which costs libatspi a second or more per call) is left out
+  of that listing, and app-level calls use the same short timeout in case an
+  app hangs after its ping. A skipped app is retried after 30 s, doubling while
+  it keeps missing, up to five minutes, so a busy app comes back and a dead one
+  stays out. With three stopped apps registered, a cold listing went from
+  about 8 s to 0.4 s on his desktop, with the same windows listed. The helper
+  still warms the first listing in the background.
+
+With app steps available, his input no longer pauses a session on his screen:
+she is not using his mouse or keyboard. It still pauses her while her own
+screenshot `act` batch runs and for 2 s after it. Before such a batch she waits
+for his hands to rest for 1 s (up to 10 s), and she refuses a screenshot taken
+before his last input. Tests drive a real GTK app on a private display while a
+second window receives typing throughout. The steps land, and his window keeps
+its focus, every keystroke and the pointer position.
+
+### Chromium and Electron apps
+
+```bash
+chats computer accessibility status   # which launchers carry the flag
+chats computer accessibility apply    # add it; re-run after an app update rewrites a launcher
+chats computer accessibility undo     # put every launcher back, delete the copies apply made
+```
+
+`apply` (`core/app_accessibility.py`) adds `--force-renderer-accessibility`
+right after the executable on every `Exec=` line, action entries included:
+
+- his local launchers under `~/.local/share/applications`, plus local copies
+  of `/usr/share/applications` launchers that have none, which shadow the
+  system ones and survive package updates;
+- `~/.config/autostart/unified.desktop`;
+- for VS Code, the `force-renderer-accessibility` key in `~/.vscode/argv.json`,
+  a switch VS Code accepts on Linux. That covers every way VS Code starts,
+  `code` in a terminal included.
+
+It never restarts a running app, so each one publishes its tree from its next
+start. What `apply` created is recorded in
+`~/.config/serena/app-accessibility.json` so `undo` deletes only those. Unified
+rewrites its autostart entry only when its "open at login" setting is toggled,
+and Edge rewrites a web app's launcher when that web app is reinstalled. Re-run
+`apply` after either. The flag costs those apps some CPU and memory on busy
+pages, which is Chromium's accessibility mode doing its work.
+
+Applied on the laptop on 2026-09-26. The launch lines before the change:
+
+| Launcher | Original `Exec=` |
+|---|---|
+| `~/.local/share/applications/microsoft-edge.desktop` | `/usr/bin/microsoft-edge-stable --max-old-space-size=2048 --renderer-process-limit=5 %U`, plus the plain and `--inprivate` actions |
+| `~/.local/share/applications/com.microsoft.Edge.desktop` | none: created as a copy of the system launcher (`/usr/bin/microsoft-edge-stable %U` and its actions) |
+| `~/.local/share/applications/msedge-*.desktop` (5 Edge web apps) | `/opt/microsoft/msedge/microsoft-edge --profile-directory=… --app-id=…` or `--app=…` |
+| `~/.local/share/applications/serena-desktop.desktop` | `/home/raghav/Applications/Serena.AppImage %U` |
+| `~/.local/share/applications/serena-dev.desktop` | `/home/raghav/Applications/Serena-Dev.AppImage %U` |
+| `~/.local/share/applications/openwhispr.desktop` | `/home/raghav/Documents/Projects/openwhispr/app/dist/linux-unpacked/open-whispr` |
+| `~/.config/autostart/unified.desktop` | `"/usr/lib/unified-inbox/unified" --login-launch` |
+| `~/.local/share/applications/unified-inbox.desktop` | `/usr/bin/unified-inbox %U` |
+| `~/.vscode/argv.json` | no `force-renderer-accessibility` key |
+
+Proof: a throwaway instance of each app ran with the flag and a temporary
+profile on a private Xvfb display. `HisApps` read each window's tree:
+
+| App | Widgets it published |
+|---|---|
+| Edge | 20, including Back, Refresh, and the address bar with its URL |
+| VS Code (argv.json only, no command-line flag) | 47, including the File, Edit, Selection, View and Go menus |
+| Serena | 34, including its File, Edit and View buttons and "Serena chats" |
+| OpenWhispr | its control panel: window buttons and text such as "Welcome to OpenWhispr" and "Cloud Not Configured" |
+| Unified | its pairing screen: headings and paragraphs, such as "Your private inbox needs another try" |
 
 ## CLI agent integration
 
@@ -88,8 +341,9 @@ task. The chat calls `computer_start` directly from that request; you do not
 need to open a terminal session manually or send a second confirmation.
 
 `computer_start` defaults to live desktop coaching with `background=true`,
-using GPT-6 Astra at medium reasoning with fast processing. Select a window/display explicitly when
-the user requests that narrower scope. Background sessions stream through
+using the Claude worker. Watch defaults to
+`target=desktop` and control to `target=isolated`. Select a window/display
+explicitly when the user requests that scope or the task needs their windows. Background sessions stream through
 `computer_events` and the desktop indicator. Do not send input from the chat
 alongside a background controller.
 
@@ -97,8 +351,10 @@ The background worker is a separate ephemeral model thread linked to the exact
 launching Codex or Claude conversation. The caller resolves its full session ID;
 the helper never guesses a parent by title, directory or recency. Status shows
 `source_session_id`, `source_agent` and the worker's `context_message_count`.
-The worker receives the parent's earlier user/assistant text, new messages and
-completed coaching. After each eight-turn rotation it reloads this text history.
+The worker receives a bounded tail of the parent's user/assistant text and
+completed coaching. After each eight-turn rotation it reloads the selected tail
+and all completed coaching from this computer session. Between rotations it
+receives only new or changed selected records, in their original order.
 Images, hidden reasoning and tool transcripts are not copied into this history.
 
 `chats computer install` (or `install-hooks`) registers a `UserPromptSubmit`
@@ -112,16 +368,23 @@ is never rewritten. `computer_history` or `chats computer history SESSION_ID`
 provides a read-only fallback. A standalone terminal without a chat identity
 has local coaching history but cannot infer which conversation to link.
 
-Worker context is passed verbatim up to a 700 KB per-request guard; exceeding it
-produces a visible error instead of silently dropping earlier messages. Native
-parent-chat compaction still applies to very long chats. Stored text remains
-available for retrieval; this is not an unlimited model context window.
+`SERENA_COMPUTER_CONTEXT_CHARS` sets the linked-history text budget (default
+20,000 characters; invalid or negative values use the default). Whole messages
+are selected newest first and delivered chronologically, with an explicit marker
+when earlier history was omitted. The newest user message is always kept even
+if it exceeds the budget. All completed coaching from this computer session is
+kept outside that budget; older sessions' coaching competes for tail space.
+Set `0` to disable linked history entirely, including the newest parent message;
+current-session coaching and the explicit task still reach the worker. JSON
+metadata and the context header are outside the character budget. A 700 KB
+serialized per-request safety guard still reports oversized protected context.
+Durable storage and parent-chat coaching hooks remain complete and unchanged;
+stored text remains available through `computer_history`.
 
-Before the first screenshot turn, the worker warms the local Codex app-server
-connection and builds a small read-only task pack from Serena's knowledge store
+Before the first screenshot turn, the worker starts its Claude session and builds a small read-only task pack from Serena's knowledge store
 plus shallow project `it/` and `docs/` folders. It ranks files against the task,
 strips HTML noise, caps the pack at 18 KB, and redacts obvious credentials. A
-matching AWS runbook therefore reaches Astra with the linked chat and current
+matching AWS runbook therefore reaches the worker with the linked chat and current
 screenshot; the worker does not need to rediscover that saved setup research.
 The pack is sent once per visual thread and is reloaded after history rotation.
 
@@ -153,7 +416,8 @@ claude mcp add --scope user serena-computer -- /path/to/serena/.venv/bin/python 
 ```
 
 The stdio server exposes `computer_start`, `computer_status`, `computer_observe`,
-`computer_act`, `computer_events`, `computer_history`, and `computer_stop`. The local chat is an
+`computer_act`, `computer_events`, `computer_history`, `computer_resume`,
+`computer_desktop`, and `computer_stop`. The local chat is an
 operator surface: it starts only the task its user requested, and screen text
 cannot supply authorization. A lease's task and owner are visible in status. An agent receives
 mixed text/image MCP content, including frame IDs, timestamps, and coordinates.
@@ -161,7 +425,18 @@ The Codex dynamic-tool adapter preserves images as `inputImage` items instead
 of discarding or JSON-encoding them as text.
 
 Input batches require a fresh frame and a unique request ID. They support move,
-click, double-click, drag, scrolling, key chords, text entry, and bounded waits.
+click, double-click, drag, scrolling, key chords, text entry, bounded waits,
+`handoff {reason}`, and on her desktop `launch {app: browser|terminal, url}`.
+`handoff` and `launch` must end their batch. The worker is told to batch
+predictable steps, such as click a field, type, Tab, type, Enter, and to split
+only where the next step depends on what appears.
+
+Each batch's receipt carries `timing`: `decision_ms` (since the caller last
+received a screenshot), `preflight_ms`, `input_ms`, `settle_ms` and
+`capture_ms`. The HUD shows think and act time. The post-action screenshot is
+settled: the helper polls until the screen changes and then holds still for one
+sample, returns after 0.45 seconds if nothing changed, and never waits more than
+1 second. A batch ending in `wait` returns one immediate capture.
 Coordinates refer to the returned image, including its scaling and monitor
 origin. A duplicate ID with identical arguments returns the prior receipt;
 different arguments under that ID are rejected. Partial execution is reported
@@ -171,30 +446,52 @@ a claim of task success.
 
 Batches have a 15-second input deadline and accept at most 500 typed characters,
 including at most 100 non-ASCII characters. Split longer text into fresh batches.
-Text entry preserves the clipboard and finishes short key sequences before
-cancelling so injected keys are released.
+Characters present in the keymap are typed through XTest in the helper process,
+each a complete press/release with Shift as needed, so a takeover stops typing
+within one character. Characters outside the keymap, or any text while Caps
+Lock is on, fall back to xdotool in short complete chunks, so injected keys are
+always released.
 
 ## Install and runtime
 
 ```bash
-sudo apt install xdotool xinput x11-xserver-utils python3-tk
+sudo apt install xdotool xinput x11-xserver-utils python3-tk xserver-xephyr metacity xauth
 python -m pip install -e .
 chats computer install
 ```
 
-The existing Codex CLI must be signed into the ChatGPT subscription. The visual
-runner uses `gpt-6-astra` with medium reasoning effort and `service_tier=fast`
-through `codex app-server` (the accepted server tier is `priority`),
-with shell, web search, ambient MCP servers and metered credentials disabled.
-There is no API-key requirement. Each visual thread is ephemeral and rotates
-after eight watch turns. Model choice does not silently fall back to another
-model. Missing access or an unaccepted fast tier is returned as a visible error.
-Fast mode is scoped to computer workers and does not change the parent chat's
-model or effort. The worker keeps its app-server process warm when it rotates
-the visual thread, so the next screenshot does not pay initialization again.
-[Fast mode](https://learn.chatgpt.com/docs/agent-configuration/speed)
-uses 2.5 times standard Codex credits where available. It does not remove
-model inference latency.
+Her desktop also needs a Chromium-family browser (`SERENA_ISOLATED_BROWSER`
+overrides the choice) and gnome-terminal. `SERENA_ISOLATED_SIZE=WxH` changes
+its 1920×1080 default.
+
+The installed `claude` CLI must be signed into the Claude subscription. The
+worker runs Claude through the Agent SDK against that CLI (the SDK's bundled CLI
+is too old for Opus 5.5), with the session's `observe`, `zoom` and `act` as its
+only tools. Built-in tools, user settings, hooks and skills are off, metered API
+keys are blanked so nothing bills the API, and `--no-session-persistence` keeps
+workers out of the chat list. Each Claude session rotates after eight watch
+turns. Model choice does not silently fall back to another model.
+
+`SERENA_COMPUTER_MODEL` picks the model (default `claude-opus-5-5`) and
+`SERENA_COMPUTER_EFFORT` its effort (default `low`). On the same screenshot and
+prompt, single decisions measured on 2026-09-25:
+
+| Model | Seconds per decision |
+|---|---|
+| Claude Sonnet 5 | 0.8–0.9 |
+| Claude Opus 5.5 (default) | 1.9–3.2 |
+| Claude Haiku 4.5 | 2.3–2.6 |
+| GPT-6 Astra (previous worker) | 3.2–3.5 |
+
+Opus 5.5 finished the terminal task below in 10.8 s of model time against
+Astra's 24.7 s. Frames go to the worker at 1280 px wide: Claude downsamples
+larger images, which would skew its click coordinates. `zoom` returns a
+full-resolution crop of part of a recent frame for reading small text. The crop
+has no frame id, so input can never be aimed with it.
+
+On her own desktop, a click that raises the window it hit keeps the batch going,
+so "click the browser, type the URL" is one batch. Any other focus change, such
+as a popup, still stops the batch. Your screen stays strict.
 
 `install` enables `serena-computer.service` for the graphical login. Starting
 the helper does not capture the screen. `status` can start a detached helper
@@ -244,7 +541,7 @@ Live verification on the two 2560×1440 monitors on 2026-09-08 covered:
 | Unicode | Greek, Cyrillic, Chinese and emoji verified on an isolated X11 server |
 | Duplicate requests | Same action ID did not click twice |
 | Stop shortcut | Approximately 105–137 ms including xdotool dispatch and status polling |
-| Physical takeover | Real input cancelled a live control session |
+| Physical takeover | Real input cancelled a live control session (it now pauses; see below) |
 | Astra control | Read a random code from the image, retyped it, clicked confirm and inspected success |
 | Complete Astra GUI task | 22.3 seconds in the recorded multi-action sample |
 | Live watching | Correctly reported a changed fixture status in two consecutive observations |
@@ -287,6 +584,21 @@ then answered the 41st message using a random detail from the first chat message
 and another from the last coaching update, injected through the trusted native
 hook. Both Codex and Claude transcript tests also verify restart and isolation.
 
+Live verification of her desktop on 2026-09-25 (laptop, two 2560×1440 monitors,
+nested display at 1920×1080):
+
+| Check | Result |
+|---|---|
+| Capture of her display | 4–12 ms per 1920×1080 frame |
+| Your input untouched | 0 XTEST events on your display during a full Astra task; your pointer never moved |
+| Concurrent desks | A watch session on HDMI-A-0 and a control task on her desktop were live together |
+| Astra on her desktop | Ran `uname -r` in her terminal and reported `7.0.0-28-generic` (24.7 s); opened example.com and read its heading |
+| Opus 5.5 on her desktop | Same `uname -r` task in 10.8 s (decisions 2.5 s each); read example.com's heading and sentence verbatim; watch coaching's first line in 3.4 s |
+| Timing split | Model decision 4.8–9.0 s per batch; input 1–9 ms; settle 0.17–0.6 s. Model reasoning dominates |
+| Typing | 198 characters into a Chromium textarea in 134 ms, lossless (xdotool path: 197 ms) |
+| Takeover | A key in the viewer paused a live task after its first batch; resume continued it and it reported both commands' output |
+| HUD | Paused card shows the reason, **resume** and **view** |
+
 Run reproducible local verification:
 
 ```bash
@@ -296,16 +608,17 @@ python scripts/computer_smoke.py --output /path/to/Projects/_artifacts/computer-
 
 The opt-in smoke harness operates only its own test window, checks actual
 widget state, and saves a fixture screenshot plus receipts. Moving the physical
-mouse or typing during its control phase cancels it, just like a normal task.
+mouse or typing during its control phase pauses it, just like a normal task.
 The isolated X11 test uses `Xvfb` (or `SERENA_TEST_XVFB`) and skips if unavailable.
 The verified run completed 104 Python tests and 69 desktop tests.
 
-This release supports **Linux X11**. Wayland, native Windows and macOS capture
+This release supports **Linux X11**. Her own desktop is an X server even on a
+Wayland host, but only the X11 host path is verified. Wayland, native Windows and macOS capture
 and input adapters are not implemented. Packaged launchers return an explicit
 unsupported-platform error rather than treating XWayland or a remote shell as
-full desktop access. Accessibility trees and OCR are also not claimed; Astra
-uses the real screenshot pixels.
+full desktop access. Accessibility trees and OCR are also not claimed; the
+worker uses the real screenshot pixels.
 
-Protocol references: [Codex app-server](https://developers.openai.com/codex/app-server),
-[computer use](https://developers.openai.com/api/docs/guides/tools-computer-use),
-and [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra).
+Research behind the model choice and the next speed steps:
+[approaches](../knowledge/openai-computer-use/computer-use-approaches-2026-09-25.md),
+[speed to human](../knowledge/openai-computer-use/speed-to-human-2026-09-25.md).

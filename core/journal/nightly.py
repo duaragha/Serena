@@ -32,12 +32,42 @@ def today() -> date:
     return datetime.now(TZ).date()
 
 
+def _keep_what_was_known(fresh: dict[str, Any], before: dict[str, Any]) -> dict[str, Any]:
+    """A redraft adds to what the day already knew; it never forgets someone.
+
+    Finding people is a model reading his chats, and it does not find the same
+    people every run. On 2026-09-24 a morning redraft of the 23rd lost Sarim --
+    whom the first draft had found and texted him about -- so "i was driving
+    him to school" had no one left to mean, and the entry said Rushil. People
+    he named himself were wiped the same way. Anyone known before stays unless
+    this run excluded them; a place he named for a visit stays named.
+    """
+
+    people = list(fresh.get("people") or [])
+    known = {str(p.get("name") or "").lower() for p in people}
+    excluded = {str(x.get("name") or "").lower() for x in fresh.get("excluded") or []
+                if isinstance(x, dict)}
+    for person in before.get("people") or []:
+        name = str(person.get("name") or "").lower()
+        if name and name not in known and name not in excluded:
+            people.append(person)
+            known.add(name)
+    fresh["people"] = people
+    named = {int(v["arrived_ts"]): v["place"] for v in before.get("visits") or []
+             if v.get("place") and v.get("arrived_ts") is not None}
+    for visit in fresh.get("visits") or []:
+        if not visit.get("place") and visit.get("arrived_ts") is not None:
+            visit["place"] = named.get(int(visit["arrived_ts"]), "")
+    return fresh
+
+
 def build(day: date) -> dict[str, Any]:
     """Gather, draft and write the entry. Safe to rerun; it updates in place."""
 
     key = day.isoformat()
     existing = store.load_day(key) or {}
-    gathered = facts_mod.gather(day).to_dict()
+    gathered = _keep_what_was_known(facts_mod.gather(day).to_dict(),
+                                    existing.get("facts") or {})
     answers = existing.get("answers") or []
     asked = draft.questions(gathered)
     # Questions he already answered stay answered even if a rerun rephrases them.
@@ -153,5 +183,15 @@ def record_answer(day: str, answer: str, *, question_id: str = "",
     store.save_day(day, facts=facts, answers=answers, summary=text_summary, entry_id=entry_id,
                    entry_base=written["base"], entry_written=written["written"])
     remaining = store.unanswered(store.load_day(day) or {})
-    return {"day": day, "saved": True, "entry_id": entry_id,
-            "still_open": [q["text"] for q in remaining]}
+    result = {"day": day, "saved": True, "entry_id": entry_id,
+              "written_to_locket": not written.get("skipped"),
+              "still_open": [q["text"] for q in remaining]}
+    if written.get("skipped"):
+        # His words are kept, but the entry in Locket was NOT changed. Saying
+        # "saved" here is how she once told him a correction was in his
+        # journal when the entry still carried the mistake.
+        result["tell_him"] = (
+            "your words are saved, but I did NOT change the entry in Locket: its "
+            "text has changed since I last wrote it, so I left your edits alone. "
+            "fix it there, or tell me to overwrite it.")
+    return result

@@ -1374,16 +1374,15 @@ def workspace_changed_paths(
         if delivery is not None:
             return list(delivery.changed_paths)
     changed: set[str] = set()
-    committed = _git(
-        root, "diff", "--name-only", "-z", f"{workspace.base_head}..HEAD", check=False, text=False
-    )
-    if committed.returncode == 0:
-        changed.update(
-            part.decode("utf-8", errors="surrogateescape")
-            for part in committed.stdout.split(b"\0")
-            if part
-        )
-    changed.update(_dirty_paths(root))
+    # Compare the net Git content to the frozen base. `status` can report a
+    # CRLF-to-LF rewrite even when clean filters produce no patch at all.
+    for args in [("diff", "--name-only", "--no-renames", "-z", workspace.base_head, "--"),
+                 ("ls-files", "--others", "--exclude-standard", "-z")]:
+        result = _git(root, *args, check=False, text=False)
+        if result.returncode:
+            raise IsolationError("could not inspect worker changes")
+        changed.update(part.decode("utf-8", errors="surrogateescape")
+                       for part in result.stdout.split(b"\0") if part)
     # Fleet provisions workspace/.venv as a symlink to the base checkout's
     # virtualenv. The repo ignores `.venv/` (a directory-only pattern), which
     # does not match a symlink, so git would report Fleet's own infrastructure
@@ -1463,7 +1462,15 @@ def base_drift_paths(root: Path, workspace: Workspace, changed: list[str]) -> li
             drift.append(path)
             continue
         if baseline != current:
-            drift.append(path)
+            # Git may materialize LF blobs as CRLF (autocrlf/eol attributes).
+            # Accept only the exact stored or checkout representation; never
+            # normalize arbitrary user bytes before checking for foreign edits.
+            try:
+                checkout = _baseline_path_entry(root, workspace.base_head, path, filters=True)
+            except (OSError, IsolationError, UnicodeError):
+                checkout = None
+            if current is None or checkout != current:
+                drift.append(path)
     return sorted(set(drift))
 
 
@@ -1471,8 +1478,9 @@ def _baseline_path_entry(
     root: Path,
     base_head: str,
     path: str,
+    *, filters: bool = False,
 ) -> tuple[str, bytes] | None:
-    """Return the exact Git mode and blob bytes for one baseline path."""
+    """Return exact stored bytes, or Git's checkout representation when requested."""
 
     result = _git(
         root,
@@ -1498,7 +1506,8 @@ def _baseline_path_entry(
     object_id = fields[2].decode("ascii", errors="strict")
     if object_type != "blob":
         raise IsolationError(f"baseline path is not a file or symlink: {path}")
-    blob = _git(root, "cat-file", "blob", object_id, check=False, text=False)
+    args = ("--filters", f"--path={path}", object_id) if filters and mode != "120000" else ("blob", object_id)
+    blob = _git(root, "cat-file", *args, check=False, text=False)
     if blob.returncode != 0:
         raise IsolationError(f"could not read baseline content for {path}")
     return mode, bytes(blob.stdout)

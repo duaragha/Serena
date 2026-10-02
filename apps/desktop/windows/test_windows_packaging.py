@@ -406,18 +406,18 @@ def test_validation_workflow_runs_when_the_frozen_surface_changes(workflow):
     # A change to any of these can break the freeze, and the failure must not
     # wait for a release tag.
     expected_desktop = "apps/desktop/windows/**" if "apps/desktop/windows/**" in paths else "desktop-electron/windows/**"
-    for required in (expected_desktop, "ui/**", "core/**", "requirements-windows.txt"):
+    for required in (expected_desktop, "ui/**", "core/**", "requirements-windows.txt", "scripts/verify-chat-index.py"):
         assert required in paths
     # GitHub does not expand YAML anchors, so the push filter has to repeat the
     # list rather than alias it. Assert it really did.
     assert triggers["push"]["paths"] == paths
 
 
-def test_release_workflow_still_owns_windows_publishing():
-    """The deliverable this repo actually releases from must keep working."""
+def test_dev_release_workflow_still_publishes_both_platforms():
+    """Stable tags belong to selective promotion; Dev tags build both apps."""
     release = _load_yaml(RELEASE_WORKFLOW)
     triggers = release.get("on", release.get(True))
-    assert triggers["push"]["tags"] == ["v*"]
+    assert triggers["push"]["tags"] == ["v*-dev.*"]
     windows = release["jobs"]["windows"]
     assert windows["runs-on"] == "windows-latest"
     # Windows waits for Linux so the two never race to create the release.

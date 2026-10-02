@@ -5,6 +5,10 @@ of the configured branch/workflow qualify, including builds started before a
 dispatcher restart. The local ledger records verified publications, not starts.
 GitHub assets are immutable here; contents-API SHA checks protect concurrent
 feed edits. Nothing from the private source archive is published.
+
+One releases repository can carry several apps. Each app is named by its own
+feed entry (or the rule's ``name``), and a feed with more than one app gets a
+per-app tag prefix so two apps at the same version never share a release.
 """
 
 from __future__ import annotations
@@ -80,10 +84,17 @@ def _gh(*args: str, check: bool = True):
     return agent_checkouts._run(["gh", *args], check=check, timeout=180)
 
 
-def _version(value: str) -> tuple[int, int, int]:
-    if not re.fullmatch(r"\d+\.\d+\.\d+", value):
-        raise PublishError("SideStore requires a numeric three-part app version")
-    return tuple(map(int, value.split(".")))
+def _version(value: str) -> tuple[int, ...]:
+    """Order a CFBundleShortVersionString; the feed keeps the string itself.
+
+    SideStore checks the downloaded IPA's version against the feed exactly,
+    so a four-part ``<product>.<build>`` stamp is published verbatim. For
+    ordering, three parts pad to four: 1.2.3 equals 1.2.3.0 and precedes 1.2.3.4.
+    """
+    if not re.fullmatch(r"\d+(?:\.\d+){2,3}", value):
+        raise PublishError("SideStore requires a numeric three- or four-part app version")
+    parts = tuple(map(int, value.split(".")))
+    return parts + (0,) * (4 - len(parts))
 
 
 def _feed(repo: str) -> tuple[dict, str]:
@@ -96,6 +107,23 @@ def _app(feed: dict, bundle: str) -> dict:
     if len(apps) != 1:
         raise PublishError("feed must contain exactly one matching app bundle")
     return apps[0]
+
+
+def _identity(rule: dict, feed: dict, app: dict) -> tuple[str, str]:
+    """Public display name and release tag prefix for one app.
+
+    A single-app feed keeps ``mobile-v`` (Unified's tags predate sharing);
+    a shared feed defaults to ``<name>-v`` so versions of two apps never meet.
+    """
+    name = str(rule.get("name") or app.get("name") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}", name):
+        raise PublishError("SideStore app needs a plain name in the feed or rule")
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    default = "mobile-v" if len(feed.get("apps") or []) == 1 else f"{slug}-v"
+    prefix = str(rule.get("tag_prefix") or default)
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,39}", prefix):
+        raise PublishError("SideStore tag prefix must be lowercase letters, digits, or ._-")
+    return name, prefix
 
 
 def _manifest(build: dict) -> dict:
@@ -148,17 +176,19 @@ def _publish(build: dict, artifact: dict, rule: dict) -> dict:
     repo, bundle = rule["repo"], rule["bundle_id"]
     version = artifact["version"]
     feed, _ = _feed(repo)
-    versions = _app(feed, bundle).get("versions", [])
+    app = _app(feed, bundle)
+    title, prefix = _identity(rule, feed, app)
+    versions = app.get("versions", [])
     if any(_version(v["version"]) > _version(version) for v in versions):
         return {"status": "superseded", "version": version}
 
     data, manifest, minimum_os = _verified_ipa(build, artifact, bundle)
-    tag = f"mobile-v{version}"
-    name = f"Unified-{version}-ios-unsigned.ipa"
+    tag = f"{prefix}{version}"
+    name = f"{title.replace(' ', '-')}-{version}-ios-unsigned.ipa"
     url = f"https://github.com/{repo}/releases/download/{tag}/{name}"
     # Public notes are deliberately generic: private task briefs and source
     # commit messages can contain his contacts, infrastructure, or messages.
-    notes = f"Unified iOS {version}."
+    notes = f"{title} iOS {version}."
     with tempfile.TemporaryDirectory(prefix="sidestore-publish-") as directory:
         root = Path(directory)
         ipa = root / name
@@ -168,7 +198,7 @@ def _publish(build: dict, artifact: dict, rule: dict) -> dict:
         release = _gh("release", "view", tag, "--repo", repo, "--json", "assets,isDraft",
                       check=False)
         if release.returncode:
-            _gh("release", "create", tag, "--repo", repo, "--title", f"Unified iOS {version}",
+            _gh("release", "create", tag, "--repo", repo, "--title", f"{title} iOS {version}",
                 "--notes-file", str(note_file), "--latest=false", str(ipa))
         else:
             existing = json.loads(release.stdout)
@@ -203,7 +233,7 @@ def _publish(build: dict, artifact: dict, rule: dict) -> dict:
             }, *versions]
             payload = root / "feed-update.json"
             payload.write_text(json.dumps({
-                "message": f"chore(release): publish Unified iOS {version}", "sha": sha,
+                "message": f"chore(release): publish {title} iOS {version}", "sha": sha,
                 "content": base64.b64encode(
                     (json.dumps(feed, indent=2) + "\n").encode()).decode(),
             }), encoding="utf-8")
@@ -239,7 +269,7 @@ def reconcile() -> list[dict]:
             db.execute("BEGIN IMMEDIATE")
         except sqlite3.OperationalError:
             return [{"status": "busy"}]
-        for source, ship, rule in rules[:4]:
+        for source, ship, rule in rules:
             try:
                 repo = rule.get("repo", "")
                 if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo) or not rule.get("bundle_id"):

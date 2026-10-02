@@ -148,8 +148,8 @@ def test_sidebar_pins_fleet_and_voice_above_active_terminals(workspace, width):
     if width < 760:
         page.locator("#workspaceChatsToggle").click()
     headers = page.locator("#sessionList > .group-header")
-    assert headers.all_text_contents()[:4] == [
-        "Serena", "▸ Fleet Chats (1)", "▸ Voice Chats (0)", "● Active Terminals",
+    assert headers.all_text_contents()[:5] == [
+        "Serena", "▸ Fleet Chats (1)", "▸ Voice Chats (0)", "▸ Trash", "● Active Terminals",
     ]
     fleet = page.get_by_test_id("fleet-chats-header")
     voice = page.get_by_test_id("voice-chats-header")
@@ -163,10 +163,10 @@ def test_sidebar_pins_fleet_and_voice_above_active_terminals(workspace, width):
     voice.click()
     playwright.expect(voice).to_have_attribute("aria-expanded", "true")
     voice.click()
-    assert headers.all_text_contents()[:4] == [
-        "Serena", "▸ Fleet Chats (1)", "▸ Voice Chats (0)", "● Active Terminals",
+    assert headers.all_text_contents()[:5] == [
+        "Serena", "▸ Fleet Chats (1)", "▸ Voice Chats (0)", "▸ Trash", "● Active Terminals",
     ]
-    bounds = [headers.nth(i).bounding_box() for i in range(4)]
+    bounds = [headers.nth(i).bounding_box() for i in range(5)]
     assert all(a["y"] + a["height"] <= b["y"] for a, b in zip(bounds, bounds[1:]))
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     if output := os.environ.get("SERENA_EVIDENCE_DIR"):

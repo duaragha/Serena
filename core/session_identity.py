@@ -15,6 +15,20 @@ _ENV_KEYS = {
 }
 
 
+def _env_value(provider: str, key: str, context_env: Mapping[str, str]) -> str | None:
+    value = _clean(context_env.get(key))
+    # The Codex plugin for Claude Code exports the hosting Claude chat's id as
+    # CODEX_COMPANION_SESSION_ID; that chat is Claude's, not a Codex thread.
+    if (
+        provider == "codex"
+        and key == "CODEX_COMPANION_SESSION_ID"
+        and value
+        and value == _clean(context_env.get("CLAUDE_CODE_SESSION_ID"))
+    ):
+        return None
+    return value
+
+
 def resolve_origin_session(
     session_id: str | None,
     agent: str | None,
@@ -46,7 +60,7 @@ def resolve_origin_session(
         assert provider is not None
         for context_env, _argv in contexts:
             for key in _ENV_KEYS[provider]:
-                candidate = _clean(context_env.get(key))
+                candidate = _env_value(provider, key, context_env)
                 if candidate:
                     return candidate, provider
         for _context_env, argv in contexts[1:]:
@@ -79,7 +93,7 @@ def _agent_for_id(
 ) -> str | None:
     for provider, keys in _ENV_KEYS.items():
         for context_env, argv in contexts:
-            if any(session_id == _clean(context_env.get(key)) for key in keys):
+            if any(session_id == _env_value(provider, key, context_env) for key in keys):
                 return provider
             if session_id == _session_from_argv(provider, argv):
                 return provider

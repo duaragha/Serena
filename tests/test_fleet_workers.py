@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
+import sys
 import time
 from pathlib import Path
 
+import psutil
 import pytest
 
 from core.fleet_workers import (
@@ -18,6 +21,35 @@ from core.fleet_workers import (
     runtime_doctor,
     worker_command,
 )
+
+
+_PYTHON_FIXTURE_BINARIES: set[str] = set()
+
+
+@pytest.fixture(autouse=True)
+def _launch_python_fixture_binaries(monkeypatch):
+    """Keep native process/pipe coverage without relying on Unix shebangs."""
+    import fleet.workers as workers
+
+    _PYTHON_FIXTURE_BINARIES.clear()
+    original_command = workers.worker_command
+    original_run = subprocess.run
+
+    def python_command(argv):
+        if argv and str(argv[0]) in _PYTHON_FIXTURE_BINARIES:
+            return [sys.executable, *argv]
+        return argv
+
+    def command(request, **kwargs):
+        return python_command(original_command(request, **kwargs))
+
+    def probe(argv, *args, **kwargs):
+        return original_run(python_command(argv), *args, **kwargs)
+
+    monkeypatch.setattr(workers, "worker_command", command)
+    monkeypatch.setattr(subprocess, "run", probe)
+    yield
+    _PYTHON_FIXTURE_BINARIES.clear()
 
 
 def _request(
@@ -37,7 +69,7 @@ def _request(
         phase=phase,
         role="tester",
         provider=provider,
-        model="gpt-5.6-sol" if provider == "codex" else "opus",
+        model="gpt-6.1-sol" if provider == "codex" else "claude-opus-5-5",
         effort="xhigh",
         access_mode=access_mode,
         cwd=str(tmp_path),
@@ -48,6 +80,7 @@ def _request(
 def _executable(path: Path, source: str) -> Path:
     path.write_text(source, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    _PYTHON_FIXTURE_BINARIES.add(str(path))
     return path
 
 
@@ -86,27 +119,37 @@ raise SystemExit(1)
     assert report["ready_providers"] == ["codex"]
 
 
-def test_worker_argv_isolated_from_nested_fleet_and_user_mcp(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform_name", ["posix", "nt"])
+def test_worker_argv_isolated_from_nested_fleet_and_user_mcp(tmp_path, monkeypatch, platform_name):
+    import fleet.workers as workers
+
+    monkeypatch.setattr(workers, "_is_windows", lambda: platform_name == "nt")
     monkeypatch.setenv("SERENA_FLEET_CODEX_BIN", "/opt/bin/codex")
     monkeypatch.setenv("SERENA_FLEET_CLAUDE_BIN", "/opt/bin/claude")
     # No read catalog on disk, so every leg falls back to zero MCP.
     monkeypatch.setenv("SERENA_FLEET_STATE_DIR", str(tmp_path / "state"))
 
     codex = worker_command(_request(tmp_path, "codex", access_mode="write"))
-    assert codex[:2] == ["/opt/bin/codex", "exec"]
+    assert codex[:2] == [str(Path("/opt/bin/codex")), "exec"]
     assert "--ignore-user-config" in codex
     assert codex[codex.index("--disable") + 1] == "multi_agent"
-    assert codex[codex.index("--sandbox") + 1] == "workspace-write"
+    assert codex[codex.index("--sandbox") + 1] == (
+        "danger-full-access" if platform_name == "nt" else "workspace-write"
+    )
     assert not any("mcp_servers" in value for value in codex)
     assert codex[-3:] == ["-C", str(tmp_path), "-"]
 
     codex_read_only = worker_command(_request(tmp_path, "codex"))
-    assert 'permissions.fleet_test_read.extends=":read-only"' in codex_read_only
-    assert "--sandbox" not in codex_read_only
+    if platform_name == "nt":
+        assert codex_read_only[codex_read_only.index("--sandbox") + 1] == "danger-full-access"
+        assert not any("permissions.fleet_test_read" in value for value in codex_read_only)
+    else:
+        assert 'permissions.fleet_test_read.extends=":read-only"' in codex_read_only
+        assert "--sandbox" not in codex_read_only
     assert codex_read_only[codex_read_only.index("--enable") + 1] == "standalone_web_search"
 
     claude = worker_command(_request(tmp_path, "claude"), session_id="sid-1")
-    assert claude[0] == "/opt/bin/claude"
+    assert claude[0] == str(Path("/opt/bin/claude"))
     assert "--safe-mode" in claude
     assert "--strict-mcp-config" in claude
     assert claude[claude.index("--mcp-config") + 1] == '{"mcpServers":{}}'
@@ -222,7 +265,11 @@ def test_coding_research_phase_enables_native_web_tools_for_both_providers(
     assert "WebSearch" not in review_tools and "WebFetch" not in review_tools
 
 
-def test_codex_resume_places_subcommand_after_enforced_outer_options(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform_name", ["posix", "nt"])
+def test_codex_resume_places_subcommand_after_enforced_outer_options(tmp_path, monkeypatch, platform_name):
+    import fleet.workers as workers
+
+    monkeypatch.setattr(workers, "_is_windows", lambda: platform_name == "nt")
     monkeypatch.setenv("SERENA_FLEET_CODEX_BIN", "/opt/bin/codex")
     request = _request(tmp_path, "codex")
     request = WorkerRequest(
@@ -235,8 +282,12 @@ def test_codex_resume_places_subcommand_after_enforced_outer_options(tmp_path, m
     )
     command = worker_command(request)
     assert command[-3:] == ["resume", "codex-session-1", "-"]
-    assert command.index('default_permissions="fleet_test_read"') < command.index("resume")
-    assert command[command.index("-m") + 1] == "gpt-5.6-sol"
+    if platform_name == "nt":
+        assert command.index("--sandbox") < command.index("resume")
+        assert command[command.index("--sandbox") + 1] == "danger-full-access"
+    else:
+        assert command.index('default_permissions="fleet_test_read"') < command.index("resume")
+    assert command[command.index("-m") + 1] == "gpt-6.1-sol"
     assert 'model_reasoning_effort="xhigh"' in command
 
 
@@ -269,7 +320,7 @@ def test_direct_codex_and_claude_stream_parsers_report_real_identity(
 import json, sys
 sys.stdin.read()
 print(json.dumps({"type":"thread.started","thread_id":"11111111-1111-1111-1111-111111111111"}), flush=True)
-print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-5.6-sol","reasoning_effort":"xhigh"}}), flush=True)
+print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-6.1-sol","reasoning_effort":"xhigh"}}), flush=True)
 print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"codex answer"}}), flush=True)
 """,
     )
@@ -280,8 +331,8 @@ import json, sys
 sys.stdin.read()
 args = sys.argv
 sid = args[args.index("--session-id") + 1]
-print(json.dumps({"type":"system","subtype":"init","session_id":sid,"model":"claude-opus-5"}), flush=True)
-print(json.dumps({"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5","content":[{"type":"text","text":"claude answer"}]}}), flush=True)
+print(json.dumps({"type":"system","subtype":"init","session_id":sid,"model":"claude-opus-5-5"}), flush=True)
+print(json.dumps({"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"claude answer"}]}}), flush=True)
 print(json.dumps({"type":"result","session_id":sid,"result":"claude answer","is_error":False}), flush=True)
 """,
     )
@@ -297,9 +348,12 @@ print(json.dumps({"type":"result","session_id":sid,"result":"claude answer","is_
     )
     assert codex.ok is True
     assert codex.output_text == "codex answer"
-    assert codex.actual_model == "gpt-5.6-sol"
+    assert codex.actual_model == "gpt-6.1-sol"
     assert codex.actual_effort == "xhigh"
     assert Path(codex.event_log_path).is_file()
+    assert next(payload["command"] for event, payload in codex_events if event == "process.started")[:2] == [
+        sys.executable, str(codex_bin)
+    ]
     assert any(
         payload.get("effort") == "xhigh"
         for event, payload in codex_events
@@ -314,7 +368,10 @@ print(json.dumps({"type":"result","session_id":sid,"result":"claude answer","is_
     )
     assert claude.ok is True
     assert claude.output_text == "claude answer"
-    assert claude.actual_model == "claude-opus-5"
+    assert claude.actual_model == "claude-opus-5-5"
+    assert next(payload["command"] for event, payload in claude_events if event == "process.started")[:2] == [
+        sys.executable, str(claude_bin)
+    ]
     assert sum(event == "session.started" for event, _ in claude_events) == 1
     assert any(
         payload.get("effort") == "xhigh"
@@ -330,18 +387,22 @@ def test_claude_receives_prompt_before_slow_session_surface_callback(
     claude_bin = _executable(
         tmp_path / "prompt-deadline-claude",
         """#!/usr/bin/env python3
-import json, select, sys
-if not select.select([sys.stdin], [], [], 0.25)[0]:
+import json, sys, threading
+received = []
+reader = threading.Thread(target=lambda: received.append(sys.stdin.read()), daemon=True)
+reader.start()
+reader.join(0.25)
+if reader.is_alive():
     print("prompt was not delivered before the deadline", file=sys.stderr)
     raise SystemExit(9)
-prompt = sys.stdin.read()
+prompt = received[0]
 if "do the controlled test" not in prompt:
     print("wrong prompt", file=sys.stderr)
     raise SystemExit(10)
 args = sys.argv
 sid = args[args.index("--session-id") + 1]
-print(json.dumps({"type":"system","subtype":"init","session_id":sid,"model":"claude-opus-5"}), flush=True)
-print(json.dumps({"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5","content":[{"type":"text","text":"prompt arrived"}]}}), flush=True)
+print(json.dumps({"type":"system","subtype":"init","session_id":sid,"model":"claude-opus-5-5"}), flush=True)
+print(json.dumps({"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"prompt arrived"}]}}), flush=True)
 print(json.dumps({"type":"result","session_id":sid,"result":"prompt arrived","is_error":False}), flush=True)
 """,
     )
@@ -369,7 +430,7 @@ def test_worker_cancellation_terminates_the_direct_process_group(tmp_path, monke
 import json, sys, time
 sys.stdin.read()
 print(json.dumps({"type":"thread.started","thread_id":"22222222-2222-2222-2222-222222222222"}), flush=True)
-print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-5.6-sol","reasoning_effort":"xhigh"}}), flush=True)
+print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-6.1-sol","reasoning_effort":"xhigh"}}), flush=True)
 time.sleep(30)
 """,
     )
@@ -386,7 +447,10 @@ time.sleep(30)
     assert time.monotonic() - started < 5
 
 
-@pytest.mark.parametrize("ignore_term", [False, True])
+@pytest.mark.parametrize("ignore_term", [False, pytest.param(
+    True,
+    marks=pytest.mark.skipif(os.name == "nt", reason="Windows Job termination does not send POSIX SIGTERM"),
+)])
 def test_worker_exit_is_not_pinned_by_a_descendant_inheriting_output_pipes(
     tmp_path, monkeypatch, ignore_term
 ):
@@ -409,7 +473,7 @@ subprocess.Popen(
 while not Path('child-ready').exists():
     time.sleep(0.01)
 print(json.dumps({"type":"thread.started","thread_id":"33333333-3333-3333-3333-333333333333"}), flush=True)
-print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-5.6-sol","reasoning_effort":"xhigh"}}), flush=True)
+print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-6.1-sol","reasoning_effort":"xhigh"}}), flush=True)
 print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"done"}}), flush=True)
 """.replace("CHILD_CODE", repr(child_code)),
     )
@@ -436,7 +500,7 @@ def test_slow_event_callback_cannot_discard_queued_final_answer(tmp_path, monkey
 import json, sys
 sys.stdin.read()
 print(json.dumps({"type":"thread.started","thread_id":"queued-final-fixture"}), flush=True)
-print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-5.6-sol","reasoning_effort":"xhigh"}}), flush=True)
+print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-6.1-sol","reasoning_effort":"xhigh"}}), flush=True)
 print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"final answer preserved"}}), flush=True)
 """,
     )
@@ -453,24 +517,26 @@ print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":
     assert result.output_text == "final answer preserved"
 
 
-def test_codex_rollout_identity_reads_actual_effort_field(tmp_path, monkeypatch):
+@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-6.1-sol"])
+def test_codex_rollout_identity_reads_actual_effort_field(tmp_path, monkeypatch, model):
     rollout = tmp_path / "rollout.jsonl"
     rollout.write_text(
-        '{"type":"turn_context","payload":{"model":"gpt-5.6-sol","effort":"xhigh"}}\n',
+        json.dumps({"type": "turn_context", "payload": {"model": model, "effort": "xhigh"}}) + "\n",
         encoding="utf-8",
     )
     monkeypatch.setattr("core.codex_bridge.find_codex_jsonl", lambda _sid: rollout)
-    assert _codex_actual_identity("session-1") == ("gpt-5.6-sol", "xhigh")
+    assert _codex_actual_identity("session-1") == (model, "xhigh")
 
 
-def test_claude_rollout_identity_reads_model_and_actual_effort(tmp_path, monkeypatch):
+@pytest.mark.parametrize("model", ["claude-opus-5", "claude-opus-5-5", "claude-sonnet-5-5"])
+def test_claude_rollout_identity_reads_model_and_actual_effort(tmp_path, monkeypatch, model):
     rollout = tmp_path / "claude.jsonl"
     rollout.write_text(
-        '{"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5"}}\n',
+        json.dumps({"type": "assistant", "effort": "xhigh", "message": {"model": model}}) + "\n",
         encoding="utf-8",
     )
     monkeypatch.setattr("core.claude_bridge.find_claude_jsonl", lambda _sid: rollout)
-    assert _claude_actual_identity("session-1") == ("claude-opus-5", "xhigh")
+    assert _claude_actual_identity("session-1") == (model, "xhigh")
 
 
 def test_claude_rollout_identity_does_not_carry_effort_across_model_switch(
@@ -479,7 +545,7 @@ def test_claude_rollout_identity_does_not_carry_effort_across_model_switch(
 ):
     rollout = tmp_path / "claude.jsonl"
     rollout.write_text(
-        '{"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5"}}\n'
+        '{"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5-5"}}\n'
         '{"type":"assistant","message":{"model":"claude-haiku-4-5"}}\n',
         encoding="utf-8",
     )
@@ -554,13 +620,13 @@ def test_claude_terminal_result_preserves_overload_error(tmp_path, monkeypatch, 
 def test_synthetic_claude_error_never_overwrites_real_model_identity(tmp_path, monkeypatch):
     rollout = tmp_path / "claude.jsonl"
     rollout.write_text(
-        '{"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5"}}\n'
+        '{"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5-5"}}\n'
         '{"type":"assistant","message":{"model":"<synthetic>"}}\n',
         encoding="utf-8",
     )
     monkeypatch.setattr("core.claude_bridge.find_claude_jsonl", lambda _sid: rollout)
 
-    assert _claude_actual_identity("session-1") == ("claude-opus-5", "xhigh")
+    assert _claude_actual_identity("session-1") == ("claude-opus-5-5", "xhigh")
     assert "model" not in _event_summary(
         {"type": "assistant", "message": {"model": "<synthetic>"}}
     )
@@ -591,8 +657,7 @@ time.sleep(30)
             on_event=explode,
         )
     assert len(pids) == 1
-    with pytest.raises(ProcessLookupError):
-        os.kill(pids[0], 0)
+    assert not psutil.pid_exists(pids[0])
 
 
 def test_oversized_tool_event_is_compacted_without_killing_claude(
@@ -606,9 +671,9 @@ import json, sys
 sys.stdin.read()
 args = sys.argv
 sid = args[args.index("--session-id") + 1]
-print(json.dumps({"type":"system","subtype":"init","session_id":sid,"model":"claude-opus-5"}), flush=True)
+print(json.dumps({"type":"system","subtype":"init","session_id":sid,"model":"claude-opus-5-5"}), flush=True)
 print(json.dumps({"type":"user","message":{"content":[{"type":"tool_result","content":"x" * (1024 * 1024)}]}}), flush=True)
-print(json.dumps({"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5","content":[{"type":"text","text":"finished after huge tool output"}]}}), flush=True)
+print(json.dumps({"type":"assistant","effort":"xhigh","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"finished after huge tool output"}]}}), flush=True)
 print(json.dumps({"type":"result","session_id":sid,"result":"finished after huge tool output","is_error":False}), flush=True)
 """,
     )
@@ -655,7 +720,7 @@ def test_capture_limit_truncates_diagnostics_without_killing_codex(
 import json, sys
 sys.stdin.read()
 print(json.dumps({"type":"thread.started","thread_id":"44444444-4444-4444-4444-444444444444"}), flush=True)
-print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-5.6-sol","reasoning_effort":"xhigh"}}), flush=True)
+print(json.dumps({"type":"thread.settings","settings":{"model":"gpt-6.1-sol","reasoning_effort":"xhigh"}}), flush=True)
 for index in range(8):
     print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":f"noise-{index}-" + "x" * 256}}), flush=True)
 print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"done after capture limit"}}), flush=True)
@@ -696,6 +761,98 @@ def test_codex_uses_full_access_only_on_windows(tmp_path, monkeypatch, platform_
         assert full is expected
 
 
+@pytest.mark.parametrize("machine,package_arch,native_arch", [
+    ("AMD64", "x64", "x86_64"),
+    ("ARM64", "arm64", "aarch64"),
+])
+@pytest.mark.parametrize("layout", ["nested_optional", "hoisted_optional", "legacy_vendor"])
+@pytest.mark.parametrize("use_override", [False, True])
+@pytest.mark.parametrize("install_scope", ["global", "project_local"])
+def test_windows_codex_npm_shim_resolves_matching_native_binary(
+    tmp_path, monkeypatch, machine, package_arch, native_arch, layout, use_override, install_scope
+):
+    import platform
+
+    import fleet.workers as workers
+
+    monkeypatch.setattr(workers, "_is_windows", lambda: True)
+    monkeypatch.setattr(platform, "machine", lambda: machine)
+    shim_directory = tmp_path / "npm" if install_scope == "global" else tmp_path / "project/node_modules/.bin"
+    shim = shim_directory / "codex.cmd"
+    shim.parent.mkdir(parents=True)
+    shim.write_text("@echo off\n", encoding="utf-8")
+    modules = tmp_path / "npm/node_modules" if install_scope == "global" else tmp_path / "project/node_modules"
+    packages = modules / "@openai"
+    codex_package = packages / "codex"
+    if layout == "nested_optional":
+        native_package = codex_package / "node_modules" / "@openai" / f"codex-win32-{package_arch}"
+    elif layout == "hoisted_optional":
+        native_package = packages / f"codex-win32-{package_arch}"
+    else:
+        native_package = codex_package
+    native = native_package / "vendor" / f"{native_arch}-pc-windows-msvc" / "bin" / "codex.exe"
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b"native fixture")
+    monkeypatch.setattr(workers.shutil, "which", lambda _name: str(shim))
+    environ = {"SERENA_FLEET_CODEX_BIN": str(shim)} if use_override else {}
+
+    assert workers.provider_binary("codex", environ) == str(native)
+
+
+@pytest.mark.parametrize("suffix", [".bat", ".ps1"])
+def test_windows_codex_alternate_npm_shims_resolve_native_binary(tmp_path, monkeypatch, suffix):
+    import platform
+
+    import fleet.workers as workers
+
+    monkeypatch.setattr(workers, "_is_windows", lambda: True)
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    shim = tmp_path / f"codex{suffix}"
+    native = tmp_path / "node_modules/@openai/codex/vendor/x86_64-pc-windows-msvc/bin/codex.exe"
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b"native fixture")
+
+    assert workers.provider_binary("codex", {"SERENA_FLEET_CODEX_BIN": str(shim)}) == str(native)
+
+
+@pytest.mark.parametrize("case", ["wrong_arch", "directory", "unknown_arch", "non_windows"])
+def test_codex_unresolved_or_unsupported_shim_keeps_original_diagnostic_path(tmp_path, monkeypatch, case):
+    import platform
+
+    import fleet.workers as workers
+
+    monkeypatch.setattr(workers, "_is_windows", lambda: case != "non_windows")
+    monkeypatch.setattr(platform, "machine", lambda: "unsupported" if case == "unknown_arch" else "AMD64")
+    shim = tmp_path / "codex.cmd"
+    target = "aarch64" if case == "wrong_arch" else "x86_64"
+    candidate = tmp_path / "node_modules/@openai/codex/vendor" / f"{target}-pc-windows-msvc/bin/codex.exe"
+    candidate.parent.mkdir(parents=True)
+    if case == "directory":
+        candidate.mkdir()
+    else:
+        candidate.write_bytes(b"native fixture")
+
+    assert workers.provider_binary("codex", {"SERENA_FLEET_CODEX_BIN": str(shim)}) == str(shim)
+
+
+def test_windows_native_override_and_other_provider_shims_are_preserved(tmp_path, monkeypatch):
+    import platform
+
+    import fleet.workers as workers
+
+    monkeypatch.setattr(workers, "_is_windows", lambda: True)
+    monkeypatch.setattr(platform, "machine", lambda: "AMD64")
+    native = tmp_path / "explicit-native" / "codex.exe"
+    shim = tmp_path / "codex.cmd"
+    candidate = tmp_path / "node_modules/@openai/codex/vendor/x86_64-pc-windows-msvc/bin/codex.exe"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"native fixture")
+    monkeypatch.setattr(workers.shutil, "which", lambda _name: str(shim))
+
+    assert workers.provider_binary("codex", {"SERENA_FLEET_CODEX_BIN": str(native)}) == str(native)
+    assert workers.provider_binary("claude", {"SERENA_FLEET_CLAUDE_BIN": str(shim)}) == str(shim)
+
+
 # ---- a research leg must be permitted the tools its contract requires ------
 
 
@@ -704,7 +861,7 @@ def _claude_request(phase="discover", activity="coding", access_mode="read_only"
 
     return WorkerRequest(
         run_id="r", leg_id="l", attempt_id="a", task="t", activity=activity,
-        phase=phase, role="x", provider="claude", model="claude-opus-5",
+        phase=phase, role="x", provider="claude", model="claude-opus-5-5",
         effort="low", access_mode=access_mode, cwd="/tmp", prompt="p",
         worker_key="agent:a", worker_label="A", assignment="ws-1",
         assignment_ids=("ws-1",), review_target_ids=(),
@@ -728,6 +885,8 @@ def test_a_research_leg_is_permitted_the_web_tools_it_is_required_to_use(monkeyp
 
     from fleet import workers
 
+    monkeypatch.setattr(workers, "_binary", lambda provider: provider)
+
     monkeypatch.setattr(workers, "claude_read_mcp_flags", lambda _mode: [])
 
     command = workers.worker_command(_claude_request())
@@ -742,6 +901,8 @@ def test_a_research_leg_is_permitted_the_web_tools_it_is_required_to_use(monkeyp
 def test_a_review_leg_gets_no_web_tools(monkeypatch):
     from fleet import workers
 
+    monkeypatch.setattr(workers, "_binary", lambda provider: provider)
+
     monkeypatch.setattr(workers, "claude_read_mcp_flags", lambda _mode: [])
 
     command = workers.worker_command(_claude_request(phase="verify", access_mode="review"))
@@ -755,6 +916,8 @@ def test_the_account_gateway_and_the_builtins_share_one_allowlist(monkeypatch):
     """Two --allowedTools flags would leave the CLI to pick one of them."""
 
     from fleet import workers
+
+    monkeypatch.setattr(workers, "_binary", lambda provider: provider)
 
     monkeypatch.setattr(
         workers, "claude_read_mcp_flags",
@@ -773,6 +936,8 @@ def test_a_write_leg_is_unchanged(monkeypatch):
     """Write legs skip permissions outright; they need no allowlist."""
 
     from fleet import workers
+
+    monkeypatch.setattr(workers, "_binary", lambda provider: provider)
 
     monkeypatch.setattr(workers, "claude_read_mcp_flags", lambda _mode: [])
 

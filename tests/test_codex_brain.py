@@ -345,7 +345,7 @@ def test_image_turn_uses_the_native_codex_image_input(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_installed_codex_schema_requires_url_for_image_input(tmp_path: Path) -> None:
+def test_installed_codex_schema_accepts_our_image_input(tmp_path: Path) -> None:
     binary = shutil.which("codex")
     if not binary:
         return
@@ -367,15 +367,15 @@ def test_installed_codex_schema_requires_url_for_image_input(tmp_path: Path) -> 
     if result.returncode != 0:
         pytest.skip("installed codex does not expose experimental app-server schemas")
     schema = json.loads((schema_dir / "ClientRequest.json").read_text(encoding="utf-8"))
-    image_variant = next(
-        variant
-        for variant in schema["definitions"]["UserInput"]["oneOf"]
-        if variant.get("title") == "ImageUserInput"
-    )
+    # Newer Codex also accepts reference-based images through a nested
+    # anyOf. Validate our real payload against the generated protocol rather
+    # than assuming a particular layout for its url property.
+    from jsonschema import ValidationError, validate
+    user_input = {"$ref": "#/definitions/UserInput", "definitions": schema["definitions"]}
+    validate({"type": "image", "url": "data:image/png;base64,aGVsbG8="}, user_input)
+    with pytest.raises(ValidationError):
+        validate({"type": "image", "image_url": "data:image/png;base64,aGVsbG8="}, user_input)
 
-    assert set(image_variant["required"]) == {"type", "url"}
-    assert "url" in image_variant["properties"]
-    assert "image_url" not in image_variant["properties"]
 
 
 def test_fast_mode_preserves_model_and_reasoning_on_every_turn(tmp_path):

@@ -27,6 +27,7 @@ from core.serena_plugins import (
     validate_manifest,
 )
 from core.serena_scheduler import (
+    DISABLED_PROBE_SECONDS,
     MAX_CONSECUTIVE_FAILURES,
     ActionOutcome,
     SchedulerError,
@@ -396,7 +397,8 @@ def test_a_repeatedly_failing_schedule_is_disabled(scheduler):
     for index in range(MAX_CONSECUTIVE_FAILURES):
         scheduler.tick(now=1_000 + index * 60)
     assert scheduler.require(schedule_id)["state"] == "disabled"
-    assert scheduler.tick(now=10_000) == []
+    # Inside the probe window nothing runs it.
+    assert scheduler.tick(now=1_240 + DISABLED_PROBE_SECONDS - 1) == []
 
 
 def test_a_raising_handler_is_recorded_not_propagated(scheduler):

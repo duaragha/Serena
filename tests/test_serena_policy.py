@@ -48,26 +48,25 @@ def test_invalid_model_reference_fails_validation() -> None:
 
 
 def test_brain_casual_streams_first_and_capacity_falls_back_truthfully() -> None:
-    automatic = resolve_policy(
-        "brain",
-        activity="chat",
-        capacity=_capacity(),
+    typed = resolve_policy("brain", activity="chat", capacity=_capacity())
+    spoken = resolve_policy(
+        "brain", activity="chat", capacity=_capacity(), require_streaming=True
     )
     fallback = resolve_policy(
-        "brain",
-        activity="chat",
-        capacity=_capacity(claude=False),
+        "brain", activity="chat", capacity=_capacity(codex=False)
     )
 
-    # A spoken turn needs a model that streams: Astra answers well but emits
-    # no deltas, so it waits behind the streaming model rather than leading.
-    assert (automatic.provider, automatic.model, automatic.effort) == (
+    # Raghav moved typed chat to GPT-6 Astra on 2026-09-24. A spoken turn
+    # still needs a model that streams: Astra emits no deltas, so on a voice
+    # turn it waits behind the streaming model rather than leading.
+    assert (typed.provider, typed.model, typed.effort) == ("codex", "gpt-6-astra", "high")
+    assert (spoken.provider, spoken.model, spoken.effort) == (
         "claude",
-        "claude-sonnet-5",
+        "claude-opus-5-5",
         "high",
     )
-    assert (fallback.provider, fallback.model) == ("codex", "gpt-6-astra")
-    assert "Claude" in fallback.fallback_reason
+    assert (fallback.provider, fallback.model) == ("claude", "claude-opus-5-5")
+    assert fallback.fallback_reason
 
 
 def test_brain_voice_chat_prefers_haiku_but_respects_model_health() -> None:
@@ -80,9 +79,9 @@ def test_brain_voice_chat_prefers_haiku_but_respects_model_health() -> None:
     )
     capacity = _capacity()
     capacity["models"] = {
-        "claude-haiku-4-5": {
+        "claude-opus-5-5": {
             "usable": False,
-            "reason": "Haiku is unavailable",
+            "reason": "Opus 5.5 is unavailable",
         }
     }
     fallback = resolve_policy(
@@ -91,13 +90,14 @@ def test_brain_voice_chat_prefers_haiku_but_respects_model_health() -> None:
         capacity=capacity,
     )
 
+    # Raghav moved voice to Opus 5.5 on 2026-09-24; Haiku is the fallback.
     assert (automatic.lane, automatic.model, automatic.effort) == (
         "fast",
-        "claude-haiku-4-5",
+        "claude-opus-5-5",
         "high",
     )
-    assert (fallback.model, fallback.effort) == ("gpt-5.6-terra", "high")
-    assert "Haiku is unavailable" in fallback.fallback_reason
+    assert (fallback.model, fallback.effort) == ("claude-haiku-4-5", "high")
+    assert "Opus 5.5 is unavailable" in fallback.fallback_reason
 
 
 def test_coding_lanes_apply_routine_normal_and_hard_floors() -> None:

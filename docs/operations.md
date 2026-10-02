@@ -129,6 +129,13 @@ These paths may be removed once the owning process is stopped. Bootstrap recreat
 
 ## Installed runtime wiring
 
+Both desktop builders run the frozen sidecar's `--workspace-runtime-check`
+before packaging. NumPy is a base dependency because the imported call runtime
+requires it even when local speech models are not installed. The check imports
+the actual call runtime and exercises compiled NumPy code as well as the workspace
+runtime, so missing imported voice dependencies cannot pass merely because the chat UI starts. It does not load
+speech models or open an audio device.
+
 The active brain, mobile host, private work supervisor, and wake listener all execute code directly from this repository. Every supported installed unit is linked to its canonical definition in `systemd/`, so installed copies cannot drift.
 
 The supported always-on services are:
@@ -368,6 +375,19 @@ second dispatcher, and task leases do not cross Syncthing.
 
 ## Loop
 
+Task edits atomically replace their existing filename. A content change no
+longer publishes a second filename with the same ID before deleting the old
+one. If synchronization still introduces conflicting task IDs, dispatch and
+reconciliation isolate those IDs while other tasks continue. Direct updates
+and retries using an ambiguous ID/source receipt refuse to choose a version;
+the doctor lists both files for reconciliation against their dispatch receipts.
+It never silently renumbers or dispatches either conflicting version.
+
+The doctor records a durable outage episode. A delivered or queued notice for
+unchanged failures stays suppressed across restarts and the transport's hourly
+deduplication expiry. Changed failures or a healthy check followed by a new
+failure start another episode; failed delivery can still retry.
+
 1. Raghav texts his own iMessage thread (`+14168294648`, hub conversation
    `conversation_j0Jwy2qIWvpL71Guxv1tY-flch85Cdjg`): `task: <brief>`,
    `#<id> <answer>`, `retry #<id>`, or `status`.
@@ -390,10 +410,28 @@ Only `enqueue_task` stamps a `source_id`, and only sourced `ready` tasks are
 dispatched. Notes from `chats memory add` and every pre-queue task are
 `backlog`.
 
+An opened PR leaves its task in `review`, visible in the active task list and
+phone status, with its private checkout retained. Reconciliation reads that
+PR without repushing the branch: a merge finishes and ships the task, while a
+closure without merging blocks it. Only merged or no-change deliveries become
+`done`; finishing Fleet alone does not mean the fix reached the default branch.
+
+Queue intake recognizes explicit project names; repository resolution also
+recognizes unambiguous Locket/Unified feature vocabulary and requires one existing Git root;
+mixed or unknown targets ask for clarification. A project-only answer such as
+`#78 locket` updates the hint without making an otherwise vague brief ready.
+When dispatch discovers a repository blocker, it clears the old question receipt
+and persists the reason so the next triage question explains what is missing.
+On her dedicated phone line, a conversational reply can answer that waiting task
+directly. The brain identifies its ID; the queue stores his actual message and
+rechecks that the task still needs triage. Ambiguous answers ask which task,
+and the explicit `#<id> <answer>` grammar remains available.
+
 ### SideStore publication
 
-For Unified, add this object inside its existing `ship["duaragha/unified"]`
-rule in the PC's `~/.config/serena/dispatch.json`:
+Each app that ships to SideStore carries a `sidestore` object inside its
+`ship["<owner>/<repo>"]` rule in the PC's `~/.config/serena/dispatch.json`.
+Unified keeps its own releases repo:
 
 ```json
 "sidestore": {
@@ -402,6 +440,30 @@ rule in the PC's `~/.config/serena/dispatch.json`:
   "branch": "main"
 }
 ```
+
+Atrium, Vantage, OpenWhispr and Locket share the public
+`duaragha/sideload-releases` repo, whose one feed
+(`https://raw.githubusercontent.com/duaragha/sideload-releases/main/sidestore-source.json`)
+lists every app. The feed must already hold an entry for the bundle; the
+publisher only prepends versions. Optional rule fields:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `name` | the feed entry's `name` | Release title, notes, and IPA asset name (`<name>-<version>-ios-unsigned.ipa`) |
+| `tag_prefix` | `mobile-v` for a one-app feed, `<name>-v` for a shared feed | Release tag is `<prefix><version>`, so two apps at one version never share a release |
+
+The rule's `codemagic_app_id` and `codemagic_workflow` name the build to watch.
+Each app's `codemagic.yaml` must write `sidestore-build.json` (name, bundle,
+version, build number, commit, IPA name, SHA-256, size) and list it as an
+artifact; Unified's workflow is the reference. Versions may have three or four
+numeric parts: the four apps stamp `<product>.<BUILD_NUMBER>`, and SideStore
+checks the IPA's `CFBundleShortVersionString` against the feed exactly, so the
+string is published verbatim and only ordered numerically.
+
+`dispatch.json` is re-read on every reconcile tick, so a rule change needs no
+restart. A change to the publisher's code does: deploy it with
+`scripts/deploy-pc.ps1 -Commit <sha>` (it restarts the automation loop that runs
+reconcile; Fleet is untouched without `-IncludeFleet`).
 
 `serena.fleet.reconcile` polls Codemagic's saved build history even when no Fleet
 tasks remain open. It selects the newest successful app version on that branch
@@ -412,7 +474,7 @@ iOS fields inside the IPA before uploading only the IPA. Small manifests may be
 inside Codemagic's `_artifacts.zip`. Public notes are generic; private task briefs,
 source archives, and commit messages are never copied to the public release.
 
-Mobile releases use `mobile-v<version>` and `--latest=false` to preserve the
+Mobile releases use `<tag_prefix><version>` and `--latest=false` to preserve the
 desktop updater's latest release. Existing assets must match the build; they
 are never overwritten. A contents-API SHA check preserves concurrent feed edits,
 older builds cannot displace newer versions, and a retry resumes a partial

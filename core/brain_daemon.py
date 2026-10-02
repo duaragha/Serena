@@ -848,6 +848,9 @@ async def _run_turn_answered(client, payload: dict, on_delta=None) -> dict:
         route_payload = payload
         if float(getattr(client, "_fast_model_blocked_until", 0.0) or 0.0) > time.time():
             route_payload = {**payload, "_fast_model_available": False}
+            blocked_model = str(getattr(client, "_fast_model_blocked", "") or "")
+            if blocked_model:
+                route_payload["_unavailable_models"] = [blocked_model]
         route = await client.resolve_route(route_payload)
         provider = route.provider
         if provider in {"claude", "codex", "muse", "local"}:
@@ -877,11 +880,9 @@ async def _run_turn_answered(client, payload: dict, on_delta=None) -> dict:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            fast_model_failed = (
-                route.lane == "fast"
-                and route.model == "claude-haiku-4-5"
-                and not delta_emitted
-            )
+            # Whatever model leads the fast lane (Haiku until 2026-09-24, Opus
+            # 5.5 since) can fail to start while its provider reports healthy.
+            fast_model_failed = route.lane == "fast" and not delta_emitted
             usage_limit_failed = (
                 provider in {"claude", "codex", "muse"}
                 and is_usage_limit_error(exc)
@@ -906,7 +907,14 @@ async def _run_turn_answered(client, payload: dict, on_delta=None) -> dict:
                 # capacity made every spoken greeting pay the same failed start.
                 with contextlib.suppress(Exception):
                     client._fast_model_blocked_until = time.time() + 60.0
-                fallback_payload = {**payload, "_fast_model_available": False}
+                    client._fast_model_blocked = route.model
+                # The standard chat lane may lead with the very model that just
+                # failed, so the retry excludes it rather than paying twice.
+                fallback_payload = {
+                    **payload,
+                    "_fast_model_available": False,
+                    "_unavailable_models": [route.model],
+                }
             fallback_route = await client.resolve_route(
                 fallback_payload,
                 force=True,

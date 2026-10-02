@@ -20,6 +20,7 @@ const {
 } = require('electron');
 const {
   LOOPBACK_HOST,
+  backendEnv,
   backendLaunch,
   findFreePort,
   normalizeExternalUrl,
@@ -307,13 +308,13 @@ async function startBackend() {
     child = spawn(launch.command, launch.args, {
       cwd: launch.cwd,
       detached: process.platform !== 'win32',
-      env: {
+      env: backendEnv({
         ...process.env,
         ...launch.env,
         ...backendEnvironment(profile, app.getPath('home')),
         PYTHONUNBUFFERED: '1',
         SERENA_CALL_RUNTIME: 'lazy',
-      },
+      }),
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -416,7 +417,8 @@ if (gotSingleInstanceLock) {
     let openReleases = null;
     if (profile.channel === 'dev') {
       const { createPromotionWindow } = require('./promotion-window.cjs');
-      openReleases = createPromotionWindow({ app, BrowserWindow, ipcMain, dialog, shell, profile });
+      openReleases = createPromotionWindow({ app, BrowserWindow, ipcMain, dialog, shell, profile,
+        log: (message) => logging.note(message) });
     }
     appMenu.install(() => mainWindow, openReleases);
     // Say when each platform's build lands. A tagged release publishes Linux

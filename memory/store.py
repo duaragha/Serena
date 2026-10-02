@@ -55,7 +55,7 @@ class AmbiguousMemoryId(LookupError):
 # hand, and every task that predates the queue. Only enqueue_task, the phone
 # and webhook boundary, can make work "ready", so the dispatcher never picks up
 # a to-do list it was not handed.
-TASK_STATES = frozenset({"backlog", "needs_triage", "ready", "claimed", "running", "blocked", "done"})
+TASK_STATES = frozenset({"backlog", "needs_triage", "ready", "claimed", "running", "review", "blocked", "done"})
 TASK_PRIORITIES = ("low", "normal", "high", "critical")
 MAX_TASKS = 10000
 TASK_LEASE_SECONDS = 30
@@ -195,7 +195,11 @@ def classify_task(text: str, project_hint: str | None = None) -> str:
                        r"investigate|diagnose|refactor|replace|resolve|enable|disable|"
                        r"research|change|make|migrate|integrate|connect|wire|rename|"
                        r"ship|support|redesign|improve|clean|polish|focus|show|hide|"
-                       r"move|drag|reorder|delete|restore)\b", text, re.I)
+                       r"move|drag|reorder|delete|restore|allow|let|permit|prevent|"
+                       r"stop|keep|swap|search|offer|save|render|display|sort|filter|"
+                       r"upload|sync|handle|track|log|import|export|parse|cache|bump|"
+                       r"publish|deploy|persist|restore|surface|group|split|merge)\b",
+                       text, re.I)
     # And more often he states the requirement rather than the verb: "it
     # should open the keyboard", "I should be able to drag it", "get rid of
     # these buttons". That is a spec, not chat -- the verb list alone read
@@ -204,22 +208,40 @@ def classify_task(text: str, project_hint: str | None = None) -> str:
         r"\b(should(?:n'?t)?(?: be able to)?|needs? to|has to|must|get rid of|"
         r"i want|i'?d like|there should(?:n'?t)? be)\b", text, re.I)
     substantive = {word for word in words if len(word) > 2 and word not in _TASK_PADDING}
-    return "ready" if action and len(words) >= 8 and len(substantive) >= 4 else "needs_triage"
+    if action and len(words) >= 8 and len(substantive) >= 4:
+        return "ready"
+    # No verb list survives contact with how he actually writes: task #106
+    # ("allow swapping an exercise during an active workout without ending the
+    # session or losing logged sets, search the existing database first...")
+    # bounced because "allow", "swap" and "search" were not on it, while "fix
+    # it" sailed through. Nobody types twenty-five specific words into a work
+    # queue as small talk, so length and substance stand in for the verb.
+    return "ready" if len(words) >= 25 and len(substantive) >= 12 else "needs_triage"
 
 
 def _task_rows() -> list[dict]:
+    """Read every task, retaining conflicts for source receipts and diagnosis."""
     rows = []
-    ids = set()
     for index, path in enumerate((MEMORY_DIR / "task").glob("*.md")):
         if index >= MAX_TASKS:
             raise ValueError("task queue capacity exceeded")
         row = _parse_file(path)
         if row and row["type"] == "task":
-            if row["id"] in ids:
-                raise ValueError("duplicate task id requires reconciliation")
-            ids.add(row["id"])
             rows.append(row)
     return rows
+
+
+def _unambiguous_task_rows() -> list[dict]:
+    """Fence conflicting IDs without stopping unrelated queue work.
+
+    A synced copy or interrupted rename is not another dispatch authorization.
+    Leave every version intact for reconciliation; the doctor reports the IDs.
+    """
+    from collections import Counter
+
+    rows = _task_rows()
+    counts = Counter(row["id"] for row in rows)
+    return [row for row in rows if counts[row["id"]] == 1]
 
 
 @_serialized_write
@@ -232,13 +254,18 @@ def enqueue_task(text: str, project_hint: str | None = None,
     """
     text = _task_text(text, "text", 4000)
     project = _task_text(project_hint, "project", 512, optional=True)
+    if not project:
+        from core.task_projects import infer_task_project
+        project = infer_task_project(text, domains=False)
     source = _task_text(source_id, "source_id", 512, optional=True)
     if not isinstance(priority, str) or priority not in TASK_PRIORITIES:
         raise ValueError("invalid task priority")
     rows = _task_rows()
-    for row in rows:
-        if source and row["source_id"] == source:
-            return _clean(row)
+    matches = [row for row in rows if source and row["source_id"] == source]
+    if matches:
+        if len(matches) != 1 or sum(row["id"] == matches[0]["id"] for row in rows) != 1:
+            raise AmbiguousMemoryId("task source receipt requires duplicate ID reconciliation")
+        return _clean(matches[0])
     if len(rows) >= MAX_TASKS:
         raise ValueError("task queue capacity exceeded")
     path = _write_file(_next_id("task"), "task", text, task_fields={
@@ -300,7 +327,7 @@ def claim_next_task(owner: str, now=None, lease_seconds=TASK_LEASE_SECONDS) -> d
     moment = _moment(now)
     duration = _lease_seconds(lease_seconds)
     ready = []
-    for row in _task_rows():
+    for row in _unambiguous_task_rows():
         if row["state"] in {"claimed", "running"} and not _lease_alive(row, moment):
             state = "ready" if row["state"] == "claimed" else "blocked"
             row = _task_metadata(row, state=state, assignee="", lease_token="", lease_until="")
@@ -337,13 +364,18 @@ def mark_task_running(task_id: int, owner: str, token: str, run_id: str, *, now=
 
 
 @_serialized_write
-def release_task_claim(task_id: int, owner: str, token: str, *, state="ready", now=None) -> bool:
+def release_task_claim(task_id: int, owner: str, token: str, *, state="ready", result="", now=None) -> bool:
     if state not in {"ready", "blocked", "needs_triage", "done"}:
         raise ValueError("invalid task release state")
     row = _owned_task(task_id, owner, token, _moment(now))
     if not row or (row["state"] == "running" and state == "ready"):
         return False
-    _task_metadata(row, state=state, assignee="", lease_token="", lease_until="")
+    fields = {"state": state, "assignee": "", "lease_token": "", "lease_until": ""}
+    if state == "needs_triage":
+        # Dispatch found a new blocker after his first answer. The earlier
+        # question receipt must not silence this one.
+        fields.update(asked_at="", result=_flatten(str(result or ""))[:500])
+    _task_metadata(row, **fields)
     return True
 
 
@@ -362,7 +394,7 @@ def renew_task_claim(task_id: int, owner: str, token: str, *, now=None,
 def tasks_in_state(*states: str) -> list[dict]:
     """Queue rows in any of the given states, oldest first."""
     wanted = set(states)
-    return [_clean(row) for row in sorted(_task_rows(), key=lambda row: row["id"])
+    return [_clean(row) for row in sorted(_unambiguous_task_rows(), key=lambda row: row["id"])
             if row["state"] in wanted]
 
 
@@ -374,12 +406,13 @@ def finish_task_run(task_id: int, run_id: str, state: str, result: str = "") -> 
     the run is long gone by the time it finishes, and the reservation ledger
     guarantees one task maps to one run.
     """
-    if state not in {"done", "blocked"}:
+    if state not in {"review", "done", "blocked"}:
         raise ValueError("invalid task finish state")
     run_id = _task_text(run_id, "run_id", 256)
     path = _find_task_path(task_id)
     row = _parse_file(path) if path else None
-    if not row or row["type"] != "task" or row["state"] != "running" or row["run_id"] != run_id:
+    if (not row or row["type"] != "task" or row["state"] not in {"running", "review"}
+            or row["run_id"] != run_id):
         return False
     _task_metadata(row, state=state, assignee="", lease_token="", lease_until="",
                    result=_flatten(str(result or ""))[:500])
@@ -415,9 +448,12 @@ def mark_task_asked(task_id: int, now=None) -> bool:
 def answer_triage(task_id: int, answer: str) -> dict | None:
     """Fold his answer into the brief and triage it again.
 
-    The combined brief goes through the same classifier as a fresh one, so an
-    answer that still says nothing actionable leaves the task waiting instead
-    of opening a run. A second question is not sent automatically.
+    His answer is authority, not another guess to be graded. Re-running the
+    classifier over the combined brief meant a task whose brief was already
+    complete could never be unstuck: #106 asked him a question it did not need,
+    then refused every answer he gave, because the classifier bounced the brief
+    on its wording, not its content. A real answer (three words or more) makes
+    it ready; a shrug still waits.
     """
     answer = _task_text(_flatten(str(answer)) if isinstance(answer, str) else answer,
                         "answer", 2000)
@@ -426,12 +462,31 @@ def answer_triage(task_id: int, answer: str) -> dict | None:
     if not row or row["type"] != "task" or row["state"] != "needs_triage":
         return None
     brief = _task_text(f"{row['content']}\n\nClarification: {answer}", "text", 6000)
-    state = classify_task(brief[:4000], row.get("project_hint") or None)
+    from core.task_projects import infer_task_project, named_task_projects, project_only_answer
+    conflicting = len(named_task_projects(answer)) > 1
+    project = ("" if conflicting else
+               (infer_task_project(answer, domains=False) or row.get("project_hint")
+                or infer_task_project(brief, domains=False)))
+    substantial = len(re.findall(r"\b\w+\b", answer)) >= 3
+    # Question labels and prior project-only replies are routing history, not
+    # specification words. Keep genuine earlier details when his final reply
+    # only corrects the project.
+    parts = row["content"].split("\n\nClarification: ")
+    specification = "\n".join([parts[0], *(part for part in parts[1:]
+                                           if not project_only_answer(part))])
+    project_only = project_only_answer(answer)
+    if not project_only:
+        specification += "\n" + answer
+    state = ("needs_triage" if conflicting else
+             "ready" if substantial and not project_only else
+             classify_task(specification[:4000], project or None))
     new_path = _write_file(task_id, "task", brief, created=row["created_at"], snooze=row["snooze_until"],
                 locket_id=row["locket_id"], source_session_id=row["source_session_id"],
                 source_agent=row["source_agent"], source_title=row["source_title"],
                 source_message_timestamp=row["source_message_timestamp"],
-                task_fields={"state": state})
+                task_fields={"state": state, "project_hint": project,
+                             "result": "the answer names multiple projects" if conflicting else "",
+                             "asked_at": ""})
     if new_path != path:
         path.unlink(missing_ok=True)
     return _clean(_parse_file(new_path))
@@ -587,24 +642,22 @@ def _find_path(memory_id: int, mem_type: str | None = None) -> Path | None:
     rather than resolving to whichever type sorts first.
     """
     types = [mem_type] if mem_type else MEMORY_TYPES
-    prefix = f"{memory_id:03d}-"
     hits: list[Path] = []
     for t in types:
         d = MEMORY_DIR / t
         if not d.exists():
             continue
-        for f in d.glob(f"{prefix}*.md"):
-            hits.append(f)
-            break
-    if not hits:
-        # Frontmatter is the authority when a filename was hand-renamed.
-        hits = [m["_path"] for m in _scan_all()
-                if m["id"] == memory_id and (not mem_type or m["type"] == mem_type)]
+        # Frontmatter is the authority, including a hand-renamed or synced
+        # file whose prefix differs. Never choose the first duplicate.
+        for f in d.glob("*.md"):
+            row = _parse_file(f)
+            if row and row["id"] == memory_id and (not mem_type or row["type"] == mem_type):
+                hits.append(f)
     if len(hits) > 1:
         kinds = sorted({h.parent.name for h in hits})
         raise AmbiguousMemoryId(
             f"#{memory_id} names more than one thing ({', '.join(kinds)}); "
-            f"pass a type to say which")
+            + ("pass a type to say which" if len(kinds) > 1 else "reconcile duplicate files"))
     return hits[0] if hits else None
 
 
@@ -653,6 +706,10 @@ def _write_file(mem_id: int, mem_type: str, content: str,
     if mem_type == "task":
         previous_path = _find_path(mem_id, "task")
         previous = _parse_file(previous_path) if previous_path else {}
+        # Keep task filenames stable. Publishing a new slug then deleting the
+        # old file creates a duplicate-ID window for Syncthing and crashes.
+        if previous_path is not None:
+            fpath = previous_path
         fields = {key: (previous or {}).get(key, "") for key in _TASK_FIELDS}
         fields.update(task_fields or {})
         fields["state"] = fields.get("state") or "backlog"
@@ -880,6 +937,10 @@ def update_memory(
     new_type = mem_type if mem_type is not None else existing["type"]
     if new_type not in MEMORY_TYPES:
         new_type = existing["type"]
+    if new_type != existing["type"] and _find_path(memory_id, new_type) is not None:
+        # Tasks and notes deliberately share numeric IDs across separate
+        # spaces. A type move must not replace the other space's record.
+        raise AmbiguousMemoryId(f"#{memory_id} already exists as {new_type}; cannot move this record")
     if (v2 := _active_v2_store()) is not None:
         target = f"legacy:{existing['type']}:{memory_id}"
         current = v2.get_record(target)
@@ -902,7 +963,8 @@ def update_memory(
             source=_v2_source(action="update", content=new_content),
         )
         return str(_flush_v2_outbox(v2, proposal)["proposal_id"])
-    # Move to new type folder (or rename slug) by writing fresh and removing old
+    # Task edits replace the existing path atomically; type moves and other
+    # memories can still publish a new slug before removing the old path.
     new_path = _write_file(
         memory_id, new_type, new_content,
         created=existing["created_at"],

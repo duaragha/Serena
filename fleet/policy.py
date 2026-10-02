@@ -19,6 +19,7 @@ from typing import Any
 
 from fleet.contracts import build_work_unit_contracts, validate_work_unit_contracts
 from fleet.read_mcp import DEFAULT_READ_SERVERS
+from fleet.retry_policy import DIFFICULT_RETRY_EFFORT, DIFFICULT_RETRY_MODEL
 
 SCHEMA_VERSION = 1
 PHASES = ("discover", "execute", "verify", "finalize")
@@ -34,62 +35,23 @@ MAX_EXPLICIT_WORKSTREAMS = 16
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "serena" / "fleet.json"
 REPOSITORY_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "fleet.example.json"
 
-# This is a hard Fleet contract, not a soft preference. One model per phase,
-# every agent in that phase runs it, and no worker may change it. Effort is
-# named per model because the curves differ in shape.
-#
-# The scores below are DeepSWE v1.1 (a coding benchmark), so they justify Code,
-# Fix and Review. They say nothing about Research; the Luna choice there rests
-# on a direct measurement recorded in the discover comment.
-#
-#   claude-opus-5 high    73% +/-2   $6.08    73 turns
-#   claude-opus-5 xhigh   73% +/-3   $9.07    89 turns   (same score, +50% cost)
-#   claude-opus-5 max     74% +/-4  $11.84    99 turns   (+1 point, ~2x cost)
-#   claude-opus-5 medium  69% +/-1   $3.29    52 turns
-#   gpt-5.6-sol high      69% +/-1   $3.47    37 turns   (leanest of the top tier)
-#   gpt-5.6-sol xhigh     71% +/-1   $4.70    44 turns
-# Superseded 2026-09-18: Sol is retired from every automatic path at
-# Raghav's instruction and Astra 6 takes its rungs. The numbers above are
-# kept as the record of what it was measured against, and the sol entry in
-# COMPARISON_PROFILES stays so the A/B can be re-run on demand.
-#   gpt-5.6-luna max      67% +/-4   $0.61   102 turns   (chatty, but 1/5 the price)
-#   claude-sonnet-5 high  48% +/-5   $7.43   147 turns   (dominated everywhere)
-#
-# Sonnet is deliberately absent. It lost to claude-opus-5 medium on score, cost
-# and turn count simultaneously, so there is no slot where it is the right pick.
+# Hard phase contract approved by Raghav on 2026-09-30 for both machines.
+# Every agent in a phase runs its locked model; workers cannot choose a
+# different version or effort. Earlier benchmark-based ladders are superseded.
 PHASE_MODEL_POLICY = {
     "coding": {
-        # Research runs Luna at max, which the published benchmarks say it should
-        # not. Luna's 41.3% MRCR long-context recall (vs Terra 89.6%) reads as
-        # disqualifying, so it was measured before being believed: one real
-        # Research leg each, Luna max vs Terra max, same prompt and checkout,
-        # graded against a 20-fact key written in advance with six facts planted
-        # mid-file where MRCR predicts Luna collapses. Luna scored 18.5/20 to
-        # Terra's 16, both 6/6 on the mid-file facts, in 31% less wall clock and
-        # ~30% fewer output and reasoning tokens. MRCR measures needle retrieval
-        # from one loaded context; a Fleet worker reads in ~500-line chunks and
-        # re-reads on demand, so the cliff does not describe this phase.
-        # (2026-08-20, knowledge/openai-models/best-research-model-aug-2026.md)
         "discover": (("codex", "gpt-5.6-luna", "max"),),
-        # Approved after the paired Fleet pilot: Astra medium for Code and
-        # Review. Provider-only Claude routing remains an explicit exception.
-        "execute": (("codex", "gpt-6-astra", "medium"),),
-        "verify": (("codex", "gpt-6-astra", "medium"),),
-        # Fix stays high while Code drops to medium. It is the phase with no
-        # safety net: its mistakes land in already-reviewed code that nothing
-        # downstream re-reads, so the rung that is cheap to give up on Code is
-        # not cheap to give up here.
-        "finalize": (("claude", "claude-opus-5", "high"),),
+        "execute": (("codex", "gpt-6.1-sol", "xhigh"),),
+        "verify": (("claude", "claude-opus-5-5", "xhigh"),),
+        "finalize": (("claude", "claude-opus-5-5", "xhigh"),),
     },
-    # Research runs read, analyse, review, refine. Same four models in the same
-    # order: Luna reads, Opus analyses, Astra reviews, Opus refines. Review
-    # tracks the coding ladder -- Sol is retired, and a phase left pinned to it
-    # fails validation against this very table, which refuses the whole run.
+    # Pure research retains its existing provider order for independent review,
+    # with the approved new Opus and Sol versions and efforts.
     "research": {
         "discover": (("codex", "gpt-5.6-luna", "max"),),
-        "execute": (("claude", "claude-opus-5", "high"),),
-        "verify": (("codex", "gpt-6-astra", "medium"),),
-        "finalize": (("claude", "claude-opus-5", "high"),),
+        "execute": (("claude", "claude-opus-5-5", "xhigh"),),
+        "verify": (("codex", "gpt-6.1-sol", "xhigh"),),
+        "finalize": (("claude", "claude-opus-5-5", "xhigh"),),
     },
 }
 
@@ -101,34 +63,29 @@ PROVIDER_ONLY_POLICY = {
     "codex": {
         "coding": {
             "discover": (("codex", "gpt-5.6-luna", "max"),),
-            # Astra medium replaces Sol xhigh as the approved Code fallback.
-            "execute": (("codex", "gpt-6-astra", "medium"),),
-            "verify": (("codex", "gpt-6-astra", "medium"),),
-            # Fix normally runs Opus high and has no downstream safety net, so
-            # its Codex substitute uses Astra high rather than the Code rung.
-            "finalize": (("codex", "gpt-6-astra", "high"),),
+            "execute": (("codex", "gpt-6.1-sol", "xhigh"),),
+            "verify": (("codex", "gpt-6.1-sol", "xhigh"),),
+            "finalize": (("codex", "gpt-6.1-sol", "xhigh"),),
         },
         "research": {
             "discover": (("codex", "gpt-5.6-luna", "max"),),
-            "execute": (("codex", "gpt-6-astra", "high"),),
-            "verify": (("codex", "gpt-6-astra", "medium"),),
-            "finalize": (("codex", "gpt-6-astra", "high"),),
+            "execute": (("codex", "gpt-6.1-sol", "xhigh"),),
+            "verify": (("codex", "gpt-6.1-sol", "xhigh"),),
+            "finalize": (("codex", "gpt-6.1-sol", "xhigh"),),
         },
     },
-    # Opus 5 medium replaces what used to be Sonnet here: 69% at $3.29 over 52
-    # turns against Sonnet high's 48% at $7.43 over 147. Better, cheaper, faster.
     "claude": {
         "coding": {
-            "discover": (("claude", "claude-opus-5", "medium"),),
-            "execute": (("claude", "claude-opus-5", "medium"),),
-            "verify": (("claude", "claude-opus-5", "medium"),),
-            "finalize": (("claude", "claude-opus-5", "high"),),
+            "discover": (("claude", "claude-sonnet-5-5", "high"),),
+            "execute": (("claude", "claude-opus-5-5", "xhigh"),),
+            "verify": (("claude", "claude-opus-5-5", "xhigh"),),
+            "finalize": (("claude", "claude-opus-5-5", "xhigh"),),
         },
         "research": {
-            "discover": (("claude", "claude-opus-5", "medium"),),
-            "execute": (("claude", "claude-opus-5", "high"),),
-            "verify": (("claude", "claude-opus-5", "medium"),),
-            "finalize": (("claude", "claude-opus-5", "high"),),
+            "discover": (("claude", "claude-sonnet-5-5", "high"),),
+            "execute": (("claude", "claude-opus-5-5", "xhigh"),),
+            "verify": (("claude", "claude-opus-5-5", "xhigh"),),
+            "finalize": (("claude", "claude-opus-5-5", "xhigh"),),
         },
     },
     # Muse runs every phase on one stack. Like the other provider-only
@@ -154,11 +111,18 @@ _LEGACY_PROFILE_PHASE = {"coding": "execute", "research": "discover"}
 # Explicit, reproducible A/B runs through the normal Fleet entrypoints. Research
 # and Fix are held constant so the experiment changes only Code and Review.
 COMPARISON_PROFILES = {
-    "sol": {"execute": ("codex", "gpt-5.6-sol", "xhigh"),
-            "verify": ("codex", "gpt-5.6-sol", "high")},
+    "sol": {"execute": ("codex", "gpt-6.1-sol", "xhigh"),
+            "verify": ("codex", "gpt-6.1-sol", "xhigh")},
     "astra": {"execute": ("codex", "gpt-6-astra", "medium"),
               "verify": ("codex", "gpt-6-astra", "medium")},
 }
+
+# Historical retries retain their original identity after a routing update.
+# New retries are issued only to the current Codex stack by fleet.store.
+_DIFFICULT_RETRY_SPECS = frozenset({
+    ("codex", DIFFICULT_RETRY_MODEL, DIFFICULT_RETRY_EFFORT),
+    ("codex", "gpt-6-astra", "xhigh"),
+})
 
 
 def comparison_profile(task: str) -> str | None:
@@ -1261,7 +1225,7 @@ def validate_policy_snapshot(snapshot: object) -> None:
                 or type(ordinal) is not int or not 0 <= ordinal < MAX_WORKERS
                 or (index, ordinal) in retry_slots
                 or (receipt.get("to_provider"), receipt.get("to_model"), receipt.get("to_effort"))
-                != ("codex", "gpt-6-astra", "xhigh")
+                not in _DIFFICULT_RETRY_SPECS
                 or receipt.get("from_provider") not in PROVIDERS
                 or not all(receipt.get(key) for key in ("attempt_id", "leg_id", "reason", "from_model", "from_effort"))):
             raise ValueError("Fleet difficult retry receipt violates its bounded coding contract")
@@ -1383,12 +1347,14 @@ def expected_model_matches(provider: str, requested: str, actual: str | None) ->
         if requested_clean in {"muse", "spark", "muse-spark", "muse spark"}:
             return actual_clean == "muse-spark" or actual_clean.startswith("muse")
         return actual_clean == requested_clean
-    if requested_clean in {"opus", "claude-opus-5"}:
-        return actual_clean == "claude-opus-5" or actual_clean.startswith("claude-opus-5-")
-    if requested_clean.startswith("claude-opus-"):
-        return actual_clean == requested_clean or actual_clean.startswith(requested_clean + "-")
+    if requested_clean == "opus":
+        return bool(re.fullmatch(r"claude-opus-5(?:-5)?(?:-\d{8})?", actual_clean))
     if requested_clean.startswith("claude-"):
-        return actual_clean == requested_clean or actual_clean.startswith(requested_clean + "-")
+        # A date suffix is a snapshot of the same pinned version. A further
+        # version component is another model, not a snapshot (5 != 5.5).
+        return actual_clean == requested_clean or bool(re.fullmatch(
+            re.escape(requested_clean) + r"-\d{8}", actual_clean
+        ))
     aliases = {"sonnet": "sonnet", "haiku": "haiku", "fable": "fable"}
     needle = aliases.get(requested_clean)
     return needle in actual_clean if needle else actual_clean == requested_clean
@@ -1463,7 +1429,7 @@ def policy_models_match_contract(
                                 and item.get("ordinal") == ordinal), None)
                 if (activity != "coding" or phase_name not in {"execute", "finalize"}
                         or snapshot.get("requested_provider_mode") == "claude"
-                        or not receipt or provider != "codex" or actual != ("gpt-6-astra", "xhigh")
+                        or not receipt or (provider, *actual) not in _DIFFICULT_RETRY_SPECS
                         or (receipt.get("to_provider"), receipt.get("to_model"), receipt.get("to_effort"))
                         != (provider, *actual)):
                     return False

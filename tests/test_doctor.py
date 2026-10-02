@@ -13,6 +13,11 @@ import pytest
 from core import doctor
 
 
+@pytest.fixture(autouse=True)
+def _private_doctor_notices(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERENA_NOTIFICATION_DB_PATH", str(tmp_path / "notifications.sqlite3"))
+
+
 def _scheduler_db(path, rows):
     with sqlite3.connect(path) as db:
         db.execute(
@@ -103,7 +108,8 @@ def test_duplicate_task_ids_are_reported_with_both_filenames(tmp_path, monkeypat
 
     assert finding.ok is False
     assert "1069-workout.md" in finding.detail and "1069-github.md" in finding.detail
-    assert "queued" in finding.detail
+    assert "isolated from dispatch" in finding.detail
+    assert "other tasks continue" in finding.detail
 
 
 def test_unique_task_ids_pass(tmp_path, monkeypatch):

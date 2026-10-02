@@ -26,7 +26,7 @@ class ComputerGroup(click.Group):
 
 @click.group(cls=ComputerGroup)
 def computer():
-    """Watch and operate your desktop with GPT-6 Astra."""
+    """Watch and operate your desktop, or Serena's own, with a Claude visual worker."""
 
 
 @computer.command()
@@ -38,10 +38,11 @@ def serve():
 
 
 @computer.command(hidden=True)
-def indicator():
+@click.option("--desk", type=click.Choice(["host", "isolated"]), default="host")
+def indicator(desk):
     from core.computer_indicator import main
 
-    main()
+    main(desk)
 
 
 @computer.command()
@@ -80,9 +81,11 @@ def options(func):
             click.argument("task"),
             click.option(
                 "--target",
-                default="active",
-                show_default=True,
-                help="active, desktop, display:NAME, window:ID",
+                default=None,
+                help=(
+                    "isolated (Serena's own desktop), active, desktop, display:NAME, window:ID. "
+                    "Default: active for watch, isolated for run."
+                ),
             ),
             click.option("--seconds", type=click.IntRange(1, 1800), default=300, show_default=True),
             click.option(
@@ -98,6 +101,8 @@ def options(func):
 
 
 def run_task(mode, task, target, seconds, speak, detach):
+    # A GUI task runs on her own desktop unless it needs one of his windows.
+    target = target or ("isolated" if mode == "control" else "active")
     client = ComputerClient()
     client.ensure_running()
     result = client.call(
@@ -110,7 +115,9 @@ def run_task(mode, task, target, seconds, speak, detach):
         **origin_arguments(),
     )
     session = result["session"]
-    click.echo(f"{mode} · {session['target']} · {session['id']} · gpt-6-astra")
+    click.echo(
+        f"{mode} · {session['target']} · {session['id']} · {session.get('worker_model') or result.get('model')}"
+    )
     if not detach:
         follow(client, after=0, session_id=session["id"])
 
@@ -125,8 +132,129 @@ def watch(**kwargs):
 @computer.command()
 @options
 def run(**kwargs):
-    """Complete one GUI task. Physical input or Ctrl+Alt+Shift+Esc takes over."""
+    """Complete one GUI task, on Serena's own desktop by default.
+
+    Your mouse and keyboard stay yours. Clicking or typing on the desktop she
+    is driving pauses her; `chats computer resume` hands control back.
+    Ctrl+Alt+Shift+Esc stops.
+    """
     run_task("control", **kwargs)
+
+
+@computer.command()
+@click.option("--session", "session_id", default="", help="Which paused session, if two are.")
+def resume(session_id):
+    """Hand control back after you took over; she continues from a fresh screenshot."""
+    click.echo(json.dumps(ComputerClient().call("resume", session_id=session_id), indent=2))
+
+
+@computer.group()
+def accessibility():
+    """Make Edge, VS Code, Serena, OpenWhispr and Unified publish their widgets.
+
+    Chromium and Electron apps hide their contents from accessibility unless
+    started with --force-renderer-accessibility, so app steps could not reach
+    them. apply adds it to his launchers and VS Code's argv.json (next start);
+    re-run it after an app update rewrites a launcher. undo puts them back.
+    """
+
+
+def _accessibility(rows):
+    click.echo(json.dumps(rows, indent=2))
+
+
+@accessibility.command("status")
+def accessibility_status():
+    """Which launchers carry the flag."""
+    from core import app_accessibility
+
+    _accessibility(app_accessibility.status())
+
+
+@accessibility.command("apply")
+def accessibility_apply():
+    """Add the flag to every launcher; takes effect when each app next starts."""
+    from core import app_accessibility
+
+    try:
+        _accessibility(app_accessibility.apply())
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@accessibility.command("undo")
+def accessibility_undo():
+    """Restore every launcher apply changed and delete the copies it made."""
+    from core import app_accessibility
+
+    _accessibility(app_accessibility.undo())
+
+
+@computer.group()
+def desktop():
+    """Serena's own desktop: its own mouse, keyboard, browser and terminal."""
+
+
+def _desktop(action, **params):
+    client = ComputerClient()
+    client.ensure_running()
+    click.echo(json.dumps(client.call("desktop", action=action, **params), indent=2))
+
+
+@desktop.command("status")
+def desktop_status():
+    """Whether her desktop is running, and where."""
+    _desktop("status")
+
+
+@desktop.command("open")
+def desktop_open():
+    """Start her desktop (or adopt the running one) with a browser and terminal."""
+    _desktop("open")
+
+
+@desktop.command("close")
+def desktop_close():
+    """Stop any task there and close her desktop. Browser logins persist."""
+    _desktop("close")
+
+
+@desktop.command("show")
+def desktop_show():
+    """Raise the live viewer window on your screen."""
+    _desktop("show")
+
+
+@desktop.command("hide")
+def desktop_hide():
+    """Minimize the viewer; her desktop keeps running."""
+    _desktop("hide")
+
+
+@desktop.command("launch")
+@click.argument("app", type=click.Choice(["browser", "terminal"]))
+@click.argument("url", required=False)
+def desktop_launch(app, url):
+    """Open a browser (optionally at URL) or a terminal on her desktop."""
+    _desktop("launch", app=app, url=url)
+
+
+@desktop.command("sign-in")
+@click.argument("url", required=False)
+def desktop_sign_in(url):
+    """Let a site accept your sign-in in her browser (optionally opening URL).
+
+    Google and Shopify refuse logins while her browser's automation port is
+    open, so it restarts without it, tabs restored. Her page and browser steps
+    wait until `chats computer desktop signed-in`. Then run `desktop show`.
+    """
+    _desktop("sign_in", **({"url": url} if url else {}))
+
+
+@desktop.command("signed-in")
+def desktop_signed_in():
+    """Hand her browser back: it restarts with its automation port, logins kept."""
+    _desktop("signed_in")
 
 
 @computer.command()
@@ -137,7 +265,7 @@ def run(**kwargs):
 @click.option(
     "--interactive",
     is_flag=True,
-    help="Share with the connected chat without automatic Astra updates.",
+    help="Share with the connected chat without automatic worker updates.",
 )
 def begin(task, mode, target, seconds, interactive):
     """Start a bounded session for a connected CLI/MCP agent.
@@ -145,7 +273,7 @@ def begin(task, mode, target, seconds, interactive):
     An agent may execute this command directly when the user requests computer
     use in chat. The user does not need to run it manually. Use their actual
     task and intended target; active can be the chat terminal. Watch mode starts
-    Astra coaching by default. --interactive explicitly opens sharing only;
+    coaching by default. --interactive explicitly opens sharing only;
     it does not produce automatic observations.
     """
     client = ComputerClient()
@@ -176,7 +304,7 @@ def stop(reason):
 @computer.command()
 @click.argument("message")
 def steer(message):
-    """Give a new instruction to the currently running Astra turn."""
+    """Give a new instruction to the currently running worker turn."""
     click.echo(json.dumps(ComputerClient().call("steer", message=message)))
 
 
@@ -223,6 +351,14 @@ def follow(client, *, after=0, session_id=None):
                 elif kind == "screen_changed":
                     click.echo("\n[screen changed · updating guidance]", err=True)
                     streamed = False
+                elif kind == "paused":
+                    click.echo(
+                        f"\n[paused · {event.get('reason')} · chats computer resume continues]",
+                        err=True,
+                    )
+                    streamed = False
+                elif kind == "resumed":
+                    click.echo("[resumed · continuing from a fresh screenshot]", err=True)
                 elif kind in {"error", "speech_error", "stopped"}:
                     click.echo("\n" + str(event.get("error") or event.get("reason")), err=True)
                     if kind == "error":
@@ -231,12 +367,14 @@ def follow(client, *, after=0, session_id=None):
                     if failure:
                         raise ComputerError(failure)
                     return
-            current = client.call("status").get("session")
-            if (
-                not current
-                or current["state"] != "active"
-                or (session_id and current["id"] != session_id)
-            ):
+            status = client.call("status")
+            sessions = status.get("sessions") or [status.get("session")]
+            current = (
+                next((item for item in sessions if item and item["id"] == session_id), None)
+                if session_id
+                else status.get("session")
+            )
+            if not current or current["state"] not in {"active", "paused", "resuming"}:
                 return
     except KeyboardInterrupt:
         client.call("stop", reason="Ctrl+C in computer CLI")
@@ -248,6 +386,29 @@ def events():
     client = ComputerClient()
     result = client.call("status")
     follow(client, session_id=(result.get("session") or {}).get("id"))
+
+
+AUTOSTART = """[Desktop Entry]
+Type=Application
+Name=Serena computer-use helper
+Comment=Starts serena-computer.service once the desktop session is up
+Exec=sh -c 'systemctl --user import-environment DISPLAY XAUTHORITY; systemctl --user start serena-computer.service'
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+"""
+
+
+def write_login_autostart(home=None):
+    """Start the helper at login on desktops that never reach graphical-session.target.
+
+    GNOME activates that target; Cinnamon, MATE and XFCE do not, so the unit
+    stayed dead after every reboot there. Their XDG autostart runs once the X
+    session is up; starting an already-running unit is a no-op.
+    """
+    path = Path(home or Path.home()) / ".config/autostart/serena-computer.desktop"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(AUTOSTART, encoding="utf-8")
+    return path
 
 
 @computer.command()
@@ -277,6 +438,7 @@ def install():
         f"ExecStart={command}\nWorkingDirectory={Path(__file__).resolve().parents[1]}\n"
         "Restart=on-failure\nRestartSec=3\nUMask=0077\n[Install]\nWantedBy=graphical-session.target\n"
     , encoding="utf-8")
+    write_login_autostart()
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", "serena-computer.service"], check=True)
     # A detached CLI-started service already owns the desktop: never kill a live lease to install.

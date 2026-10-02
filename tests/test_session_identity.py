@@ -48,3 +48,15 @@ def test_provider_filter_never_captures_the_opposite_host() -> None:
         environ={},
         ancestors=[({"CLAUDE_CODE_SESSION_ID": CLAUDE_SID}, ["claude"])],
     ) == (CLAUDE_SID, "claude")
+
+
+def test_codex_plugin_companion_id_inside_claude_is_the_claude_chat() -> None:
+    environ = {"CLAUDE_CODE_SESSION_ID": CLAUDE_SID, "CODEX_COMPANION_SESSION_ID": CLAUDE_SID}
+    assert resolve_origin_session(None, None, environ=environ, ancestors=[]) == (
+        CLAUDE_SID,
+        "claude",
+    )
+    assert resolve_origin_session(CLAUDE_SID, None, environ=environ, ancestors=[]) == (
+        CLAUDE_SID,
+        "claude",
+    )

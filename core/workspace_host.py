@@ -61,8 +61,11 @@ def _muse_owner(**kwargs):
 
 class WorkspaceHost:
     def __init__(self, *, journal: WorkspaceJournal, resolve: Callable, factories=None, register_fork=None,
-                 delete_catalog=None):
+                 delete_catalog=None, on_turn_finished: Callable | None = None):
         self.journal = journal
+        # Told the session id when a turn ends on its own, so the app can say
+        # which chat finished. These panes run no Stop hook the CLI could hear.
+        self.on_turn_finished = on_turn_finished
         self.uploads = WorkspaceUploads(journal.path.parent / "workspace-uploads")
         self.resolve = resolve
         self.register_fork = register_fork
@@ -2191,6 +2194,20 @@ class WorkspaceHost:
             await asyncio.to_thread(self.journal.finish_command, sid, request_id, receipt)
             return receipt
 
+    def _notify_turn_finished(self, sid):
+        # Never hold the event stream on it: owners settle their state only
+        # after the publish that ends the turn returns.
+        def notify():
+            try:
+                self.on_turn_finished(sid)
+            except Exception as error:
+                print(f"[workspace] turn-finished notice failed for {sid[:8]}: {error}", flush=True)
+
+        try:
+            asyncio.get_running_loop().run_in_executor(None, notify)
+        except RuntimeError:
+            pass  # shutting down; nobody is left to tell
+
     async def _publish(self, sid, event):
         self._activity[sid] = monotonic()
         if event.get('method') == 'turn/started':
@@ -2199,6 +2216,9 @@ class WorkspaceHost:
         decorated = await asyncio.to_thread(self.uploads.decorate_event, sid, event)
         await asyncio.to_thread(self.journal.append, sid, decorated)
         method = event.get("method")
+        if (self.on_turn_finished is not None and method == "turn/completed"
+                and event.get("params", {}).get("turn", {}).get("status") in {"completed", "failed"}):
+            self._notify_turn_finished(sid)
         if method == "account/login/completed":
             await self._settle_codex_account_login(sid, event.get("params", {}))
         elif method == "workspace/transportClosed":

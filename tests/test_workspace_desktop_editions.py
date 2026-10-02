@@ -26,7 +26,7 @@ def edition_env(home, version):
 
 
 @pytest.mark.parametrize("version,structured,title", [
-    ("0.3.0", False, "Serena"), ("0.3.0-dev.1", True, "Serena Dev"),
+    ("0.3.0", True, "Serena"), ("0.3.0-dev.1", True, "Serena Dev"),
 ])
 def test_fresh_backend_mounts_only_its_editions_view(tmp_path, version, structured, title):
     result = subprocess.run([sys.executable, "-c", """
@@ -41,13 +41,13 @@ print(json.dumps({'health': health, 'html': html, 'ui': str(_UI_STATE_PATH),
 """], cwd=ROOT, env=edition_env(tmp_path, version), capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     proof = json.loads(result.stdout.strip().splitlines()[-1])
-    assert proof["health"]["desktop"] == {"version": version, "channel": "dev" if structured else "stable"}
+    assert proof["health"]["desktop"] == {"version": version, "channel": "dev" if "-dev." in version else "stable"}
     assert proof["health"]["capabilities"]["structuredWorkspace"] == int(structured)
     assert f'"structuredWorkspace": {str(structured).lower()}' in proof["html"]
     assert f"<title>{title}</title>" in proof["html"]
     assert any(route.startswith("/workspace/") for route in proof["routes"]) is structured
-    assert proof["data"].endswith("chats-dev" if structured else "chats")
-    assert Path(proof["ui"]).parent.name == ("serena-dev" if structured else "serena")
+    assert proof["data"].endswith("chats-dev" if "-dev." in version else "chats")
+    assert Path(proof["ui"]).parent.name == ("serena-dev" if "-dev." in version else "serena")
 
 
 def test_quit_closes_only_the_hosts_own_providers_and_terminals(monkeypatch):

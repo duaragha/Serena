@@ -8,6 +8,7 @@ const net = require('node:net');
 const path = require('node:path');
 const test = require('node:test');
 const {
+  backendEnv,
   backendLaunch,
   findFreePort,
   normalizeExternalUrl,
@@ -129,6 +130,22 @@ test('backend launch uses the repo venv in dev and bundled sidecar in production
   assert.equal(packaged.env.ELECTRON_RUN_AS_NODE, undefined);
   assert.equal(linuxDev.env.SERENA_WORKSPACE_RUNTIME_ROOT, path.join(repoRoot, 'runtimes', 'claude-sdk'));
   assert.equal(windowsDev.env.SERENA_WORKSPACE_NODE_MODE, 'electron');
+});
+
+test('the backend does not inherit what Chromium set for the Electron process', () => {
+  const inherited = {
+    PATH: '/usr/bin',
+    DISPLAY: ':0',
+    NO_AT_BRIDGE: '1',
+    CHROME_DESKTOP: 'serena-desktop.desktop',
+  };
+  const env = backendEnv(inherited);
+  assert.equal(env.NO_AT_BRIDGE, undefined);
+  assert.equal(env.CHROME_DESKTOP, undefined);
+  assert.equal(env.DISPLAY, ':0');
+  assert.equal(inherited.NO_AT_BRIDGE, '1');
+  const main = fs.readFileSync(path.join(desktopDir, 'main.js'), 'utf8');
+  assert.match(main, /env: backendEnv\(\{\s*\.\.\.process\.env,/);
 });
 
 test('main and preload retain the required Electron security contract', () => {
