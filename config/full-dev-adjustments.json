@@ -25,6 +25,14 @@
             "tests/test_terminal_peer_sleep.py",
             "tests/test_workspace_desktop_editions.py"
           ]
+        },
+        {
+          "id": "cost-chip-dom-fixture",
+          "commit": "fd09c7e314f277d1f259665feba957f17f9aea3e",
+          "reason": "Update the terminal identity test DOM for Dev26 cost chips and verify per-chat costs, linked totals and polling cleanup.",
+          "paths": [
+            "tests/test_terminal_identity_row.py"
+          ]
         }
       ]
     }
