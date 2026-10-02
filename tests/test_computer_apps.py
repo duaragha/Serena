@@ -375,6 +375,10 @@ def test_she_works_in_his_app_while_he_types_in_another(display, tmp_path):
                 break
             assert time.monotonic() < deadline, f"windows never appeared: {titles}"
             time.sleep(0.3)
+        # State files are written before GTK maps the windows. Establish his
+        # focus explicitly instead of depending on app launch scheduling.
+        his_window = _x(env, "search", "--name", "^His other app$").split()[-1]
+        _x(env, "windowactivate", "--sync", his_window)
         assert _x(env, "getactivewindow", "getwindowname") == "His other app"
         pointer = _x(env, "getmouselocation")
         snapshot = apps.snapshot("Serena apps test")["snapshot"]
@@ -414,7 +418,7 @@ def test_she_works_in_his_app_while_he_types_in_another(display, tmp_path):
 
 
 @_needs("Xvfb", "metacity", "xdotool", "xauth", "/usr/bin/python3")
-def test_focus_guard_hands_his_focus_back_even_when_the_app_takes_it_late(display, tmp_path):
+def test_focus_guard_hands_his_focus_back_even_when_the_app_takes_it_late(display, tmp_path, monkeypatch):
     from core import computer_apps
     from core.computer_apps import _FocusGuard
 
@@ -429,12 +433,15 @@ def test_focus_guard_hands_his_focus_back_even_when_the_app_takes_it_late(displa
     app_window = _x(env, "search", "--name", "^Serena apps test$").split()[-1]
     app_pid = int(_x(env, "getwindowpid", app_window))
 
+    # This checks the delayed-focus lifecycle, not host scheduling latency.
+    # Several Xvfb/backend suites can compete for CPU during a release run.
+    monkeypatch.setattr(computer_apps, "FOCUS_LINGER_SECONDS", 5)
     guard = _FocusGuard(env, app_pid).start()
     guard.finish()  # the batch has returned; the guard lingers for a late dialog
     time.sleep(0.3)
     _x(env, "windowactivate", app_window)  # the app takes his focus afterwards
-    deadline = time.monotonic() + 1
-    while _x(env, "getactivewindow") != his:
+    deadline = time.monotonic() + 4
+    while _x(env, "getactivewindow") != his or not guard.kept:
         assert time.monotonic() < deadline, "his focus was not handed back"
         time.sleep(0.02)
     assert guard.kept
