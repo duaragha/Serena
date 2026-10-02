@@ -208,9 +208,7 @@ jobs:
         working-directory: candidate
         shell: pwsh
         run: |
-          ./.venv/Scripts/python.exe -m pip install pytest-xdist==3.8.0
-          if ($LASTEXITCODE -ne 0) { throw 'Fleet parallel test dependencies failed' }
-          ./.venv/Scripts/python.exe -m pytest -n 4 --dist=worksteal --durations=12 -o faulthandler_timeout=120 -q --tb=short tests/test_fleet_policy_store.py tests/test_fleet_comparison_profiles.py tests/test_fleet_difficult_retry.py tests/test_fleet_workers.py tests/test_fleet_supervisor.py tests/test_fleet_reports.py tests/test_fleet_autonomy.py tests/test_fleet_peers.py tests/test_fleet_process_recovery.py tests/test_fleet_capacity.py tests/test_coding_job_contract.py tests/test_fleet_patch_transport.py tests/test_fleet_integration_journal.py tests/test_fleet_windows_git_modes.py
+          ./.venv/Scripts/python.exe -m pytest --durations=12 -o faulthandler_timeout=120 -q --tb=short tests/test_fleet_policy_store.py tests/test_fleet_comparison_profiles.py tests/test_fleet_difficult_retry.py tests/test_fleet_workers.py tests/test_fleet_supervisor.py tests/test_fleet_reports.py tests/test_fleet_autonomy.py tests/test_fleet_peers.py tests/test_fleet_process_recovery.py tests/test_fleet_capacity.py tests/test_coding_job_contract.py tests/test_fleet_patch_transport.py tests/test_fleet_integration_journal.py tests/test_fleet_windows_git_modes.py
           if ($LASTEXITCODE -ne 0) { throw 'Fleet model routing tests failed' }
       - name: Prove selected Fleet checkout identity before accepting Windows artifacts
         if: contains(fromJSON(inputs.selected), 'fleet-checkout-identity') || contains(fromJSON(inputs.selected), 'fleet-model-routing')
