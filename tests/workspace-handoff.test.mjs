@@ -38,7 +38,7 @@ for(const mounted of [true,false])for(const target of ['claude','codex','gemini'
   assert.match(calls.at(-1)[1],mounted?/Ready to create/:/Could not open.*Handoff was not sent/);
 });
 
-function linkedThread(target, {structured=true}={}){
+function linkedThread({structured=true,focusedSid}={}){
   const calls=[];
   const fetched=[];
   const termSessions=new Map();
@@ -61,30 +61,38 @@ function linkedThread(target, {structured=true}={}){
     startLiveTerminal:async(sid,options)=>{calls.push(['create',options]);termSessions.set(sid,{structured:true});},
     _feedTerminalWhenReady:async sid=>{calls.push(['feed',sid]);return true;},
     termSessions,
+    ...(focusedSid?{focusedSid}:{}),
   });
   vm.runInContext(source.slice(start,end),context);
   return {context,calls,fetched};
 }
 
-test('handing off to the agent you are in spawns a second chat of it, briefed from this one', async()=>{
-  const {context,calls,fetched}=linkedThread('claude');
-  await context.handoffSession('source','claude');
+for(const target of ['claude','codex'])test(`handing off to ${target} spawns a new ${target} chat even when the thread already holds one`,async()=>{
+  const {context,calls,fetched}=linkedThread();
+  await context.handoffSession('source',target);
   const create=calls.find(call=>call[0]==='create');
   assert.ok(create,'a new chat must be spawned');
-  assert.equal(create[1].agent,'claude');
+  assert.equal(create[1].agent,target);
   assert.equal(create[1].isNew,true);
-  assert.deepEqual(fetched,[{source_sid:'source',target_agent:'claude'}]);
-  assert.ok(!calls.some(call=>call[0]==='open'),'must not land back in the same chat');
+  assert.ok(!calls.some(call=>call[0]==='open'),'must not land on an existing chat');
+  assert.equal(fetched.length,1);
+  assert.equal(fetched[0].target_agent,target);
   const pseudo=context._pseudoSessions[0];
-  assert.equal(pseudo.agent,'claude');
-  assert.equal(pseudo.pending_group_link_with,'source');
+  assert.equal(pseudo.agent,target);
   assert.deepEqual([...pseudo.pending_group_member_sids].sort(),['sibling','source']);
 });
 
-test('handing off to another agent still lands on its chat in the thread', async()=>{
-  const {context,calls,fetched}=linkedThread('codex',{structured:false});
+test('a handoff is briefed from the chat in front when it belongs to the thread',async()=>{
+  const {context,fetched}=linkedThread({focusedSid:'sibling'});
   await context.handoffSession('source','codex');
-  assert.ok(!calls.some(call=>call[0]==='create'),'an existing sibling is reused');
-  assert.deepEqual(calls.find(call=>call[0]==='open'),['open','sibling']);
+  assert.deepEqual(fetched,[{source_sid:'sibling',target_agent:'codex'}]);
+});
+
+test('with no chat in front a handoff is briefed from the other side of the thread',async()=>{
+  const {context,fetched}=linkedThread();
+  await context.handoffSession('source','codex');
   assert.deepEqual(fetched,[{source_sid:'source',target_agent:'codex'}]);
+  const second=linkedThread();
+  await second.context.handoffSession('source','claude');
+  assert.deepEqual(second.fetched,[{source_sid:'sibling',target_agent:'claude'}]);
 });

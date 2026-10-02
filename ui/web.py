@@ -5120,9 +5120,8 @@ function showSessionContextMenu(evt, idx) {
   }
   // === HANDOFF FEATURE START === (remove this block to unwire the menu items)
   if (!inMultiSelect && !isReadOnlyTranscript) {
-    // Both directions, always. Another agent lands on its chat in the thread
-    // (reuse the linked one if it exists; spin one up if it doesn't). Handing off
-    // to the agent you're already on spins up a second chat of that agent.
+    // Every handoff spawns a new chat of that agent, linked into the thread,
+    // even when the thread already holds one (a link can carry two of an agent).
     items.push({ sep: true });
     for (const agent of _HANDOFF_AGENTS) {
       items.push({
@@ -9621,21 +9620,23 @@ async function handoffSession(srcSid, targetAgent) {
     members = _pool.filter(s => s.group === srcChat.group);
   }
   const _byRecent = (a, b) => (b.last_timestamp || '').localeCompare(a.last_timestamp || '');
-  // Handing off to the agent you are already in means "carry this chat into a
-  // fresh one": landing back in the same chat did nothing useful. It spawns a
-  // second chat of that agent, briefed from this one and linked into the thread.
-  const srcAgent = ((srcChat || _findClientSession(srcSid) || {}).agent || 'claude').toLowerCase();
-  const sameAgent = srcAgent === targetAgent;
-  // Where we LAND: the thread's chat of the requested agent (most recent).
-  const targetChat = sameAgent ? null : members
-    .filter(s => (s.agent || 'claude').toLowerCase() === targetAgent)
-    .sort(_byRecent)[0] || null;
-  // What we BRIEF FROM: the latest work on the OTHER side of the thread (that's
-  // what you're handing over). No other-agent chat, or a same-agent handoff →
-  // brief from the chat you're in.
-  let briefFrom = (sameAgent ? null : members
-    .filter(s => (s.agent || 'claude').toLowerCase() !== targetAgent)
-    .sort(_byRecent)[0]) || srcChat || null;
+  // A handoff always spawns a NEW chat of the target agent, linked into the
+  // thread, however many chats of that agent the thread already holds: a link
+  // can carry two claude chats or two codex chats. Landing on the linked chat
+  // of the requested agent used to be the rule for any agent but the one you
+  // were in, and the menu hangs off the thread's row, whose chat is always the
+  // claude one, so only claude could ever get a second chat.
+  // What we BRIEF FROM: the chat you are in, when it is part of this thread.
+  // Otherwise the latest work on the OTHER side of the thread (what you are
+  // handing over), else the chat you opened the menu on.
+  const _inFront = (typeof window !== 'undefined' && window.__nativeTerminalBridge
+    && typeof _gtkCodeSid !== 'undefined') ? _gtkCodeSid
+    : (typeof focusedSid !== 'undefined' ? focusedSid : null);
+  let briefFrom = members.find(s => _inFront && s.session_id === _inFront)
+    || members
+      .filter(s => (s.agent || 'claude').toLowerCase() !== targetAgent)
+      .sort(_byRecent)[0]
+    || srcChat || null;
   let briefSid = briefFrom ? briefFrom.session_id : srcSid;
   try {
     briefSid = await _resolveHandoffSid(briefSid, 15000);
@@ -9660,52 +9661,11 @@ async function handoffSession(srcSid, targetAgent) {
     return;
   }
 
-  // === GROUP FEATURE === (land on the thread's chat of the requested agent)
-  if (targetChat) {
-    const targetSid = targetChat.session_id;
-    const targetLabel = _agentLabel(targetAgent);
-    if (targetSid === briefSid) {
-      // Target and brief-source are the same single chat — nothing to carry over;
-      // just open it.
-      openConv(targetSid);
-      toast.update('Opened ' + targetLabel + ' chat', 'success');
-      return;
-    }
-    // If the target is ALREADY on screen in the current split, just type the
-    // briefing in — don't re-openConv/re-mount (that would relayout and resize).
-    const alreadyVisible = _gtkSplitActive && _gtkSplitSids
-      && _gtkSplitSids.indexOf(targetSid) !== -1 && _activeTerms.has(targetSid);
-    if (alreadyVisible) {
-      if (window.__nativeTerminalBridge) {
-        window.gtkSend({ type: 'feed-text', sid: targetSid, text: resp.prompt, submit: true });
-        toast.update('Handed off to ' + targetLabel, 'success');
-      } else {
-        const ok = await _feedTerminalWhenReady(targetSid, resp.prompt, true, {
-          timeoutMs: 5000,
-          settleMs: 0,
-        });
-        toast.update(ok === 'pending' ? 'Handoff pending for ' + targetLabel + '; do not resend.' : ok ? 'Handed off to ' + targetLabel : 'Handoff did not reach ' + targetLabel,
-          ok === 'pending' ? 'warning' : ok ? 'success' : 'error');
-      }
-    } else {
-      openConv(targetSid);
-      const ok = await _feedTerminalWhenReady(targetSid, resp.prompt, true, {
-        timeoutMs: 15000,
-        settleMs: 1200,
-      });
-      toast.update(ok === 'pending' ? 'Handoff pending for ' + targetLabel + '; do not resend.' : ok ? 'Handed off to ' + targetLabel : 'Opened ' + targetLabel + ', but handoff may not have landed',
-        ok === 'pending' ? 'warning' : ok ? 'success' : 'error');
-    }
-    return;
-  }
-  // === GROUP FEATURE END ===
-
   const cwd = resp.cwd || '';
   const shortProj = cwd ? (cwd.split('/').filter(Boolean).pop() || '~') : '~';
   // Inherit the source chat's title so both halves of the handed-off thread
   // share a name. The shared group color makes them feel like one continuous
   // conversation across agents instead of "↪ Handoff from codex" duplicates.
-  // (srcChat was already resolved above for the existing-sibling reuse path.)
   const label = (briefFrom && briefFrom.display_title)
     || (srcChat && srcChat.display_title)
     || resp.source_title
