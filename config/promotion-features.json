@@ -261,6 +261,17 @@
         "scripts/verify-chat-index.py",
         "tests/test_chat_index_release.py"
       ]
+    },
+    {
+      "id": "chat-cost-chips",
+      "title": "Per-chat Claude and Codex cost in the terminal bar",
+      "devTag": "v0.3.10-dev.26",
+      "commit": "a869179b2e473f286cf6bdbb2185ca0e33d7b0e0",
+      "requires": [],
+      "paths": [
+        "core/session_cost.py", "scripts/claude-statusline.py",
+        "ui/web.py", "tests/test_session_cost.py"
+      ]
     }
   ]
 }
