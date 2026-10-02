@@ -975,12 +975,12 @@ def test_rotated_review_waits_for_target_code_and_reviewers_own_prior_phase(
     agent_b_code_started = threading.Event()
     release_agent_b_code = threading.Event()
     agent_a_review_started = threading.Event()
-    coordination_timeout = 15 if os.name == "nt" else 3
+    coordination_timeout = 15
 
     def checked_fake(request, *, cancel_requested, on_event):
         if request.phase == "execute" and request.worker_key == "agent:b":
             agent_b_code_started.set()
-            assert release_agent_b_code.wait(timeout=30 if os.name == "nt" else 3)
+            assert release_agent_b_code.wait(timeout=30)
         if request.phase == "execute":
             assert "active co-implementer" in request.prompt
             assert "Do not turn this phase into review-only work" in request.prompt
@@ -1025,7 +1025,7 @@ def test_rotated_review_waits_for_target_code_and_reviewers_own_prior_phase(
         assert not agent_a_review_started.wait(timeout=0.2)
     finally:
         release_agent_b_code.set()
-        thread.join(timeout=30 if os.name == "nt" else 5)
+        thread.join(timeout=30)
     assert not thread.is_alive()
     completed = outcome["run"]
     assert completed["state"] == "completed"
@@ -1313,8 +1313,20 @@ def test_resident_supervisor_expands_a_stale_unstarted_multitask_plan(
     # Three named workstreams give three agents, four phases each. The old plan
     # padded to four so the codex/claude pairing stayed even.
     assert completed["agent_count"] == 3
-    # Two chats per agent: Codex Research/Code and clean Claude Review/Fix.
-    assert completed["chat_count"] == 6
+    # Fix may legally bypass its worker's parked, disjoint Review. That turn
+    # needs a new chat if Review has not finished yet; completed Review must
+    # still be resumed. Check the actual ordering, not a fortunate schedule.
+    phases = {phase["name"]: phase["legs"] for phase in completed["phases"]}
+    early_fixes = 0
+    for ordinal in range(3):
+        attempts = {name: next(leg["current_attempt"] for leg in legs if leg["ordinal"] == ordinal)
+                    for name, legs in phases.items()}
+        assert attempts["discover"]["session_id"] == attempts["execute"]["session_id"]
+        assert attempts["verify"]["session_id"] != attempts["execute"]["session_id"]
+        if attempts["finalize"]["session_id"] != attempts["verify"]["session_id"]:
+            assert attempts["finalize"]["started_at"] < attempts["verify"]["completed_at"]
+            early_fixes += 1
+    assert completed["chat_count"] == 6 + early_fixes
     assert completed["progress"] == {"completed": 12, "total": 12}
     assert completed["policy"]["scaling"]["selected_workers"] == 3
     assert any(event["type"] == "run.policy_refreshed" for event in store.events(run["run_id"]))
