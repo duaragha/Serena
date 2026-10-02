@@ -94,9 +94,41 @@ jobs:
         working-directory: candidate
         run: |
           python -m venv .venv
-          .venv/bin/python -m pip install -e '.[dev,workspace]' pyinstaller playwright==1.58.0
+          .venv/bin/python -m pip install -e '.[dev,workspace,browser]' pyinstaller playwright==1.58.0
           .venv/bin/python -m playwright install --with-deps chromium
           npm --prefix apps/desktop ci
+      - name: Prepare complete Dev desktop test environment
+        if: inputs.dev_tag != ''
+        working-directory: candidate
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xdotool xinput x11-xserver-utils tmux
+          git config --global user.name 'Serena CI'
+          git config --global user.email 'ci@serena.invalid'
+          .venv/bin/python - <<'PYTHON'
+          import asyncio, os, pathlib, subprocess, tempfile
+          from playwright.sync_api import sync_playwright
+          from core.computer_browser import launch
+          with sync_playwright() as p:
+              binary = pathlib.Path(p.chromium.executable_path)
+          # Install Chromium's own sandbox helper on this disposable runner.
+          # Keep the browser sandbox enabled, including direct CDP fixtures.
+          helper = next(p for p in (binary.with_name('chrome_sandbox'), binary.with_name('chrome-sandbox')) if p.exists())
+          sandbox = '/usr/local/lib/serena-ci-chrome-sandbox'
+          subprocess.run(['sudo', 'install', '-o', 'root', '-g', 'root', '-m', '4755', str(helper), sandbox], check=True)
+          os.environ['CHROME_DEVEL_SANDBOX'] = sandbox
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              stream.write('CHROME_DEVEL_SANDBOX=' + sandbox + '\n')
+          test_bin = pathlib.Path(os.environ['RUNNER_TEMP']) / 'serena-test-bin'
+          test_bin.mkdir()
+          (test_bin / 'chromium').symlink_to(binary)
+          with open(os.environ['GITHUB_PATH'], 'a') as stream:
+              stream.write(str(test_bin) + '\n')
+          with tempfile.TemporaryDirectory(prefix='ci-browser-proof-') as scratch:
+              browser = asyncio.run(launch(binary, pathlib.Path(scratch) / 'profile', headless=True))
+              browser.close()
+          print('Sandboxed Chromium CDP launch passed')
+          PYTHON
       - name: Candidate shell, sidebar and original CLI regression gates
         working-directory: candidate
         run: |
