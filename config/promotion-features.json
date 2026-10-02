@@ -249,6 +249,18 @@
         "core/codex_scanner.py", "core/indexer.py",
         "tests/test_codex_scanner_resident.py", "tests/test_codex_parent_candidate.py"
       ]
+    },
+    {
+      "id": "windows-chat-index-refresh",
+      "title": "Keep new Windows chats visible after startup",
+      "devTag": "v0.3.10-dev.25",
+      "commit": "fddbd56ef6310343073e0d6e638897f603f5fc8d",
+      "requires": ["packaged-index-refresh", "codex-0159-chat-index"],
+      "paths": [
+        "apps/desktop/windows/sidecar-win.py",
+        "scripts/verify-chat-index.py",
+        "tests/test_chat_index_release.py"
+      ]
     }
   ]
 }
