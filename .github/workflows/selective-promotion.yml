@@ -10,6 +10,12 @@ on:
         options: [verify, publish]
         default: verify
         required: true
+      dev_tag:
+        description: Optional complete Dev release to promote (all features required)
+        required: false
+      dev_commit:
+        description: Exact reviewed commit of that Dev tag
+        required: false
       source:
         description: Reviewed catalog source commit (40 hex characters)
         required: true
@@ -46,10 +52,12 @@ jobs:
         with:
           node-version: '22'
       - name: Check all registered feature combinations
-        run: node --test tests/promotion-composition.test.cjs
+        run: node --test tests/promotion-composition.test.cjs tests/full-promotion.test.cjs
       - name: Validate request and assemble only selected patches
         env:
           GH_TOKEN: ${{ github.token }}
+          PROMOTION_DEV_TAG: ${{ inputs.dev_tag }}
+          PROMOTION_DEV_COMMIT: ${{ inputs.dev_commit }}
           PROMOTION_SOURCE: ${{ inputs.source }}
           PROMOTION_STABLE: ${{ inputs.stable }}
           PROMOTION_SELECTED: ${{ inputs.selected }}
@@ -103,6 +111,12 @@ jobs:
             .venv/bin/python -m pytest -q --tb=short tests/test_fleet_report_visibility.py tests/test_web_terminal_performance.py
           fi
           .venv/bin/python -m pytest -q --tb=short tests/test_workspace_browser.py tests/test_fleet_chat_sidebar.py tests/test_voice_created_chat_sidebar.py tests/test_session_sidebar_completeness.py tests/test_workspace_desktop_editions.py tests/test_terminal*.py tests/test_linked_terminal*.py tests/test_pty_terminal_runtime.py tests/test_desktop_shell_parity.py
+      - name: Prove complete Dev workspace and backend changes
+        if: inputs.dev_tag != ''
+        working-directory: candidate
+        run: |
+          node --test tests/workspace*.test.mjs
+          .venv/bin/python -m pytest -q --tb=short tests/test_workspace*.py tests/test_computer*.py tests/test_app_accessibility.py tests/test_chat*.py tests/test_codex*.py tests/test_index_refresh_packaged.py tests/test_memory_tasks.py tests/test_scheduler*.py tests/test_journal.py tests/test_doctor*.py tests/test_security_policy.py tests/test_serena_policy.py tests/test_telegram_line.py tests/test_sidestore_publish.py tests/test_pc_game_mode.py tests/test_docker_cache_maintenance.py tests/test_agent_company.py tests/test_brain_router.py tests/test_brain_daemon_permissions.py tests/test_bounded_automation.py tests/test_session_identity.py
       - name: Prove selected Fleet model routing before packaging
         if: contains(fromJSON(inputs.selected), 'fleet-model-routing')
         working-directory: candidate
@@ -113,7 +127,7 @@ jobs:
             tests/test_fleet_supervisor.py tests/test_fleet_reports.py \
             tests/test_fleet_autonomy.py tests/test_fleet_peers.py \
             tests/test_fleet_process_recovery.py tests/test_fleet_capacity.py \
-            tests/test_coding_job_contract.py
+            tests/test_coding_job_contract.py tests/test_fleet_patch_transport.py tests/test_fleet_integration_journal.py tests/test_fleet_windows_git_modes.py
       - name: Prove selected Fleet checkout identity before packaging
         if: contains(fromJSON(inputs.selected), 'fleet-checkout-identity') || contains(fromJSON(inputs.selected), 'fleet-model-routing')
         working-directory: candidate
@@ -190,14 +204,14 @@ jobs:
           python scripts/verify-chat-index.py --binary candidate/apps/desktop/build/windows-sidecar/serena-web-sidecar/serena-web-sidecar.exe
           if ($LASTEXITCODE -ne 0) { throw 'Frozen chat history continuity failed' }
       - name: Prove selected Fleet model routing before accepting Windows artifacts
-        if: contains(fromJSON(inputs.selected), 'fleet-model-routing')
+        if: inputs.dev_tag == '' && contains(fromJSON(inputs.selected), 'fleet-model-routing')
         working-directory: candidate
         shell: pwsh
         run: |
-          ./.venv/Scripts/python.exe -m pytest -q --tb=short tests/test_fleet_policy_store.py tests/test_fleet_comparison_profiles.py tests/test_fleet_difficult_retry.py tests/test_fleet_workers.py tests/test_fleet_supervisor.py tests/test_fleet_reports.py tests/test_fleet_autonomy.py tests/test_fleet_peers.py tests/test_fleet_process_recovery.py tests/test_fleet_capacity.py tests/test_coding_job_contract.py
+          ./.venv/Scripts/python.exe -m pytest -q --tb=short tests/test_fleet_policy_store.py tests/test_fleet_comparison_profiles.py tests/test_fleet_difficult_retry.py tests/test_fleet_workers.py tests/test_fleet_supervisor.py tests/test_fleet_reports.py tests/test_fleet_autonomy.py tests/test_fleet_peers.py tests/test_fleet_process_recovery.py tests/test_fleet_capacity.py tests/test_coding_job_contract.py tests/test_fleet_patch_transport.py tests/test_fleet_integration_journal.py tests/test_fleet_windows_git_modes.py
           if ($LASTEXITCODE -ne 0) { throw 'Fleet model routing tests failed' }
       - name: Prove selected Fleet checkout identity before accepting Windows artifacts
-        if: contains(fromJSON(inputs.selected), 'fleet-checkout-identity') || contains(fromJSON(inputs.selected), 'fleet-model-routing')
+        if: inputs.dev_tag == '' && (contains(fromJSON(inputs.selected), 'fleet-checkout-identity') || contains(fromJSON(inputs.selected), 'fleet-model-routing'))
         working-directory: candidate
         shell: pwsh
         run: |

@@ -30,7 +30,7 @@ Never install an update by hand via SSH or manual copying. Both desktop apps sel
 ### 1. Serena Desktop (`apps/desktop/`)
 - **Architecture**: Public repository `duaragha/Serena`. Releases are downloaded anonymously by `electron-updater`, requiring no token.
 - **When**: Any changes affecting `apps/desktop/`, `ui/`, or core desktop services.
-- **Every Serena update ships to Serena Dev, never straight to stable.** Serena Dev is a separate app that runs alongside stable (own name, `~/.config/serena-dev`, `~/.local/share/chats-dev`, `dev` update channel), so Raghav tests new features without disturbing the stable app his work runs in. Native structured panes only run in Dev. Raghav promotes tested feature selections himself using Dev's **Releases > Promote to Main**. Conversational approval is not release authorization.
+- **Every Serena update ships to Serena Dev, never straight to stable.** Serena Dev is a separate app that runs alongside stable (own name, `~/.config/serena-dev`, `~/.local/share/chats-dev`, `dev` update channel), so Raghav tests new features without disturbing the stable app his work runs in. Native structured panes run in both editions, with separate profiles and shared writer locks. Raghav promotes tested feature selections using Dev's **Releases > Promote to Main**, or explicitly requests a complete Dev release promotion. Both routes must pass the stable promotion workflow before publication.
 - **Workflow**:
   1. Test: `cd apps/desktop && npm test`
   2. Set `apps/desktop/package.json` to the next patch version (e.g. `0.3.4` -> `0.3.5`) for the first Dev build of that version. Later Dev builds of the same version keep it unchanged; the release job refuses a tag whose base differs from `package.json`.

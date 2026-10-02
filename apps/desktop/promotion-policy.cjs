@@ -50,7 +50,7 @@ function adoptedBaseline(catalog, tag) {
   return adoptedBaselines(catalog).find(entry => entry.tag === tag) || null;
 }
 
-function selection(catalog, selected, tested, installed = []) {
+function selection(catalog, selected, tested, installed = [], { allowUnchanged = false } = {}) {
   const features = catalogFeatures(catalog);
   const known = new Map(features.map(f => [f.id, f]));
   for (const ids of [selected, tested, installed]) {
@@ -59,7 +59,7 @@ function selection(catalog, selected, tested, installed = []) {
   }
   const chosen = new Set([...installed, ...selected]);
   const added = features.filter(f => chosen.has(f.id) && !installed.includes(f.id));
-  if (!added.length) throw new Error('Select at least one feature not already in main');
+  if (!added.length && !allowUnchanged) throw new Error('Select at least one feature not already in main');
   for (const f of features.filter(f => chosen.has(f.id))) {
     const missing = f.requires.filter(id => !chosen.has(id));
     if (missing.length) throw new Error(`${f.title} requires: ${missing.map(id => known.get(id).title).join(', ')}`);

@@ -104,3 +104,24 @@ Coverage includes desktop/mobile layout, dependency/testing gates, pending statu
 source changes, native cancellation, duplicate clicks, lost dispatch replies and
 strict sender/frame checks. Live proof must also run GitHub verify mode and confirm
 the currently running main PID stays healthy.
+
+
+## Complete Dev Release Promotion
+
+An explicit request to promote all of Dev can use the same workflow with
+`dev_tag` and `dev_commit` set to a reviewed, immutable Dev release. Both platform
+installers and Dev updater manifests must already be published. Select every
+registered feature and acknowledge all additions as tested.
+
+The candidate retains stable's history as its parent, imports the exact Dev tree,
+and changes only the version files and promotion receipt. The receipt records the
+Dev tag, commit and tree as `fullDev`; future selective promotions still recognize
+all installed features. This includes released changes absent from the feature
+catalog. A moved tag, incomplete Dev release, partial selection or stale stable
+baseline refuses the build. Complete promotions add workspace and backend tests
+to the existing Linux/Windows packaging, frozen-history and checksum gates.
+
+Main and Dev now support native chat panes, with separate databases, settings,
+application identities and updater channels. Their native-writer locks remain
+shared so the two editions cannot write the same session concurrently. Publishing
+still does not install or restart either local application.
