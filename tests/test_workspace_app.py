@@ -709,9 +709,15 @@ function teardownLiveTerminal(sid){const runtime=termSessions.get(sid);runtime.c
             assert context['focused_sid'] == 'exact'
             assert context['runtimes'][0]['draft'] and context['runtimes'][0]['draft_known']
             assert not owners[0].sent
-            page.get_by_role("button", name="Send message", exact=True).click()
-            page.get_by_text("controlled provider output", exact=True).wait_for()
+            with page.expect_response(lambda response: response.url.endswith('/commands')
+                                      and response.request.post_data_json.get('action') == 'submit') as submitted:
+                page.get_by_role("button", name="Send message", exact=True).click()
+            receipt = submitted.value.json()
+            assert receipt.get('ok') is True, receipt
             assert owners[0].sent == [[{"type": "text", "text": "real mounted page control"}]]
+            # Start the render deadline after confirmed delivery. Polling and
+            # browser route callbacks run asynchronously on a loaded CI host.
+            page.get_by_text("controlled provider output", exact=True).wait_for(timeout=15000)
             image = io.BytesIO()
             Image.new("RGB", (8, 8), "pink").save(image, format="PNG")
             raw = image.getvalue()

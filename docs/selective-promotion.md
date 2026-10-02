@@ -132,3 +132,20 @@ Main and Dev now support native chat panes, with separate databases, settings,
 application identities and updater channels. Their native-writer locks remain
 shared so the two editions cannot write the same session concurrently. Publishing
 still does not install or restart either local application.
+
+
+### Resuming a Linux validation failure
+
+An operator can set `resume_run` to a completed, failed full-promotion run whose
+Windows job succeeded. Reuse the original candidate's request ID, stable/Dev pins,
+feature selection and publish mode; `source` pins the newly reviewed runner code.
+The resume validator checks the repository, workflow, master source ancestry,
+Windows/Linux outcomes, bundle commit, receipt and unchanged stable baseline.
+Only then can it reuse that run's Windows artifacts. Linux runs every required
+gate again, and publication still verifies both platforms' hashes.
+
+The resumed Linux validation uses two reviewed browser synchronization fixtures
+from the runner source. It restores those test files and requires a clean tracked
+candidate tree before packaging. The candidate, receipt and Windows binary remain
+identical to the prior run; `resumed-from.json` records their provenance in the
+workflow artifacts. No new application changes are assembled during a resume.
