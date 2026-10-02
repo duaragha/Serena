@@ -115,6 +115,10 @@ if (-not (Test-Path -LiteralPath $SidecarExe -PathType Leaf)) {
     throw "PyInstaller did not produce $SidecarExe"
 }
 
+Write-Host "[windows] proving chat history survives packaged index refreshes"
+& $Python (Join-Path $RepoRoot "scripts\verify-chat-index.py") --binary $SidecarExe
+Assert-LastExitCode "Frozen chat history continuity"
+
 Write-Host "[windows] smoke-testing the frozen Fleet peer MCP"
 & $Python (Join-Path $RepoRoot "scripts\fleet_peer_smoke.py") --binary $SidecarExe
 Assert-LastExitCode "Frozen Fleet peer MCP smoke test"
