@@ -272,6 +272,14 @@
         "core/session_cost.py", "scripts/claude-statusline.py",
         "ui/web.py", "tests/test_session_cost.py"
       ]
+    },
+    {
+      "id": "handoff-always-spawns",
+      "title": "Every handoff spawns a new chat, so a link can hold two codex chats",
+      "devTag": "v0.3.10-dev.27",
+      "commit": "d46fe58cd3bd705ab13bd5883a9fe40db23a1797",
+      "requires": ["handoff-same-agent"],
+      "paths": ["ui/web.py", "tests/workspace-handoff.test.mjs"]
     }
   ]
 }
