@@ -451,3 +451,45 @@ def test_focus_guard_hands_his_focus_back_even_when_the_app_takes_it_late(displa
     _x(env, "windowactivate", app_window)
     time.sleep(0.4)
     assert _x(env, "getactivewindow") == app_window
+
+
+def test_accessibility_events_are_drained_on_the_atspi_thread(monkeypatch):
+    from core import computer_apps
+
+    monkeypatch.setattr(computer_apps, "DRAIN_SECONDS", 0.02)
+    apps = HisApps({"DISPLAY": ""})
+    threads = []
+    monkeypatch.setattr(HisApps, "_drain", staticmethod(lambda: threads.append(threading.current_thread().name)))
+    apps._start_drainer()
+    apps._start_drainer()  # idempotent: still one drainer
+    deadline = time.monotonic() + 5
+    while len(threads) < 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    apps.close()
+    assert len(threads) >= 3
+    # libatspi is not thread-safe: draining must share the thread every call uses.
+    assert {name.split("_")[0] for name in threads} == {"computer-apps"}
+    apps.drainer.join(timeout=1)
+    assert not apps.drainer.is_alive()
+
+
+def test_a_slow_drain_is_never_queued_twice(monkeypatch):
+    from core import computer_apps
+
+    monkeypatch.setattr(computer_apps, "DRAIN_SECONDS", 0.01)
+    apps = HisApps({"DISPLAY": ""})
+    release = threading.Event()
+    started = []
+
+    def slow():
+        started.append(1)
+        release.wait(2)
+
+    monkeypatch.setattr(HisApps, "_drain", staticmethod(slow))
+    apps._start_drainer()
+    time.sleep(0.2)
+    queued = apps.executor._work_queue.qsize()
+    release.set()
+    apps.close()
+    assert len(started) == 1
+    assert queued == 0

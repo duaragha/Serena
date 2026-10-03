@@ -45,6 +45,12 @@ SLOW_APP_SECONDS = 0.7
 # registration costs the whole listing this much once, not a second or more
 # per call. Healthy apps answer in milliseconds.
 PROBE_SECONDS = 0.3
+# libatspi subscribes its connection to every desktop UI event to keep its
+# cache, and only reads them when the GLib main context runs. Nothing here runs
+# a main loop, so the events piled up until the accessibility bus refused about
+# 3,000 messages a minute (2026-10-02). Read them this often.
+DRAIN_SECONDS = 1.0
+DRAIN_LIMIT = 5000
 PROBE_WORKERS = 16
 # A skipped app is tried again after this long, doubling while it keeps
 # missing, up to DEAD_APP_SECONDS: a busy app comes back, a hung one stays out.
@@ -224,6 +230,8 @@ class HisApps:
         self.strikes = {}
         self.displays = {}
         self.atspi = None
+        self.drainer = None
+        self.closed = threading.Event()
         self.a11y = None
         self.prober = None
         self.scope = None
@@ -246,7 +254,34 @@ class HisApps:
             # One slow or hung app must cost about a second, not D-Bus's 25.
             Atspi.set_timeout(1000, 3000)
             self.atspi = Atspi
+            self._start_drainer()
         return self.atspi
+
+    def _start_drainer(self):
+        if self.drainer is not None:
+            return
+        self.drainer = threading.Thread(target=self._drain_loop, name="computer-apps-drain", daemon=True)
+        self.drainer.start()
+
+    def _drain_loop(self):
+        pending = None
+        while not self.closed.wait(DRAIN_SECONDS):
+            if pending is not None and not pending.done():
+                continue
+            try:
+                # The Atspi thread owns libatspi; drain there, never beside a call.
+                pending = self.executor.submit(self._drain)
+            except RuntimeError:
+                return  # executor shut down
+
+    @staticmethod
+    def _drain():
+        from gi.repository import GLib
+
+        context = GLib.MainContext.default()
+        for _ in range(DRAIN_LIMIT):
+            if not context.pending() or not context.iteration(False):
+                return
 
     def available(self):
         try:
@@ -255,6 +290,7 @@ class HisApps:
             return False
 
     def close(self):
+        self.closed.set()
         self.executor.shutdown(wait=False, cancel_futures=True)
         if self.prober is not None:
             self.prober.shutdown(wait=False, cancel_futures=True)
