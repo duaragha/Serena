@@ -115,7 +115,7 @@ def test_the_mic_socket_holds_a_hesitation_and_sends_it_with_his_next_words(monk
     answered = []
     done = threading.Event()
 
-    async def answer(send, text, turn, *, follow_up=False):
+    async def answer(send, text, turn, *, follow_up=False, after=""):
         answered.append((text, follow_up))
         done.set()
 
@@ -134,3 +134,86 @@ def test_the_mic_socket_holds_a_hesitation_and_sends_it_with_his_next_words(monk
     assert kinds == ["ready", "hold", "final", "thinking"]
     assert ws.sent[kinds.index("hold")]["text"] == "Um..."
     assert answered == [("Um... it's my birthday", True)]
+
+
+def test_the_follow_up_note_carries_what_she_just_said():
+    note = bridge._follow_up_note("Not normally -- base game caps you at one enchantment per item.")
+    assert "one enchantment per item" in note
+    assert note.endswith(bridge.FOLLOW_UP_NOTE)
+    assert bridge._follow_up_note("") == bridge.FOLLOW_UP_NOTE
+    assert len(bridge._follow_up_note("word " * 400)) < len(bridge.FOLLOW_UP_NOTE) + 400
+
+
+def test_her_last_answer_reaches_the_next_follow_up(monkeypatch):
+    """2026-10-03: "um, do you know which mods are for this?" came straight after
+    her enchantment answer and she still judged it not for her."""
+
+    import json
+    import threading
+
+    heard = iter(["can you stack two enchantments", "do you know which mods are for this"])
+
+    class Session:
+        partial = committed = ""
+
+        def feed(self, pcm):
+            pass
+
+    class Sessions:
+        failing = False
+        current = None
+
+        def __init__(self, factory):
+            pass
+
+        def for_audio(self):
+            self.current = Session()
+            return self.current
+
+        def commit(self, timeout):
+            self.current = None
+            return next(heard)
+
+        def close(self):
+            pass
+
+    first_done = threading.Event()
+    second_done = threading.Event()
+    calls = []
+
+    class Socket:
+        def __init__(self):
+            self.messages = [b"\0\0", json.dumps({"type": "commit", "follow_up": False})]
+            self.second = [b"\0\0", json.dumps({"type": "commit", "follow_up": True})]
+            self.sent = []
+
+        def receive(self):
+            if not self.messages and self.second:
+                # He asks the follow-up once she has answered the first one.
+                assert first_done.wait(2)
+                self.messages, self.second = self.second, []
+            return self.messages.pop(0) if self.messages else None
+
+        def send(self, raw):
+            self.sent.append(json.loads(raw))
+
+    async def answer(send, text, turn, *, follow_up=False, after=""):
+        calls.append((text, follow_up, after))
+        if len(calls) == 1:
+            send({"type": "reply", "text": "not normally, one enchantment per item."})
+            first_done.set()
+        else:
+            second_done.set()
+
+    monkeypatch.setattr(bridge, "load_elevenlabs_key", lambda: "key")
+    monkeypatch.setattr(bridge, "load_keyterms", lambda: [])
+    monkeypatch.setattr(bridge, "publish_state", lambda state: None)
+    monkeypatch.setattr(bridge, "UtteranceSessions", Sessions)
+    monkeypatch.setattr(bridge, "_answer", answer)
+
+    bridge.app.view_functions["ws_mic"].__wrapped__(Socket())
+
+    assert second_done.wait(2)
+    assert calls[0] == ("can you stack two enchantments", False, "")
+    assert calls[1] == ("do you know which mods are for this", True,
+                        "not normally, one enchantment per item.")

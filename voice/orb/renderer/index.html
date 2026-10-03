@@ -398,7 +398,8 @@ void main(){
   let micAnalyser = null, playAnalyser = null, playGain = null;
   // Her half of the turn: queued audio, and whether the floor is hers.
   let herSpeaking = false, pending = 0, ended = true, cursor = 0;
-  // What the conversation just did: 'words', 'hold', 'answered', 'empty'. Set by the
+  // What the conversation just did: 'words', 'hold', 'unheard', 'answered',
+  // 'spoke', 'empty'. Set by the
   // wake block below; a no-op otherwise.
   let onActivity = () => {};
   // True once she has answered in a summoned orb: what he says next might be
@@ -482,7 +483,9 @@ void main(){
           committedEl.textContent = m.text || '';
           partialEl.textContent = '';
         } else if (m.type === 'unheard') {
-          onActivity('answered');
+          // Not an answer: an empty transcript must not turn his first
+          // request into a "follow-up" she is allowed to ignore.
+          onActivity('unheard');
           // She did not get it. Say so briefly instead of sitting there.
           say('didn\u2019t catch that');
           setTimeout(() => say(''), 2600);
@@ -505,6 +508,7 @@ void main(){
           // Her SILENT is her telling him that was not for her. An empty
           // reply for any other reason (an error) must not close her on him.
           if (m.silent) onActivity('empty');
+          else onActivity('spoke');
           ended = true;
           if (pending === 0) handBack();
         } else if (m.type === 'error') say('scribe: ' + m.message);
@@ -646,6 +650,9 @@ void main(){
       if (!voiced) utteranceStart = now;
       if (!sending) {
         sending = true;
+        // He started talking: the window waits for him, not for Scribe's
+        // first partial, which lands a second later.
+        onActivity('words');
         for (const frame of preroll) {
           if (micWs.readyState === 1) micWs.send(frame);
         }
@@ -765,15 +772,24 @@ void main(){
   // sat in the room transcribing his phone call and answering it out loud. Now
   // it behaves like every other assistant: he has a few seconds to start his
   // request, and once she has answered, a few seconds to start a follow-up.
-  // After that only her name brings her back. An empty reply -- her deciding
-  // what she heard was not for her -- closes it at once.
+  // After that only her name brings her back.
+  //
+  // Her SILENT -- deciding what she heard was not for her -- closes it only
+  // the second time running. Once is too easy to get wrong: on 2026-10-03 she
+  // answered a question about Oblivion, he asked "um, do you know which mods
+  // are for this?", she judged it not for her and the orb vanished. A phone
+  // call in the room still produces SILENT after SILENT and still closes it.
+  //
+  // The follow-up window was 8s and closed on him while he was still forming
+  // the question; it is 20s now, and his voice starting holds it open.
   const WAKE = new URLSearchParams(location.search).has('wake');
   const WAKE_FIRST_WORDS_MS = 15000;
-  const WAKE_FOLLOW_UP_MS = 8000;
+  const WAKE_FOLLOW_UP_MS = 20000;
   if (WAKE) {
     let deadline = performance.now() + WAKE_FIRST_WORDS_MS;
     let closing = false;
     let answeredOnce = false;
+    let silentRun = 0;
     isFollowUp = () => answeredOnce;
     const close = (why) => {
       if (closing) return;
@@ -787,8 +803,20 @@ void main(){
         answeredOnce = true;
         deadline = performance.now() + WAKE_FOLLOW_UP_MS;
       }
+      else if (kind === 'unheard') {
+        deadline = performance.now() + (answeredOnce ? WAKE_FOLLOW_UP_MS : WAKE_FIRST_WORDS_MS);
+      }
       else if (kind === 'hold') deadline = performance.now() + WAKE_FIRST_WORDS_MS;
-      else if (kind === 'empty') close('nothing for her');
+      else if (kind === 'spoke') silentRun = 0;
+      else if (kind === 'empty') {
+        silentRun += 1;
+        if (silentRun >= 2) close('nothing for her, twice');
+        else {
+          console.log('wake: that sounded like it was not for her; still listening');
+          say('sounded like that wasn\u2019t for me');
+          setTimeout(() => say(''), 2600);
+        }
+      }
     };
     setInterval(() => {
       if (herSpeaking || pending > 0) return;

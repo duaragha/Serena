@@ -143,10 +143,12 @@ function createWindow(port) {
   win.once('ready-to-show', () => {
     win.show();
     if (WAKE) {
-      // Summoned by voice, so it has to land in front of whatever he was in.
-      win.setAlwaysOnTop(true);
+      // Summoned by voice, so it has to stay in front of whatever he was in
+      // for the whole conversation -- it closes itself when he is done. It
+      // used to drop back after 1.5s, so a game or any window he clicked
+      // into covered it and he never saw her think or speak.
+      win.setAlwaysOnTop(true, 'screen-saver');
       win.focus();
-      setTimeout(() => { if (win) win.setAlwaysOnTop(false); }, 1500);
     }
   });
   win.on('closed', () => { win = null; });

@@ -103,6 +103,20 @@ FOLLOW_UP_NOTE = (
     f"exactly {SILENT} and nothing else.]\n"
 )
 
+
+def _follow_up_note(after: str = "") -> str:
+    """The note, with what she just told him. Without it she judged "um, do you
+    know which mods are for this?" -- straight after answering him about
+    Oblivion enchantments -- as not meant for her (2026-10-03)."""
+
+    said = " ".join(after.split())
+    if not said:
+        return FOLLOW_UP_NOTE
+    if len(said) > 300:
+        said = said[:300].rsplit(" ", 1)[0] + "..."
+    return (f"[You just told him: \"{said}\" -- anything that follows on from "
+            "that is for you.]\n" + FOLLOW_UP_NOTE)
+
 # A hesitation on its own is him finding his words, not a turn. Sent to her as
 # a follow-up, a lone "Um..." came back SILENT and closed the orb on him in the
 # middle of telling her something (2026-09-23). It is held back and put in
@@ -124,7 +138,8 @@ def _is_silent(reply: str) -> bool:
             or "not directed at me" in head[:80])
 
 
-async def _answer(send, text: str, turn: int, *, follow_up: bool = False) -> None:
+async def _answer(send, text: str, turn: int, *, follow_up: bool = False,
+                  after: str = "") -> None:
     """Brain, then her voice, one sentence at a time.
 
     Sentences are synthesized and shipped as they close rather than after the
@@ -172,7 +187,7 @@ async def _answer(send, text: str, turn: int, *, follow_up: bool = False) -> Non
     silent = False
     try:
         async for event in brain.stream_turn(
-                (FOLLOW_UP_NOTE + text) if follow_up else text,
+                (_follow_up_note(after) + text) if follow_up else text,
                 call_id="orb-demo", turn_id=str(turn)):
             piece = event.delta if event.type == "delta" else (
                 (event.say or "") if event.type == "done" else "")
@@ -345,6 +360,8 @@ def ws_mic(ws) -> None:
     url = scribe_url()
     headers = [f"xi-api-key: {key}"]
     turns = {"n": 0}
+    # Her last spoken answer on this socket, for the follow-up note.
+    said = {"last": ""}
     hesitation = ""
     send_lock = threading.Lock()
     stop = threading.Event()
@@ -440,11 +457,13 @@ def ws_mic(ws) -> None:
                 follow_up = bool(payload.get("follow_up"))
 
                 def run(payload: str = text, turn: int = turns["n"],
-                        follow_up: bool = follow_up) -> None:
+                        follow_up: bool = follow_up, after: str = said["last"]) -> None:
                     def send(event: dict) -> None:
+                        if event.get("type") == "reply":
+                            said["last"] = str(event.get("text") or "")
                         with send_lock, contextlib.suppress(Exception):
                             ws.send(json.dumps(event))
-                    asyncio.run(_answer(send, payload, turn, follow_up=follow_up))
+                    asyncio.run(_answer(send, payload, turn, follow_up=follow_up, after=after))
                 threading.Thread(target=run, name="orb-answer", daemon=True).start()
 
             # Deliberately not opening the next one here: it would go stale
